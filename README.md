@@ -13,7 +13,11 @@ This repository only hosts the Android app. There is no source code here.
 
 ## Updating
 
-Download the newest `.apk` from [Releases](../../releases) and install it over the old one. You stay signed in to your trackers.
+The easy way: install [Obtainium](https://github.com/ImranR98/Obtainium), then in Readync go to **Services → App update → Set up in Obtainium**. Obtainium tells you when a new version is out and installs it.
+
+Or by hand: download the newest `.apk` from [Releases](../../releases) and install it over the old one.
+
+Either way you stay signed in to your trackers.
 
 ## What it does
 
