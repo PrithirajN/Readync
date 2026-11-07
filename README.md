@@ -19,6 +19,10 @@
   <a href="#source-code">Source code</a>
 </p>
 
+<p align="center">
+  <a href="https://buymeacoffee.com/prithi"><img alt="Buy me a coffee" src="https://img.shields.io/badge/Buy%20me%20a%20coffee-support%20Readync-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black"></a>
+</p>
+
 ---
 
 **Readync** is a free Android app that keeps your reading in step everywhere. It reads your progress
@@ -60,6 +64,10 @@ You read, and your trackers keep up. You don't have to update page numbers by ha
 4. Sign in to CrossPoint Sync, then link your trackers under **Services**.
 
 Readync needs Android 8.0 or newer.
+
+> [!TIP]
+> ☕ **Enjoying Readync?** It's free, with no ads and nothing locked, and it's made by one person.
+> If it saves you time, [buy me a coffee](https://buymeacoffee.com/prithi) to help keep it going.
 
 ## Updates
 
@@ -158,6 +166,8 @@ That can break when they change things, and it's up to you to use it within thei
 isn't affiliated with any of these services.
 
 ## Support
+
+<a href="https://buymeacoffee.com/prithi"><img alt="Buy me a coffee" src="https://img.shields.io/badge/Buy%20me%20a%20coffee-%E2%98%95-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black"></a>
 
 Readync is free, with no ads and nothing locked. If it's useful to you, you can
 [buy me a coffee](https://buymeacoffee.com/prithi) ☕. It doesn't unlock anything; it just helps keep the app going.
