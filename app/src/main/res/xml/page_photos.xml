@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Page photos live in the cache, are read once for the page number, then deleted. -->
+<paths>
+    <cache-path name="pages" path="pages/" />
+    <!-- Quote cards being shared or copied; cleared after a day. -->
+    <cache-path name="shares" path="shares/" />
+</paths>

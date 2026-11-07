@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_progress_name">Readync · Progress</string>
+    <string name="widget_shelf_name">Readync · Shelf</string>
+    <string name="ring_widget_description">Your current book\'s progress as a ring.</string>
+    <string name="shelf_widget_description">Covers of the books you\'re reading.</string>
+    <string name="share_add_book">Add to Readync</string>
+    <string name="tile_sync">Readync</string>
+    <string name="shortcut_add">Add a book</string>
+    <string name="shortcut_add_long">Add a physical book</string>
+    <string name="shortcut_snap">Snap page</string>
+    <string name="shortcut_snap_long">Snap the page you\'re on</string>
+    <string name="shortcut_sync">Sync now</string>
+    <string name="shortcut_sync_long">Sync everything now</string>
+    <string name="widget_description">Your current book, when it last synced, and a sync button.</string>
+</resources>

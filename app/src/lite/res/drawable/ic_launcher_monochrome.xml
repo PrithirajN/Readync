@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The shared edition's themed icon, its corner dog-eared: the ribbon with its arrows cut out, so they still show. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="1.12" android:scaleY="1.12">
+    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+        android:pathData="M40,28 H58 L68,38 V80 L54,69 L40,80 Z M45,51.4 H58 V54.6 H45 Z M58,48.5 L64.5,53 L58,57.5 Z M50,59.4 H63 V62.6 H50 Z M50,56.5 L43.5,61 L50,65.5 Z" />
+    </group>
+</vector>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app icon in each colour it can wear (see util/IconTint.kt). -->
+<resources>
+    <color name="icon_bg_green">#FF4A7A62</color>
+    <color name="icon_bg_teal">#FF2E7C7A</color>
+    <color name="icon_bg_blue">#FF2F5F9E</color>
+    <color name="icon_bg_indigo">#FF4B4F9C</color>
+    <color name="icon_bg_purple">#FF6D4A93</color>
+    <color name="icon_bg_rose">#FFA34A6B</color>
+    <color name="icon_bg_red">#FFA8433F</color>
+    <color name="icon_bg_orange">#FFB5652B</color>
+    <color name="icon_bg_amber">#FF9C7A1E</color>
+    <color name="icon_bg_slate">#FF4E5A63</color>
+</resources>

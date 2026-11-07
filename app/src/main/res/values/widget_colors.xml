@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- CrossPoint tokens for the widget: white card, stone text, forest-green accent. -->
+    <color name="widget_surface">#FFFFFFFF</color>
+    <color name="widget_ring">#140C0A09</color>
+    <color name="widget_text">#FF1C1917</color>
+    <color name="widget_quiet">#FF78716C</color>
+    <color name="widget_track">#FFE7E5E4</color>
+    <color name="widget_accent">#FF4A7A62</color>
+    <color name="widget_accent_text">#FF3D6652</color>
+    <color name="widget_accent_tint">#FFF0F5F3</color>
+    <color name="widget_cover">#FFF5F4EF</color>
+    <color name="widget_error">#FFB91C1C</color>
+</resources>

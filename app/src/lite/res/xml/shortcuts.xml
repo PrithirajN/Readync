@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the app icon: snap the page of the book you're reading in print, add a book, sync. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="snap"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_snap"
+        android:shortcutShortLabel="@string/shortcut_snap"
+        android:shortcutLongLabel="@string/shortcut_snap_long">
+        <intent
+            android:action="io.github.prithirajn.trackersync.SNAP_PAGE"
+            android:targetPackage="io.github.prithirajn.trackersync.lite"
+            android:targetClass="io.github.prithirajn.trackersync.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="add"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_add"
+        android:shortcutShortLabel="@string/shortcut_add"
+        android:shortcutLongLabel="@string/shortcut_add_long">
+        <intent
+            android:action="io.github.prithirajn.trackersync.ADD_BOOK"
+            android:targetPackage="io.github.prithirajn.trackersync.lite"
+            android:targetClass="io.github.prithirajn.trackersync.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="sync"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_sync"
+        android:shortcutShortLabel="@string/shortcut_sync"
+        android:shortcutLongLabel="@string/shortcut_sync_long">
+        <intent
+            android:action="io.github.prithirajn.trackersync.SYNC"
+            android:targetPackage="io.github.prithirajn.trackersync.lite"
+            android:targetClass="io.github.prithirajn.trackersync.MainActivity" />
+    </shortcut>
+</shortcuts>

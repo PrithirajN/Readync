@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tracker Sync (red): a bookmark ribbon with two arrows passing each other (your place, kept in step).
+     Drawn inside the 66dp safe circle so no launcher mask clips it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="1.12" android:scaleY="1.12">
+    <!-- A soft shadow under the ribbon. -->
+    <path android:fillColor="#26000000" android:pathData="M41,30 H69 V82 L55,71 L41,82 Z" />
+    <!-- The ribbon. -->
+    <path android:fillColor="#FFF6F1E7" android:pathData="M40,28 H68 V80 L54,69 L40,80 Z" />
+    <!-- Two lines of text on it. -->
+    <path android:strokeColor="#5CA8433F" android:strokeWidth="2.6" android:strokeLineCap="round"
+        android:pathData="M46,37.5 H62 M46,43.5 H58" />
+    <!-- The arrows, passing each other. -->
+    <path android:fillColor="#FF682927" android:pathData="M45,51.4 H58 V54.6 H45 Z M58,48.5 L64.5,53 L58,57.5 Z" />
+    <path android:fillColor="#FF682927" android:pathData="M50,59.4 H63 V62.6 H50 Z M50,56.5 L43.5,61 L50,65.5 Z" />
+    </group>
+</vector>
