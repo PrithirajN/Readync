@@ -21,6 +21,7 @@
 
 <p align="center">
   <a href="https://buymeacoffee.com/prithi"><img alt="Buy me a coffee" src="https://img.shields.io/badge/Buy%20me%20a%20coffee-support%20Readync-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black"></a>
+  <a href="https://github.com/sponsors/PrithirajN"><img alt="Sponsor on GitHub" src="https://img.shields.io/badge/Sponsor-on%20GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white"></a>
 </p>
 
 ---
@@ -67,7 +68,7 @@ Readync needs Android 8.0 or newer.
 
 > [!TIP]
 > ☕ **Enjoying Readync?** It's free, with no ads and nothing locked, and it's made by one person.
-> If it saves you time, [buy me a coffee](https://buymeacoffee.com/prithi) to help keep it going.
+> If it saves you time, [buy me a coffee](https://buymeacoffee.com/prithi) or [sponsor me on GitHub](https://github.com/sponsors/PrithirajN) to help keep it going.
 
 ## Updates
 
@@ -168,9 +169,10 @@ isn't affiliated with any of these services.
 ## Support
 
 <a href="https://buymeacoffee.com/prithi"><img alt="Buy me a coffee" src="https://img.shields.io/badge/Buy%20me%20a%20coffee-%E2%98%95-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black"></a>
+<a href="https://github.com/sponsors/PrithirajN"><img alt="Sponsor on GitHub" src="https://img.shields.io/badge/Sponsor-on%20GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white"></a>
 
 Readync is free, with no ads and nothing locked. If it's useful to you, you can
-[buy me a coffee](https://buymeacoffee.com/prithi) ☕. It doesn't unlock anything; it just helps keep the app going.
+[buy me a coffee](https://buymeacoffee.com/prithi) ☕ or [sponsor me on GitHub](https://github.com/sponsors/PrithirajN) 💖. It doesn't unlock anything; it just helps keep the app going.
 
 ## Licence
 
