@@ -7,13 +7,16 @@
   <a href="https://github.com/PrithirajN/Readync/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/PrithirajN/Readync/total?style=flat-square&color=2F5444"></a>
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-4A7A62?style=flat-square&logo=android&logoColor=white">
   <img alt="Free, no ads" src="https://img.shields.io/badge/free-no%20ads-2F5444?style=flat-square">
+  <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-4A7A62?style=flat-square"></a>
+  <img alt="Kotlin and Jetpack Compose" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-2F5444?style=flat-square&logo=kotlin&logoColor=white">
 </p>
 
 <p align="center">
   <a href="https://github.com/PrithirajN/Readync/releases/latest"><b>Download the APK</b></a> ·
   <a href="#install">Install</a> ·
   <a href="#features">Features</a> ·
-  <a href="#faq">FAQ</a>
+  <a href="#faq">FAQ</a> ·
+  <a href="#source-code">Source code</a>
 </p>
 
 ---
@@ -115,6 +118,38 @@ Yes. Add the book (or scan its barcode), then snap a photo of the page you're on
 number. The update goes to all your trackers.
 </details>
 
+## Source code
+
+This repository has the app's code, so you can read it, learn from it and build your own copy. To be
+upfront: **it isn't the complete code of the official app.**
+
+**The official APK (in Releases) is built from a private repository**, from this same code plus parts
+that aren't published here:
+
+- **The Book photo studio**, which turns your highlights into photos of real-looking books: the light,
+  the desks, the paper, the moods, drawing on the page, and making one from a photo of the page. In this
+  code it's a stand-in that shows a plain card instead.
+
+There are also connections that **aren't in the official APK or here**: Kindle, Libby and Audible.
+They're only in the developer's own copy. Here they're empty stand-ins, so the code builds the same.
+
+So if you build this repository yourself, you get a working Readync without the Book photo studio. If you
+want the studio, use the official APK. It's free.
+
+The stand-ins are in `app/src/stubs/`. When `app/src/private/` exists (only in the private repository),
+the build uses the real parts instead.
+
+### Build it yourself
+
+You need JDK 17 and the Android SDK (Android Studio installs both).
+
+```
+./gradlew assembleLiteDebug
+```
+
+The APK is in `app/build/outputs/apk/lite/debug/`. It's signed with Android's debug key, so it installs
+beside the official app, not over it, and the two can't update each other.
+
 ## A note on the trackers
 
 Hardcover and Seekquel have official APIs. Goodreads, StoryGraph, Fable and Pagebound don't, so
@@ -126,6 +161,12 @@ isn't affiliated with any of these services.
 
 Readync is free, with no ads and nothing locked. If it's useful to you, you can
 [buy me a coffee](https://buymeacoffee.com/prithi) ☕. It doesn't unlock anything; it just helps keep the app going.
+
+## Licence
+
+The code here is under the [MIT licence](LICENSE). Fonts, icons and code by others keep their own
+licences, listed in [`licenses/`](licenses/). Some of the request handling is based on
+[ShelfSync](licenses/shelfsync-LICENSE.txt) (MIT).
 
 ---
 
