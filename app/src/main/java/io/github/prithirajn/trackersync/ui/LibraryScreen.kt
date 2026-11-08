@@ -90,7 +90,7 @@ private fun greeting(): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LibraryScreen(vm: AppViewModel, state: Snapshot) {
+fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
     var open by remember { mutableStateOf<String?>(null) }
     var tab by rememberSaveable { mutableStateOf(ReadStatus.READING) }
     var adding by remember { mutableStateOf(false) }
@@ -185,6 +185,14 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot) {
         },
     ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    // The Library button in the bottom bar: back to the Reading shelf at the top, from wherever you were.
+    LaunchedEffect(home) {
+        if (home == 0) return@LaunchedEffect
+        open = null; clipsShelf = false; clipBook = null
+        searching = false; query = ""
+        tab = ReadStatus.READING
+        listState.animateScrollToItem(0)
+    }
     LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
         item {
             Row(PagePadding.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -341,13 +349,18 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot) {
             }
         } else {
             item {
-                StatusTabs(
-                    tab, counts,
-                    highlights = allClips.size, highlightsOn = clipsShelf,
-                    onHighlights = { clipsShelf = true },
-                ) { tab = it; clipsShelf = false }
+                // Highlights are opened from the Highlight of the day card ("All N"), not a shelf tab.
+                StatusTabs(tab, counts, highlightsOn = clipsShelf) { tab = it; clipsShelf = false }
             }
             if (clipsShelf) {
+                item(key = "clip-title") {
+                    Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 4.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        LucideIcon(R.drawable.lucide_highlighter, Modifier.size(16.dp), c.accentText)
+                        HSpace(8)
+                        Text("Your highlights", style = CpType.bodyStrong, color = c.text, modifier = Modifier.weight(1f))
+                        PillButton("Back to books", { clipsShelf = false; clipBook = null })
+                    }
+                }
                 item(key = "clip-head") {
                     Row(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Quiet(
@@ -442,7 +455,7 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot) {
             sectors = BookShot.sectorsFor(state, state.books[h.clip.document]),
         ) { sharingClip = null }
     }
-    photoFrom?.let { doc -> state.books[doc]?.let { PhotoQuoteSheet(vm, state, it) { photoFrom = null } } }
+    photoFrom?.let { doc -> state.books[doc]?.let { PaperHighlightSheet(vm, state, it) { photoFrom = null } } }
 }
 
 /** Reading now · pages read this month · finished this month, in the companion app's three-column card. */
@@ -744,7 +757,6 @@ private fun BookSheet(
 ) {
     var comparing by remember { mutableStateOf(false) }
     var highlighting by remember { mutableStateOf(false) }
-    var photoQuote by remember { mutableStateOf(false) }
     var updating by remember { mutableStateOf(false) }
     var addingTo by remember { mutableStateOf<String?>(null) }
     var storyLink by remember { mutableStateOf(false) }
@@ -833,7 +845,6 @@ private fun BookSheet(
                 add(BookActionItem(R.drawable.lucide_star, book.rating?.let { SyncEngine.stars(it) } ?: "Rate", onRate, highlighted = book.status == ReadStatus.FINISHED && book.rating == null))
                 if (!ManualBooks.isManual(book)) add(BookActionItem(R.drawable.lucide_book_open, "Progress", { updating = true }))
                 add(BookActionItem(R.drawable.lucide_camera, "Snap page", { highlighting = true }))
-                add(BookActionItem(R.drawable.lucide_image, "Book photo", { photoQuote = true }))
                 if (allLinked.isNotEmpty()) add(BookActionItem(R.drawable.lucide_scale, "Compare", { comparing = true }))
                 // Only for what looks like a web novel; any book can still be linked from the ⋯ menu.
                 if (state.webNovels[book.document] == null && !storyLink && looksLikeWebNovel(book)) add(BookActionItem(R.drawable.lucide_globe, "Web novel", { storyLink = true }))
@@ -968,7 +979,6 @@ private fun BookSheet(
     }
     if (comparing) CompareSheet(vm, state, book) { comparing = false }
     if (highlighting) PaperHighlightSheet(vm, state, book) { highlighting = false }
-    if (photoQuote) PhotoQuoteSheet(vm, state, book) { photoQuote = false }
     if (tidying) AiDescriptionSheet(vm, book) { tidying = false }
     if (updating) UpdateProgressSheet(vm, book) { updating = false }
     addingTo?.let { first -> AddToTrackerSheet(vm, book, first) { addingTo = null } }
@@ -1117,7 +1127,8 @@ internal fun originLabel(origin: String): String? = when (origin.lowercase()) {
     "mihon" -> "Mihon"
     "anilist" -> "AniList"
     "logged" -> "your log"
-    else -> Trackers.byId(origin)?.name
+    "moonreader" -> "Moon+ Reader"
+    else -> io.github.prithirajn.trackersync.sync.HistoryImport.originName(origin) ?: Trackers.byId(origin)?.name
 }
 
 /**

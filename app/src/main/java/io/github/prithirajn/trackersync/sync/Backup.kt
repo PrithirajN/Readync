@@ -14,7 +14,6 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
-import io.github.prithirajn.trackersync.Edition
 
 /**
  * Everything in the app (accounts, tracker sign-ins, matches, physical books, highlights,
@@ -59,7 +58,7 @@ object Backup {
 
     fun restore(bytes: ByteArray, password: String): Snapshot {
         val o = runCatching { JSONObject(String(bytes)) }.getOrNull()
-        if (o == null || o.optString("format") != FORMAT) throw ServiceException("That isn't a Tracker Sync backup")
+        if (o == null || o.optString("format") != FORMAT) throw ServiceException(if (o?.optString("format") == AccountData.FORMAT) "That's reading data, not a full backup: use Import instead" else "That isn't a Readync backup")
         val b64 = Base64.getDecoder()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val plain = try {
@@ -80,9 +79,10 @@ object Backup {
 
 
 object AppUpdater {
-    // Each edition updates from its own repo: yours from the private one, the shared (lite) one
-    // from the public repo PrithirajN/Readync, which needs no GitHub token.
-    val DEFAULT_REPO: String = if (Edition.full) "PrithirajN/tracker-sync" else "PrithirajN/Readync"
+    /** Where updates come from: your edition from the private repo, the shared one from PrithirajN/Readync. */
+    val DEFAULT_REPO: String =
+        if (runCatching { Class.forName("io.github.prithirajn.trackersync.BuildConfig").getField("FULL").getBoolean(null) }.getOrDefault(true))
+            "PrithirajN/tracker-sync" else "PrithirajN/Readync"
 
     data class Release(
         val tagName: String,

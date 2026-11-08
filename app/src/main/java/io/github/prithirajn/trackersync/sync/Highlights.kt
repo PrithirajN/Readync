@@ -22,7 +22,7 @@ object Highlights {
 
     fun forBook(s: Snapshot, document: String): List<Item> {
         val paperIds = s.paperClips.map { it.id }.toSet()
-        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips).filter { it.document == document && it.id !in s.clipHidden }
+        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).filter { it.document == document && it.id !in s.clipHidden }
             .distinctBy { it.id }
             .sortedByDescending { it.createdAt }
             .map { c ->
@@ -38,7 +38,7 @@ object Highlights {
 
     /** Every highlight and note across the library, newest first (books removed from it left out). */
     fun all(s: Snapshot): List<Item> {
-        val docs = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips).map { it.document }.toSet().filter { it in s.books }
+        val docs = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).map { it.document }.toSet().filter { it in s.books }
         return docs.flatMap { forBook(s, it) }.sortedByDescending { it.clip.createdAt }
     }
 

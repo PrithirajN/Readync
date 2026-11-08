@@ -380,49 +380,94 @@ fun CompareSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> U
 }
 
 /**
- * A highlight from a paper page: photograph it, tap the lines of the passage (or type it), add
- * a note, and it goes to your trackers like a CrossPoint highlight.
+ * Snap a page: photograph a paper page or your e-reader's screen (or pick a screenshot). The text
+ * is read on the phone, and a passage that's already marked (shaded, tinted or underlined) is
+ * picked for you; otherwise tap its lines or type it. Save it as a highlight that goes to your
+ * trackers, and make a book photo of it with the real page around it, from the same sheet.
  */
 @Composable
 fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
     var photo by remember { mutableStateOf<Pair<File, Uri>?>(null) }
+    var pending by remember { mutableStateOf<Uri?>(null) }
     var reading by remember { mutableStateOf(false) }
+    var scan by remember { mutableStateOf<PageScanner.Scan?>(null) }
     var lines by remember { mutableStateOf<List<String>>(emptyList()) }
     val picked = remember { mutableStateListOf<Int>() }
     var text by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var said by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var studio by remember { mutableStateOf<BookShot.Content?>(null) }
+    var studioPage by remember { mutableStateOf<String?>(null) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val p = photo ?: return@rememberLauncherForActivityResult
-        if (!ok) { p.first.delete(); return@rememberLauncherForActivityResult }
-        reading = true; error = null
-        vm.readPassage(p.second, p.first) { l, e ->
-            reading = false
-            lines = l ?: emptyList(); picked.clear()
-            error = e ?: if (l.isNullOrEmpty()) "No text found on that photo." else null
+        if (ok) pending = p.second else p.first.delete()
+    }
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) pending = uri }
+
+    LaunchedEffect(pending) {
+        val uri = pending ?: return@LaunchedEffect
+        reading = true; error = null; said = null
+        val r = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { PageScanner.scan(context, uri) } }
+        reading = false; pending = null
+        photo?.first?.let { runCatching { it.delete() } }; photo = null
+        r.onFailure { error = it.message ?: "Couldn't read that picture." }
+        r.onSuccess { sc ->
+            picked.clear()
+            if (sc.lines.isEmpty()) { scan = null; lines = emptyList(); error = "No text found on that picture."; return@onSuccess }
+            scan = sc
+            lines = sc.lines.map { it.text.trim() }
+            // A passage marked on the page (an e-reader highlight, a highlighter pen, an underline).
+            val m = io.github.prithirajn.trackersync.sync.PageContext.marked(sc.words)
+            if (m != null) {
+                text = io.github.prithirajn.trackersync.sync.PageContext.textOf(sc.words, m)
+                picked.addAll(m.map { sc.words[it].line }.distinct())
+            } else text = ""
         }
     }
+
     val existing = state.paperClips.filter { it.document == book.document }.sortedByDescending { it.createdAt }
+    // The highlight you already have for this passage (from your e-reader or an earlier snap), so it isn't added twice.
+    val already = remember(text, state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips) {
+        if (text.length < 8) null
+        else Highlights.forBook(state, book.document).map { it.clip }.firstOrNull { cl ->
+            val a = cl.text.lowercase().filter { it.isLetterOrDigit() }
+            val b = text.lowercase().filter { it.isLetterOrDigit() }
+            a.isNotEmpty() && b.isNotEmpty() && (a.contains(b) || b.contains(a) || (io.github.prithirajn.trackersync.sync.PageContext.find(text, cl.text)?.score ?: 0.0) >= 0.85)
+        }
+    }
     val takers = Trackers.all.filter { val s = state.service(it.id); s.linked && s.highlights }
     val aiReady = remember { vm.aiReady() }
     var hint by remember { mutableStateOf("") }
     var aiBusy by remember { mutableStateOf<String?>(null) }
+    val pageText = scan?.text?.takeIf { it.isNotBlank() }
+    val pageNo = remember(scan) { scan?.let { io.github.prithirajn.trackersync.sync.PageReader.guess(it.lines, book.pageCount, null)?.page } }
+    fun shot(t: String, n: String?) = BookShot.Content(
+        text = t, author = book.author, title = book.displayTitle, chapter = null, page = pageNo,
+        others = emptyList(), note = n, sectors = BookShot.sectorsFor(state, book),
+    )
+    fun reset() { text = ""; note = ""; lines = emptyList(); picked.clear(); scan = null }
 
-    FlowSheet("Highlight from a physical book", onClose) {
-        Quiet("Photograph the page, then tap the lines of your passage. You can fix the text before saving.")
+    FlowSheet("Snap a page", onClose) {
+        Quiet("Photograph a page or your e-reader's screen, or pick a screenshot. A highlighted passage is picked for you; otherwise tap its lines. Save it as a highlight, make a book photo of it, or both.")
         VSpace(14)
-        BigButton(if (reading) "Reading the page…" else if (lines.isEmpty()) "Photograph the page" else "Take another photo", {
-            val p = PageScanner.newPhoto(context)
-            photo = p
-            try { camera.launch(p.second) } catch (e: ActivityNotFoundException) { error = "No camera app found. Type the passage instead." }
-        }, busy = reading, filled = lines.isEmpty())
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BigButton(if (reading) "Reading the page…" else if (lines.isEmpty()) "Photograph the page" else "Another photo", {
+                val p = PageScanner.newPhoto(context)
+                photo = p
+                try { camera.launch(p.second) } catch (e: ActivityNotFoundException) { error = "No camera app found. Pick a screenshot, or type the passage." }
+            }, Modifier.weight(1f), busy = reading, filled = lines.isEmpty())
+            BigButton("Screenshot", {
+                gallery.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }, Modifier.weight(1f), filled = false, enabled = !reading)
+        }
         error?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
         if (lines.isNotEmpty()) {
             VSpace(14)
-            Quiet("Tap the lines to include:")
+            Quiet(if (picked.isNotEmpty() && text.isNotBlank()) "Your highlighted passage is picked. Tap lines to change it:" else "Tap the lines to include:")
             VSpace(6)
             CpCard {
                 lines.forEachIndexed { i, line ->
@@ -479,26 +524,67 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
                 }
             })
         }
-        VSpace(10)
-        MultiLineField(note, { note = it }, "Your note (optional)", "Why it stood out", minHeight = 60)
+        if (already == null) {
+            VSpace(10)
+            MultiLineField(note, { note = it }, "Your note (optional)", "Why it stood out", minHeight = 60)
+        }
         VSpace(10)
         Quiet(
-            if (takers.isEmpty()) "Turn on Send highlights for a tracker under Services to send it; it's kept here meanwhile."
-            else "Goes to ${takers.joinToString(", ") { it.name }} on the next sync.",
+            when {
+                already != null -> "You already have this highlight, so it isn't added again. Its book photos get the real page around it."
+                takers.isEmpty() -> "Turn on Send highlights for a tracker under Services to send it; it's kept here meanwhile."
+                else -> "Goes to ${takers.joinToString(", ") { it.name }} on the next sync."
+            },
             color = c.faint,
         )
         VSpace(14)
-        BigButton("Save highlight", {
-            busy = true
-            vm.addPaperHighlight(book.document, text, note, lines.takeIf { it.isNotEmpty() }?.let { io.github.prithirajn.trackersync.sync.PageContext.joinText(it) }) { err ->
-                busy = false
-                if (err == null) { text = ""; note = ""; lines = emptyList(); picked.clear() } else error = err
+        val t = text.trim()
+        // Save (or reuse the one you have), then open the book photo with the page around it.
+        BigButton(if (already != null) "Make a book photo" else "Save and make a book photo", {
+            if (t.isEmpty()) return@BigButton
+            val known = already
+            if (known != null) {
+                if (pageText != null) vm.setClipPage(known.id, pageText)
+                studioPage = pageText; studio = shot(known.text, null)
+            } else {
+                busy = true
+                vm.addPaperHighlight(book.document, t, note.ifBlank { null }, pageText) { err ->
+                    busy = false
+                    if (err != null) error = err else { studioPage = pageText; studio = shot(t, note.ifBlank { null }) }
+                }
             }
-        }, busy = busy, enabled = text.isNotBlank())
+        }, busy = busy, enabled = t.isNotEmpty())
+        if (already == null) {
+            VSpace(8)
+            BigButton("Just save the highlight", {
+                busy = true
+                vm.addPaperHighlight(book.document, t, note.ifBlank { null }, pageText) { err ->
+                    busy = false
+                    if (err == null) { reset(); said = "Saved. Snap another page, or close." } else error = err
+                }
+            }, filled = false, enabled = t.isNotEmpty() && !busy)
+        }
+        VSpace(8)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            PillButton("Just the photo, don't save", {
+                if (t.isNotEmpty()) { studioPage = pageText; studio = shot(t, null) }
+            })
+        }
+        said?.let { VSpace(8); Quiet(it, color = c.faint) }
         if (existing.isNotEmpty()) {
             VSpace(12)
             Quiet("${existing.size} from this book so far; they're under the book to edit or send again.", color = c.faint)
         }
+    }
+
+    studio?.let { base ->
+        BookStudio(
+            base = base,
+            pageText = studioPage,
+            onPageText = { studioPage = it },
+            plain = io.github.prithirajn.trackersync.trackers.quoted(base.text) + "\n\n— " + book.displayTitle + (book.author?.let { ", $it" } ?: ""),
+            onClose = { studio = null },
+        )
     }
 }
 
@@ -509,7 +595,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
 @Composable
 fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
     val c = Cp.colors
-    val items = remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.clipEdits, state.sentClippings, state.resend, state.clipHidden, book.document) {
+    val items = remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.clipEdits, state.sentClippings, state.resend, state.clipHidden, book.document) {
         Highlights.forBook(state, book.document)
     }
     var open by remember { mutableStateOf<String?>(null) }

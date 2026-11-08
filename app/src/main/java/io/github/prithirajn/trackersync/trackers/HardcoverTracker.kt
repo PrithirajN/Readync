@@ -457,6 +457,68 @@ object HardcoverTracker : Tracker {
         return books.sortedBy { order[it.id] ?: Int.MAX_VALUE }
     }
 
+    /**
+     * Every book on your Hardcover shelves, with its status, rating, review and latest read
+     * (start and finish days, pages), for bringing your history in. Read only: nothing changes there.
+     */
+    fun history(session: Session): List<LibraryBook> {
+        val full = """query (${"$"}o: Int!) { me { user_books(order_by: { id: asc }, limit: 200, offset: ${"$"}o) {
+              id status_id rating review_raw updated_at
+              book { id title pages cached_image contributions { contribution author { name } } }
+              user_book_reads(order_by: { id: desc }, limit: 1) { started_at finished_at progress_pages edition { pages } }
+            } } }"""
+        // The same without the fields most likely to be renamed, if Hardcover refuses the full one.
+        val plain = """query (${"$"}o: Int!) { me { user_books(order_by: { id: asc }, limit: 200, offset: ${"$"}o) {
+              id status_id rating
+              book { id title pages contributions { contribution author { name } } }
+              user_book_reads(order_by: { id: desc }, limit: 1) { started_at finished_at progress_pages }
+            } } }"""
+        fun dayOf(d: String?): Long? = d?.takeIf { it.length >= 10 }?.let {
+            runCatching { java.time.LocalDate.parse(it.take(10)).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toEpochSecond() }.getOrNull()
+        }
+        val out = ArrayList<LibraryBook>()
+        var query = full
+        var offset = 0
+        while (offset < 10_000) {
+            val data = try {
+                gql(session, query, JSONObject().put("o", offset))
+            } catch (e: ServiceException) {
+                if (query === full && offset == 0) { query = plain; continue } else throw e
+            }
+            val rows = me(data)?.arr("user_books")?.objects() ?: emptyList()
+            for (ub in rows) {
+                val b = ub.obj("book") ?: continue
+                val title = b.str("title") ?: continue
+                val read = ub.arr("user_book_reads")?.optJSONObject(0)
+                val pages = read?.obj("edition")?.int("pages") ?: b.int("pages")
+                val status = ub.int("status_id")?.let { statusById[it] }
+                val progress = read?.int("progress_pages")
+                out += LibraryBook(
+                    id = b.idString("id") ?: continue,
+                    title = title,
+                    author = authorOf(b),
+                    coverUrl = b.obj("cached_image")?.str("url"),
+                    status = status,
+                    fraction = when {
+                        status == ReadStatus.FINISHED -> 1.0
+                        progress != null && (pages ?: 0) > 0 -> (progress.toDouble() / pages!!).coerceIn(0.0, 1.0)
+                        else -> null
+                    },
+                    updatedAt = dayOf(ub.str("updated_at")) ?: 0L,
+                    keys = setOfNotNull(b.idString("id")?.let { "book:$it" }),
+                    finishedAt = dayOf(read?.str("finished_at")),
+                    startedAt = dayOf(read?.str("started_at")),
+                    rating = ub.optDouble("rating", 0.0).takeIf { it > 0.0 && it <= 5.0 },
+                    pageCount = pages?.takeIf { it > 0 },
+                    review = ub.str("review_raw")?.takeIf { it.isNotBlank() },
+                )
+            }
+            if (rows.size < 200) break
+            offset += 200
+        }
+        return out
+    }
+
     override fun shelfCandidates(session: Session): List<RemoteBook> {
         val data = gql(
             session,

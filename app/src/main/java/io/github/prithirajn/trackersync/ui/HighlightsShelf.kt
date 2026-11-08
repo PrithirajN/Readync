@@ -40,7 +40,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
 /** Every highlight and note in the library, kept fresh as they change. */
 @Composable
 fun rememberAllHighlights(state: Snapshot): List<Highlights.Item> =
-    remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.clipEdits, state.clipHidden, state.sentClippings, state.resend, state.books) {
+    remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.clipEdits, state.clipHidden, state.sentClippings, state.resend, state.books) {
         Highlights.all(state)
     }
 
@@ -132,15 +132,19 @@ fun DailyHighlightCard(
                             )
                         }
                         HSpace(8)
-                        Text(
-                            "All ${all.size}",
-                            style = CpType.small,
-                            color = c.accentText,
-                            modifier = Modifier
+                        // Where all your highlights open (they're not a shelf tab).
+                        Row(
+                            Modifier
                                 .clip(CpShapes.pill)
+                                .background(c.accentTint)
                                 .bouncyClickable(CpShapes.pill, pressedScale = 0.92f, role = Role.Button, onClickLabel = "See all highlights", onClick = onSeeAll)
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                        )
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            LucideIcon(R.drawable.lucide_highlighter, Modifier.size(13.dp), c.accentText)
+                            HSpace(5)
+                            Text("All ${all.size}", style = CpType.small, color = c.accentText)
+                        }
                     }
                 }
             }

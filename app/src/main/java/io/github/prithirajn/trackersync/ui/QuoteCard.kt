@@ -116,11 +116,40 @@ object QuoteCard {
         if (radius > 0) cv.drawRoundRect(dst, radius, radius, p) else cv.drawRect(dst, p)
     }
 
-    /** A soft-focus copy of the cover: shrunk to a few pixels, then smoothly scaled back up. */
+    /**
+     * A soft-focus copy of the cover: a modest-size copy box-blurred three times (close to a true
+     * gaussian), so the cover's shapes and colours still read and nothing turns blocky.
+     */
     private fun soften(cover: Bitmap): Bitmap {
-        val w = 18
-        val h = (18f * cover.height / cover.width).toInt().coerceAtLeast(18)
-        return Bitmap.createScaledBitmap(Bitmap.createScaledBitmap(cover, w, h, true), w * 8, h * 8, true)
+        val w = 200
+        val h = (w.toFloat() * cover.height / cover.width).toInt().coerceIn(120, 600)
+        val small = Bitmap.createScaledBitmap(cover, w, h, true)
+        val px = IntArray(w * h)
+        small.getPixels(px, 0, w, 0, 0, w, h)
+        val tmp = IntArray(w * h)
+        repeat(3) { boxPass(px, tmp, w, h, 3, horizontal = true); boxPass(tmp, px, w, h, 3, horizontal = false) }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /** One sliding box average of radius [r] along rows (or columns), channel by channel. */
+    private fun boxPass(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int, horizontal: Boolean) {
+        val lines = if (horizontal) h else w
+        val len = if (horizontal) w else h
+        val div = 2 * r + 1
+        for (line in 0 until lines) {
+            fun at(i: Int): Int { val k = i.coerceIn(0, len - 1); return if (horizontal) src[line * w + k] else src[k * w + line] }
+            var a = 0; var rr = 0; var g = 0; var b = 0
+            for (i in -r..r) { val c = at(i); a += c ushr 24; rr += (c shr 16) and 0xFF; g += (c shr 8) and 0xFF; b += c and 0xFF }
+            for (i in 0 until len) {
+                val out = ((a / div) shl 24) or ((rr / div) shl 16) or ((g / div) shl 8) or (b / div)
+                if (horizontal) dst[line * w + i] = out else dst[i * w + line] = out
+                val add = at(i + r + 1); val drop = at(i - r)
+                a += (add ushr 24) - (drop ushr 24)
+                rr += ((add shr 16) and 0xFF) - ((drop shr 16) and 0xFF)
+                g += ((add shr 8) and 0xFF) - ((drop shr 8) and 0xFF)
+                b += (add and 0xFF) - (drop and 0xFF)
+            }
+        }
     }
 
     /** "Found 37% of the way in" / "Chapter 12". */

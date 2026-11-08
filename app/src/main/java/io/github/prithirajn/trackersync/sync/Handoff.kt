@@ -85,6 +85,7 @@ object Handoff {
                 paperClips = s.paperClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
                 kindleClips = s.kindleClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
                 libbyClips = s.libbyClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
+                moonClips = s.moonClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
                 seekquelRatings = move(s.seekquelRatings),
                 seekquelDates = move(s.seekquelDates),
                 progressAsks = s.progressAsks - physical,

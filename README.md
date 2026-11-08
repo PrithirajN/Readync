@@ -44,9 +44,12 @@ You read, and your trackers keep up. You don't have to update page numbers by ha
 ### ✍️ Highlights, ratings and reviews
 - **Highlights and notes** are sent too: to Hardcover, StoryGraph and Seekquel by default, and to Goodreads, Pagebound and Fable if you turn them on.
 - **Rate once, everywhere.** Star ratings in tenths, plus a review written in Markdown (spoiler tags included), sent to every tracker that accepts them.
+- **Share a highlight as a picture**: quote cards in several looks, or a **Book photo** of the passage on a real-looking book page, with the actual text of that page around it.
+- **Snap a page** from a paper book or your e-reader's screen (or a screenshot): a highlighted passage is picked out for you, saved as a highlight and, if you like, turned into a book photo.
 
 ### 📖 Any way you read
 - **E-readers**: CrossPoint Sync, or KOReader through a KOSync server.
+- **Moon+ Reader**: its sync to a free WebDAV storage like Koofr is read, so progress and highlights in Moon+ on your phone or tablet reach your trackers too. Step-by-step setup is in the app.
 - **Physical books**: snap a photo of the page you're on, and the page number is read on your phone (offline).
 - **Barcode scanning** adds a book from its ISBN.
 - **Web novels and fan fiction**: Royal Road, AO3, Scribble Hub, Wattpad and more.
@@ -55,6 +58,8 @@ You read, and your trackers keep up. You don't have to update page numbers by ha
 - An **SFF news tab** for science fiction and fantasy readers.
 - **Home-screen widgets**: a sync card, a progress ring and a shelf of the books you're reading.
 - **Quick Settings tile** and app shortcuts (Snap page, Add a book, Sync now).
+- **Import your reading history** from a Goodreads, StoryGraph or Hardcover export, KOReader's statistics, or straight from Hardcover and Seekquel. What's already in Readync is kept, and nothing is sent to your trackers. The on-device AI can work out an unfamiliar CSV's columns.
+- **Backups and moving phones**: a full backup locked with a password, or your reading data without any sign-ins, which merges into another phone and works across app versions.
 - Optional **on-device AI** helpers. Nothing leaves your phone.
 
 ## Install
@@ -87,7 +92,7 @@ Either way, you stay signed in to all your trackers.
 | --- | :---: | :---: | :---: | :---: |
 | Hardcover | ✅ | ✅ | ✅ | ✅ |
 | Goodreads | ✅ | optional | ✅ | ✅ |
-| StoryGraph | ✅ | ✅ (journal) | ✅ | |
+| StoryGraph | ✅ | ✅ (journal) | ✅ | ✅ |
 | Fable | ✅ | optional | ✅ | ✅ |
 | Pagebound | ✅ | optional | ✅ | ✅ |
 | Seekquel | ✅ | ✅ | rating | source of dates |
@@ -118,6 +123,12 @@ token it needs.
 <summary><b>Does it work with KOReader?</b></summary>
 
 Yes. Add a KOSync server (KOReader's own, or a self-hosted one) under Services, alongside your CrossPoint Sync account.
+</details>
+
+<details>
+<summary><b>Does it work with Moon+ Reader?</b></summary>
+
+Yes. Turn on Moon+ Reader's sync to WebDAV (a free Koofr account works), then connect the same account in Readync under Services › Moon+ Reader. The app has a step-by-step guide. Readync only reads Moon+ Reader's sync files; it never changes anything there.
 </details>
 
 <details>
@@ -156,8 +167,8 @@ You need JDK 17 and the Android SDK (Android Studio installs both).
 ./gradlew assembleLiteDebug
 ```
 
-The APK is in `app/build/outputs/apk/lite/debug/`. It's signed with Android's debug key, so it installs
-beside the official app, not over it, and the two can't update each other.
+The APK is in `app/build/outputs/apk/lite/debug/`. It's signed with Android's debug key, so it won't
+install over the official app (or the other way round): uninstall one before installing the other.
 
 ## A note on the trackers
 

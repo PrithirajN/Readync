@@ -99,6 +99,17 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("kosyncOkAt", s.kosyncOkAt)
         o.put("kosyncError", s.kosyncError ?: JSONObject.NULL)
         o.put("kosyncRotation", s.kosyncRotation)
+        s.moon?.let {
+            o.put("moon", JSONObject()
+                .put("server", it.server)
+                .put("username", it.username)
+                .put("key", secrets.seal(it.key)))
+        }
+        o.put("moonFolder", s.moonFolder ?: JSONObject.NULL)
+        o.put("moonOkAt", s.moonOkAt)
+        o.put("moonError", s.moonError ?: JSONObject.NULL)
+        o.put("moonSeen", JSONObject().also { j -> s.moonSeen.forEach { (k, v) -> j.put(k, v) } })
+        o.put("moonDocs", JSONObject().also { j -> s.moonDocs.forEach { (k, v) -> j.put(k, v) } })
         s.kindle?.let { o.put("kindle", it.toJson(secrets.seal(it.cookies))) }
         o.put("kindleOkAt", s.kindleOkAt)
         o.put("kindleError", s.kindleError ?: JSONObject.NULL)
@@ -134,6 +145,8 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("cpClips", clips(s.cpClips))
         o.put("kindleClips", clips(s.kindleClips))
         o.put("libbyClips", clips(s.libbyClips))
+        o.put("moonClips", clips(s.moonClips))
+        o.put("moonMods", JSONObject().also { j -> s.moonMods.forEach { (k, v) -> j.put(k, v) } })
         s.libby?.let { o.put("libby", it.toJson(secrets.seal(it.identity))) }
         s.audible?.let { o.put("audible", it.toJson(secrets.seal(it.refreshToken))) }
         s.mihon?.let { o.put("mihon", it.toJson()) }
@@ -259,6 +272,14 @@ class Store(private val file: File, private val secrets: Secrets) {
             kosyncOkAt = o.long("kosyncOkAt") ?: 0L,
             kosyncError = o.str("kosyncError"),
             kosyncRotation = o.int("kosyncRotation") ?: 0,
+            moon = o.obj("moon")?.let { a ->
+                a.str("key")?.let(secrets::open)?.let { key -> Account(a.optString("server"), a.optString("username"), key) }
+            },
+            moonFolder = o.str("moonFolder"),
+            moonOkAt = o.long("moonOkAt") ?: 0L,
+            moonError = o.str("moonError"),
+            moonSeen = o.obj("moonSeen")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
+            moonDocs = o.obj("moonDocs")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             kindle = kindle,
             kindleOkAt = o.long("kindleOkAt") ?: 0L,
             kindleTriedAt = o.long("kindleTriedAt") ?: 0L,
@@ -333,6 +354,20 @@ class Store(private val file: File, private val secrets: Secrets) {
                     page = c.int("page"),
                 )
             },
+            moonClips = (o.optJSONArray("moonClips")?.objects() ?: emptyList()).mapNotNull { c ->
+                io.github.prithirajn.trackersync.source.Clipping(
+                    c.str("id") ?: return@mapNotNull null,
+                    c.str("document") ?: return@mapNotNull null,
+                    c.str("text") ?: return@mapNotNull null,
+                    c.str("note"),
+                    c.str("chapter"),
+                    c.long("createdAt") ?: 0L,
+                    spine = c.int("spine"),
+                    percent = c.optDouble("percent").takeIf { !it.isNaN() },
+                    page = c.int("page"),
+                )
+            },
+            moonMods = o.obj("moonMods")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             running = false,
             sentClippings = o.optJSONArray("sentClippings")?.strings()?.toSet() ?: emptySet(),
             paperClips = (o.optJSONArray("paperClips")?.objects() ?: emptyList()).mapNotNull { c ->

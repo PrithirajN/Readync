@@ -78,6 +78,8 @@ enum class Tab(val label: String, val icon: Int) {
 fun AppRoot(vm: AppViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.LIBRARY) }
+    // Bumped by each tap on Library in the bottom bar, so the Library goes back to its Reading shelf.
+    var libraryHome by remember { mutableStateOf(0) }
 
     // The app takes its accent from the cover of the book you last made progress in.
     val context = LocalContext.current.applicationContext
@@ -155,7 +157,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                                 }
                         ) {
                             when (Tab.entries[page]) {
-                                Tab.LIBRARY -> LibraryScreen(vm, state)
+                                Tab.LIBRARY -> LibraryScreen(vm, state, home = libraryHome)
                                 Tab.SFF -> SffScreen(vm, state, active = pager.settledPage == page)
                                 Tab.SERVICES -> ServicesScreen(vm, state)
                                 Tab.ACTIVITY -> ActivityScreen(vm, state)
@@ -163,6 +165,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                         }
                     }
                     TabBar(Tab.entries[pager.targetPage]) { t ->
+                        if (t == Tab.LIBRARY) libraryHome++
                         scope.launch {
                             // Firm and smooth: no overshoot when the whole page moves.
                             pager.animateScrollToPage(t.ordinal, animationSpec = spring(dampingRatio = 1f, stiffness = 300f))

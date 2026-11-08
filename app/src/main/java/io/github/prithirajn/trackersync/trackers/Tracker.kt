@@ -153,6 +153,8 @@ data class LibraryBook(
     /** "ebook", "audiobook", "physical"… as the tracker names it. */
     val mediaKind: String? = null,
     val description: String? = null,
+    /** Your review there, when the tracker shares it (for bringing your history in). */
+    val review: String? = null,
 )
 
 interface Tracker {

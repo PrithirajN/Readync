@@ -140,6 +140,8 @@ class SyncEngine(private val store: Store) {
                 pullSources()
                 step("KOSync")
                 pullKosync()
+                step("Moon+ Reader")
+                runCatching { pullMoon() }
                 runCatching { Handoff.find(store) }
                 runCatching { pushToCrossPoint() }
                 refreshClips()
@@ -919,6 +921,36 @@ class SyncEngine(private val store: Store) {
         }
         val devices = found.mapNotNull { it.device }.distinct().joinToString(", ")
         store.log(null, "${found.size} book${if (found.size == 1) "" else "s"} moved ahead on KOSync" + if (devices.isNotEmpty()) " ($devices)" else "")
+    }
+
+    /**
+     * Moon+ Reader's positions from the WebDAV folder its sync writes to. Problems only turn its
+     * light red; the rest of the sync carries on.
+     */
+    internal fun pullMoon() {
+        val account = store.snapshot.moon ?: return
+        val client = io.github.prithirajn.trackersync.source.MoonReaderClient(account)
+        val positions = try {
+            val folder = client.findFolder(store.snapshot.moonFolder)
+            if (folder == null) {
+                store.update { it.copy(moonOkAt = System.currentTimeMillis(), moonError = Health.MOON_NO_FILES) }
+                return
+            }
+            val stamps = HashMap<String, String>()
+            client.positions(folder, store.snapshot.moonMods, stamps).also {
+                store.update { s -> s.copy(moonFolder = folder, moonOkAt = System.currentTimeMillis(), moonError = null, moonMods = stamps) }
+            }
+        } catch (e: Exception) {
+            store.update { it.copy(moonError = Health.describeMoon(e)) }
+            store.log(null, "Moon+ Reader: ${e.message}", error = true)
+            return
+        }
+        var r: MoonSync.Result? = null
+        store.update { s -> MoonSync.apply(s, positions).also { r = it }.snapshot }
+        val res = r ?: return
+        if (res.moved > 0) store.log(null, "${res.moved} book${if (res.moved == 1) "" else "s"} moved ahead in Moon+ Reader" + if (res.finished > 0) " (${res.finished} finished)" else "")
+        if (res.added > 0) store.log(null, "Brought in ${res.added} book${if (res.added == 1) "" else "s"} you're reading in Moon+ Reader")
+        if (res.highlights > 0) store.log(null, "${res.highlights} new highlight${if (res.highlights == 1) "" else "s"} from Moon+ Reader")
     }
 
     /**
@@ -2193,7 +2225,7 @@ class SyncEngine(private val store: Store) {
         val s = store.snapshot
         if (!highlightsOn(t, s)) return emptyList()
         val since = s.service(t.id).highlightsSince
-        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips).filter { it.document == document && it.id !in s.clipHidden }
+        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).filter { it.document == document && it.id !in s.clipHidden }
             .map { HighlightPosition.withPage(edited(it, s.clipEdits), s.books[it.document]) }
             .filter { val key = "${t.id}|${it.id}"; it.createdAt >= since && key !in s.sentClippings && key !in s.resend }
     }
@@ -2206,7 +2238,7 @@ class SyncEngine(private val store: Store) {
         }
         if (active.isEmpty()) return 0
         // CrossPoint's highlights and ones photographed from paper, as you edited them.
-        val clips = (s0.cpClips + s0.paperClips + s0.kindleClips + s0.libbyClips)
+        val clips = (s0.cpClips + s0.paperClips + s0.kindleClips + s0.libbyClips + s0.moonClips)
             .filter { it.id !in s0.clipHidden && (onlyDocument == null || it.document == onlyDocument) }
             .map { HighlightPosition.withPage(edited(it, s0.clipEdits), s0.books[it.document]) }
         if (clips.isEmpty()) return 0

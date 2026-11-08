@@ -57,6 +57,26 @@ object Health {
         }
     }
 
+    fun moon(s: Snapshot, now: Long = System.currentTimeMillis()): Status? {
+        s.moon ?: return null
+        val error = s.moonError
+        return when {
+            error == MOON_NO_FILES -> Status(Level.WARN, "No Moon+ Reader sync files yet", error)
+            error != null -> Status(Level.BAD, "Moon+ Reader sync had a problem", error)
+            s.moonOkAt == 0L -> Status(Level.WARN, "Moon+ Reader not checked yet", "It's checked on the next sync. Tap to check now.")
+            now - s.moonOkAt > STALE_MS -> Status(Level.WARN, "Moon+ Reader not reached lately", "The last good check was a while ago; the phone may have been offline. Tap to check now.")
+            else -> Status(Level.GOOD, "Moon+ Reader is healthy", "Newer progress in Moon+ Reader reaches your trackers.")
+        }
+    }
+
+    const val MOON_NO_FILES = "Connected, but no Moon+ Reader sync files were found yet. In Moon+ Reader, turn on sync to WebDAV with the same address and account, then read a page of any book."
+
+    fun describeMoon(e: Exception): String = when (e) {
+        is AuthException -> "The WebDAV server rejected the email or app password. Remove Moon+ Reader here and add it again with a new app password."
+        is NetworkException -> "Couldn't reach the WebDAV server (${e.message ?: "offline"}). It's retried on the next sync."
+        else -> e.message ?: "Something went wrong reading Moon+ Reader's sync files."
+    }
+
     fun describeKosync(e: Exception): String = when (e) {
         is AuthException -> "The KOSync server rejected your username or password. Remove it and add it again."
         is NetworkException -> "Couldn't reach the KOSync server (${e.message ?: "offline"}). It's retried on the next sync."

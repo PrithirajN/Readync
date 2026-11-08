@@ -90,6 +90,9 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     var signingOut by remember { mutableStateOf(false) }
     var addingKosync by remember { mutableStateOf(false) }
     var removingKosync by remember { mutableStateOf(false) }
+    var addingMoon by remember { mutableStateOf(false) }
+    var removingMoon by remember { mutableStateOf(false) }
+    var moonGuide by remember { mutableStateOf(false) }
     var linkingKindle by remember { mutableStateOf(false) }
     var removingKindle by remember { mutableStateOf(false) }
     var linkingLibby by remember { mutableStateOf(false) }
@@ -207,6 +210,12 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     state.kosync?.let { k -> k.username + " · " + k.server.substringAfter("://") } ?: "Not set up",
                     trailing = { Health.kosync(state)?.let { h -> HealthLight(h) { vm.checkKosync() } } },
                 ) { page = "kosync" }
+                RowDivider()
+                NavRow(
+                    R.drawable.lucide_moon, "Moon+ Reader",
+                    state.moon?.let { m -> m.username + " · " + m.server.substringAfter("://").substringBefore('/') } ?: "Not set up",
+                    trailing = { Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } } },
+                ) { page = "moon" }
             }
             SectionTitle("App")
             VSpace(12)
@@ -224,7 +233,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     model?.first?.substringBeforeLast('.')?.let { "$it · on this phone" } ?: "Off · add a model to try it",
                 ) { page = "ai" }
                 RowDivider()
-                NavRow(R.drawable.lucide_download, "Backup", "Everything in one locked file") { page = "backup" }
+                NavRow(R.drawable.lucide_download, "Backup & import", "Backups, reading data, history from other apps") { page = "backup" }
                 RowDivider()
                 NavRow(R.drawable.lucide_refresh_cw, "App update", if (appVersion.isNotEmpty()) "Version $appVersion" else null) { page = "update" }
             }
@@ -245,8 +254,8 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     page?.let { p ->
         SettingsSheet(
             when (p) {
-                "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"
-                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup"; else -> "App update"
+                "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"
+                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; else -> "App update"
             },
             onClose = { page = null },
         ) {
@@ -271,9 +280,10 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 "audible" -> AudibleCard(vm, state, onLink = { linkingAudible = true }, onRemove = { page = null; removingAudible = true })
                 "libby" -> LibbyCard(vm, state, onLink = { linkingLibby = true }, onRemove = { page = null; removingLibby = true })
                 "kosync" -> KosyncCard(vm, state, onAdd = { addingKosync = true }, onRemove = { page = null; removingKosync = true })
+                "moon" -> MoonCard(vm, state, onAdd = { addingMoon = true }, onGuide = { moonGuide = true }, onRemove = { page = null; removingMoon = true })
                 "sync" -> SyncSettingsCard(vm, state)
                 "ai" -> OnDeviceAiCard(vm, state)
-                "backup" -> BackupCard(vm)
+                "backup" -> { BackupCard(vm); VSpace(16); HistoryImportCard(vm) }
                 else -> AppUpdateCard(vm, state, appVersion)
             }
         }
@@ -360,6 +370,17 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
         )
     }
     if (addingKosync) KosyncSheet(vm) { addingKosync = false }
+    if (addingMoon) MoonSheet(vm, onGuide = { moonGuide = true }) { addingMoon = false }
+    if (moonGuide) MoonGuideSheet { moonGuide = false }
+    if (removingMoon) {
+        ConfirmSheet(
+            title = "Remove Moon+ Reader?",
+            body = "${io.github.prithirajn.trackersync.Edition.name} stops reading its sync files. Books already brought in stay, and nothing changes in Moon+ Reader, on Koofr or on your trackers.",
+            action = "Remove",
+            onConfirm = { vm.removeMoon() },
+            onClose = { removingMoon = false },
+        )
+    }
     if (removingKosync) {
         ConfirmSheet(
             title = "Remove the KOSync server?",
@@ -808,34 +829,217 @@ private fun SettingLine(label: String, note: String, control: @Composable () -> 
     }
 }
 
-/** Everything in one password-protected file: to keep, or to move to a new phone. */
+/**
+ * Two kinds of file. A full backup: everything, sign-ins included, locked with a password, and
+ * restoring it replaces what's on the phone. Reading data: the library, progress, highlights,
+ * ratings and tracker matches without any sign-ins, merged into whatever's on a phone, from any
+ * version of the app. One Import button takes either.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BackupCard(vm: AppViewModel) {
     val c = Cp.colors
     var mode by remember { mutableStateOf<String?>(null) } // "save" | "restore"
     var target by remember { mutableStateOf<Uri?>(null) }
+    var incoming by remember { mutableStateOf<io.github.prithirajn.trackersync.sync.AccountData.Read?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val day = remember { java.time.LocalDate.now() }
     val create = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri != null) { target = uri; mode = "save" }
     }
+    val createData = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) { error = null; vm.exportAccountData(uri) { e -> error = e } }
+    }
     val openDoc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) { target = uri; mode = "restore" }
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true; error = null
+        vm.readIncoming(uri) { kind, e ->
+            busy = false
+            when (kind) {
+                is AppViewModel.Incoming.FullBackup -> { target = uri; mode = "restore" }
+                is AppViewModel.Incoming.Data -> incoming = kind.read
+                null -> error = e
+            }
+        }
     }
     CpCard {
         Column(Modifier.padding(16.dp)) {
-            Quiet("Your accounts, tracker sign-ins, matches, physical books, highlights and settings, in one file locked with a password you choose. Use it to move to a new phone.")
-            VSpace(12)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillButton("Back up to a file", {
-                    val day = java.time.LocalDate.now()
-                    create.launch("tracker-sync-$day.tsbackup")
-                })
-                PillButton("Restore", { openDoc.launch(arrayOf("*/*")) }, outlined = false)
+            Text("Full backup", style = CpType.label, color = c.text)
+            Quiet("Everything, tracker sign-ins included, in one file locked with a password you choose. Restoring it replaces what's on the phone.")
+            VSpace(10)
+            PillButton("Back up to a file", { create.launch("readync-$day.tsbackup") })
+            VSpace(18)
+            Text("Reading data", style = CpType.label, color = c.text)
+            Quiet("Your library, progress, highlights, ratings, reviews and tracker matches, without any sign-ins. Importing merges it into this phone (from any version of the app) and sends nothing to your trackers. Keep it private: it has your reading in it.")
+            VSpace(10)
+            PillButton("Export reading data", { createData.launch("readync-data-$day.json") })
+            VSpace(18)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PillButton(if (busy) "Reading…" else "Import a file", { if (!busy) openDoc.launch(arrayOf("*/*")) }, outlined = false)
+                HSpace(10)
+                Quiet("Either kind; it's told apart for you.", color = c.faint)
             }
+            error?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
         }
     }
     val uri = target
     if (mode != null && uri != null) {
         BackupPasswordSheet(vm, mode == "save", uri) { mode = null; target = null }
+    }
+    incoming?.let { read ->
+        var merging by remember(read) { mutableStateOf(false) }
+        var mergeError by remember(read) { mutableStateOf<String?>(null) }
+        ModalBottomSheet(
+            onDismissRequest = { incoming = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            shape = CpShapes.sheet,
+            containerColor = c.page,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+                Text("Bring in reading data", style = CpType.section, color = c.text)
+                VSpace(6)
+                val when_ = read.exportedAt.takeIf { it > 0 }?.let {
+                    java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                        .format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy"))
+                }
+                Quiet(
+                    "${read.books} book${if (read.books == 1) "" else "s"} and ${read.highlights} highlight${if (read.highlights == 1) "" else "s"}" +
+                        (when_?.let { ", saved $it" } ?: "") + (read.fromVersion?.let { " by version $it" } ?: "") + ".",
+                )
+                if (read.newer) {
+                    VSpace(6)
+                    Quiet("It's from a newer version of the app: what this version doesn't know yet is left out.", color = c.faint)
+                }
+                VSpace(10)
+                Quiet("It's merged with what's here: new books are added, books on both keep the more recent progress, and gaps (a rating, dates, a cover) are filled in. Your sign-ins and settings stay as they are, and nothing is sent to your trackers.", color = c.faint)
+                mergeError?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
+                VSpace(16)
+                BigButton("Merge into this phone", {
+                    merging = true; mergeError = null
+                    vm.mergeAccountData(read) { e -> merging = false; if (e == null) incoming = null else mergeError = e }
+                }, busy = merging)
+            }
+        }
+    }
+}
+
+/**
+ * Reading history from elsewhere: a tracker's export, KOReader's reading statistics, or straight
+ * from a linked tracker's shelves. Shown as a review first; nothing's brought in until you say so.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistoryImportCard(vm: AppViewModel) {
+    val c = Cp.colors
+    var busy by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var plan by remember { mutableStateOf<io.github.prithirajn.trackersync.sync.HistoryImport.Plan?>(null) }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = "file"; error = null
+        vm.readHistoryFile(uri) { p, e -> busy = null; plan = p; error = e }
+    }
+    val fromTrackers = remember { vm.historyTrackers() }
+    CpCard {
+        Column(Modifier.padding(16.dp)) {
+            Text("Import reading history", style = CpType.label, color = c.text)
+            Quiet("A Goodreads, StoryGraph or Hardcover export (CSV), any other CSV of your books, KOReader's statistics.sqlite3 (in its settings folder) or a ZIP of it, up to 50 MB. With the on-device AI set up, a CSV with unfamiliar column names is worked out for you.")
+            VSpace(6)
+            Quiet("Books already here keep their progress, statuses, dates and stats; only a missing rating, review or dates are filled in. New books come in as history, sent to no tracker until you choose. You see what's in it before anything changes.", color = c.faint)
+            VSpace(12)
+            PillButton(if (busy == "file") "Reading…" else "Choose a file", { if (busy == null) pick.launch(arrayOf("*/*")) }, outlined = false)
+            if (fromTrackers.isNotEmpty()) {
+                VSpace(10)
+                Quiet("Or straight from a linked tracker:", color = c.faint)
+                VSpace(6)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (t in fromTrackers) {
+                        PillButton(if (busy == t.id) "Reading…" else "From ${t.name}", {
+                            if (busy == null) {
+                                busy = t.id; error = null
+                                vm.readHistoryFrom(t) { p, e -> busy = null; plan = p; error = e }
+                            }
+                        })
+                    }
+                }
+            }
+            VSpace(8)
+            Quiet("StoryGraph: Manage Account › Export StoryGraph Library. Goodreads: My Books › Import and export › Export Library. Fable and Pagebound: their export, if it's a CSV.", color = c.faint)
+            error?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
+        }
+    }
+    plan?.let { p ->
+        var withWant by remember(p) { mutableStateOf(false) }
+        var applying by remember(p) { mutableStateOf(false) }
+        var applyError by remember(p) { mutableStateOf<String?>(null) }
+        ModalBottomSheet(
+            onDismissRequest = { plan = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            shape = CpShapes.sheet,
+            containerColor = c.page,
+        ) {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+                Text("Your ${p.source.name} history", style = CpType.section, color = c.text)
+                VSpace(4)
+                Quiet("${p.total} book${if (p.total == 1) "" else "s"} in it.")
+                if (p.columnsByAi.isNotEmpty()) {
+                    VSpace(10)
+                    CpCard {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("Columns worked out by the on-device AI", style = CpType.label, color = c.text)
+                            Quiet("Its column names weren't ones Readync knows, so the model read a few rows. Each match was checked against the values; if one looks wrong, close this and fix that column's name in the file.", color = c.faint)
+                            VSpace(8)
+                            for ((field, column) in p.columnsByAi) {
+                                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                                    Text(field.replaceFirstChar { it.uppercase() }, style = CpType.body, color = c.textMid, modifier = Modifier.weight(1f))
+                                    Text("\u201C$column\u201D", style = CpType.body, color = c.text)
+                                }
+                            }
+                        }
+                    }
+                }
+                VSpace(14)
+                CpCard {
+                    Column(Modifier.padding(16.dp)) {
+                        val byStatus = p.fresh.groupingBy { it.status?.label ?: "No status" }.eachCount()
+                        HistoryLine("New here", p.fresh.size, byStatus.entries.sortedByDescending { it.value }.joinToString(" · ") { "${it.value} ${it.key.lowercase()}" })
+                        HistoryLine("Already here, gaps filled", p.fills.size,
+                            p.fills.flatMap { it.adds }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.joinToString(" · ") { "${it.value} ${it.key}" })
+                        HistoryLine("Already here, nothing to add", p.same, null)
+                        HistoryLine("Want to Read", p.wantToRead.size, if (withWant) "brought in" else "left out")
+                    }
+                }
+                if (p.wantToRead.isNotEmpty()) {
+                    VSpace(10)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Bring in Want to Read too", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+                        CpToggle(withWant, { withWant = it }, "Bring in Want to Read too")
+                    }
+                }
+                VSpace(12)
+                Quiet("Nothing is sent to your trackers. New books show under the library as history; open one and tap Send to my trackers to sync it.", color = c.faint)
+                applyError?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
+                VSpace(16)
+                val count = p.fresh.size + p.fills.size + (if (withWant) p.wantToRead.size else 0)
+                BigButton(if (count == 0) "Nothing to bring in" else "Bring in $count book${if (count == 1) "" else "s"}", {
+                    applying = true; applyError = null
+                    vm.applyHistory(p, withWant) { e -> applying = false; if (e == null) plan = null else applyError = e }
+                }, busy = applying, enabled = count > 0)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryLine(label: String, count: Int, detail: String?) {
+    val c = Cp.colors
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = CpType.body, color = c.text)
+            detail?.takeIf { it.isNotBlank() && count > 0 }?.let { Quiet(it, color = c.faint) }
+        }
+        Text(count.toString(), style = CpType.bodyStrong, color = if (count > 0) c.text else c.faint)
     }
 }
 
@@ -2212,6 +2416,179 @@ private fun KosyncCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onR
             }
         }
     }
+}
+
+/** Moon+ Reader through its WebDAV sync (Koofr…): connected or not, where its files are, and how to set it up. */
+@Composable
+private fun MoonCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onGuide: () -> Unit, onRemove: () -> Unit) {
+    val c = Cp.colors
+    val m = state.moon
+    CpCard {
+        if (m == null) {
+            Column(Modifier.padding(16.dp)) {
+                Quiet("Read in Moon+ Reader on your phone or tablet? Turn on its sync to a free WebDAV storage like Koofr, connect the same storage here, and your progress and highlights there reach your trackers too. Books you start in Moon+ are added to your library.")
+                VSpace(12)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton("Connect", onAdd, outlined = false)
+                    PillButton("How to set it up", onGuide)
+                }
+            }
+        } else {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ServiceTile("M", 40.dp)
+                    HSpace(12)
+                    Column(Modifier.weight(1f)) {
+                        Text(m.username, style = CpType.bodyStrong, color = c.text)
+                        Quiet(m.server.removePrefix("https://").removePrefix("http://"), maxLines = 1)
+                        state.moonOkAt.takeIf { it > 0 }?.let { AnimatedQuiet("Checked ${ago(it)}", color = c.faint, maxLines = 1) }
+                    }
+                    Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } }
+                }
+                VSpace(10)
+                val books = state.moonDocs.values.toSet().size
+                Quiet(
+                    (state.moonFolder?.let { "Sync files found in $it" } ?: "No sync files found yet") +
+                        (if (books > 0) " · $books book${if (books == 1) "" else "s"} followed" else "") + ".",
+                    color = c.faint,
+                )
+                state.moonError?.let { VSpace(6); Quiet(it, color = c.faint) }
+                VSpace(12)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton("Check now", { vm.checkMoon() })
+                    PillButton("How to set it up", onGuide)
+                    PillButton("Remove", onRemove, danger = true)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MoonSheet(vm: AppViewModel, onGuide: () -> Unit, onClose: () -> Unit) {
+    var server by remember { mutableStateOf(KOOFR_WEBDAV) }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val c = Cp.colors
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = CpShapes.sheet,
+        containerColor = c.page,
+    ) {
+        Column(Modifier.fillMaxWidth().imePadding().padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            Text("Connect Moon+ Reader", style = CpType.section, color = c.text)
+            Quiet("The same WebDAV storage Moon+ Reader syncs to. Koofr's address is filled in; for another service, use its WebDAV address.")
+            VSpace(16)
+            CpTextField(server, { server = it }, "WebDAV address", keyboard = KeyboardType.Uri)
+            VSpace(12)
+            CpTextField(email, { email = it }, "Email (your Koofr login)", keyboard = KeyboardType.Email)
+            VSpace(12)
+            CpTextField(password, { password = it }, "App password", password = true)
+            error?.let { VSpace(10); Text(it, style = CpType.small, color = c.errorText) }
+            VSpace(16)
+            BigButton(
+                "Connect",
+                onClick = {
+                    busy = true; error = null
+                    vm.addMoon(server, email, password) { e -> busy = false; if (e == null) onClose() else error = e }
+                },
+                busy = busy,
+                enabled = server.isNotBlank() && email.isNotBlank() && password.isNotBlank(),
+            )
+            VSpace(10)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) { PillButton("How to set it up", onGuide) }
+            VSpace(10)
+            Quiet("Use an app password made for this, not your main Koofr password; it's kept encrypted on this phone. Readync only reads Moon+ Reader's sync files and never changes anything there.", color = c.faint)
+        }
+    }
+}
+
+/** Koofr's WebDAV address for your own files. */
+private const val KOOFR_WEBDAV = "https://app.koofr.net/dav/Koofr"
+
+/** Step by step: a free Koofr account, Moon+ Reader syncing to it, and Readync reading it. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MoonGuideSheet(onClose: () -> Unit) {
+    val c = Cp.colors
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val links = androidx.compose.ui.platform.LocalUriHandler.current
+    var copied by remember { mutableStateOf(false) }
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = CpShapes.sheet,
+        containerColor = c.page,
+    ) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            Text("Moon+ Reader with Koofr", style = CpType.section, color = c.text)
+            Quiet("Moon+ Reader saves where you are in each book to your Koofr storage; Readync reads it from there. Koofr's free plan is plenty: each book's sync file is a few bytes.")
+            VSpace(16)
+            GuidePart("1", "Make a Koofr account", listOf(
+                "Sign up for free at koofr.eu (or in the Koofr app).",
+                "Use any email; remember it, it's your WebDAV username.",
+            ))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(start = 34.dp)) {
+                PillButton("Open koofr.eu", { runCatching { links.openUri("https://koofr.eu") } })
+            }
+            VSpace(14)
+            GuidePart("2", "Make an app password", listOf(
+                "In Koofr on the web: your profile picture › Preferences › Password.",
+                "Under App passwords, type a name (“Moon+ and Readync”) and tap Generate.",
+                "Copy the password it shows. It's shown once, so keep it until you've finished both apps. (You can make a separate one for each app if you like.)",
+            ))
+            VSpace(14)
+            GuidePart("3", "Turn on sync in Moon+ Reader", listOf(
+                "Open Moon+ Reader › Options (the menu) › Sync (in some versions: Misc › Sync).",
+                "Turn on “Sync reading positions via” WebDAV, and fill in:",
+                "WebDAV address: $KOOFR_WEBDAV",
+                "Username: your Koofr email · Password: the app password.",
+                "Tap Test, or save, then open any book and turn a page so it writes its first sync file.",
+                "Older Moon+ Reader versions have cloud sync in Moon+ Reader Pro only; if you don't see WebDAV, that's why.",
+            ))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(start = 34.dp)) {
+                PillButton(if (copied) "Copied" else "Copy the address", {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(KOOFR_WEBDAV)); copied = true
+                })
+            }
+            VSpace(14)
+            GuidePart("4", "Connect it in Readync", listOf(
+                "Here, under Reading from › Moon+ Reader › Connect.",
+                "The Koofr address is already filled in; add the same email and app password.",
+                "Readync finds Moon+ Reader's folder on its own (in Koofr it's Apps › Books › .Moon+ › Cache, one \u201C.po\u201D file per book) and starts following your books on the next sync.",
+            ))
+            VSpace(14)
+            GuidePart("5", "How it works from then on", listOf(
+                "Each sync, Readync reads where you are in every book Moon+ Reader has synced, and your highlights and notes in them.",
+                "Books already in your library are matched by title (Moon+ keeps the real one with your highlights) and author, and move ahead when you've read further in Moon+.",
+                "Books you start in Moon+ that aren't in your library yet are added, and follow your “Auto-sync new books” setting.",
+                "Readync never writes to Koofr or changes anything in Moon+ Reader.",
+            ))
+            VSpace(14)
+            Quiet("Tip: book files named “Title - Author.epub” (how Calibre names them) match best. Using Nextcloud or another WebDAV service? The steps are the same with its WebDAV address.", color = c.faint)
+        }
+    }
+}
+
+@Composable
+private fun GuidePart(n: String, title: String, lines: List<String>) {
+    val c = Cp.colors
+    Row(verticalAlignment = Alignment.Top) {
+        Box(Modifier.size(24.dp).clip(CpShapes.pill).background(c.accentTint), contentAlignment = Alignment.Center) {
+            Text(n, style = CpType.label, color = c.accentText)
+        }
+        HSpace(10)
+        Column(Modifier.weight(1f)) {
+            Text(title, style = CpType.bodyStrong, color = c.text)
+            VSpace(4)
+            for (l in lines) Text("• $l", style = CpType.body, color = c.textMid, modifier = Modifier.padding(bottom = 3.dp))
+        }
+    }
+    VSpace(8)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

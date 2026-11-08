@@ -253,6 +253,42 @@ object Assistant {
         return 1.0 - prev[y.length].toDouble() / maxOf(x.length, y.length)
     }
 
+    // ---- Reading-history files: which column is which ----
+
+    /**
+     * Which of a CSV's columns holds each thing a reading history needs, for an export whose
+     * column names aren't known (another tracker's, a spreadsheet of your own). The model sees
+     * the header and a few rows; its answer is a column number per field, and anything it names
+     * that isn't a real column is dropped. The caller checks the rest against the values.
+     */
+    fun csvColumns(m: TextModel, header: List<String>, rows: List<List<String>>): Map<io.github.prithirajn.trackersync.sync.HistoryImport.Field, Int>? {
+        if (header.isEmpty()) return null
+        val Field = io.github.prithirajn.trackersync.sync.HistoryImport.Field.entries
+        val cols = header.take(40)
+        val prompt = buildString {
+            appendLine("This is a CSV export of someone's books from a reading app. Work out which column holds each kind of information.")
+            appendLine()
+            appendLine("Columns, with example values:")
+            cols.forEachIndexed { i, h ->
+                val ex = rows.mapNotNull { it.getOrNull(i)?.trim()?.takeIf { v -> v.isNotEmpty() }?.take(40) }.distinct().take(3)
+                appendLine("${i + 1}. \"${h.take(60)}\"" + (if (ex.isEmpty()) " (empty)" else ": " + ex.joinToString(" | ")))
+            }
+            appendLine()
+            appendLine("Kinds of information:")
+            for (f in Field) appendLine("- ${f.name}: ${f.label}")
+            appendLine()
+            appendLine("Reply with one line per kind, as KIND=column number, using 0 when no column holds it. For example: TITLE=2")
+            append("Use each column for one kind at most. Reply with those lines only.")
+        }.take(MAX_PROMPT_CHARS)
+        val reply = runCatching { m.generate(prompt) }.getOrNull() ?: return null
+        val out = LinkedHashMap<io.github.prithirajn.trackersync.sync.HistoryImport.Field, Int>()
+        for (f in Field) {
+            val n = Regex("(?im)\\b${f.name}\\b\\W{0,4}(\\d{1,2})").find(reply)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+            if (n in 1..cols.size && out.values.none { it == n - 1 }) out[f] = n - 1
+        }
+        return out.takeIf { it.isNotEmpty() }
+    }
+
     // ---- 6. Asking about your library ----
 
     /**

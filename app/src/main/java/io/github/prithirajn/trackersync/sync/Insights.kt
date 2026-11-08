@@ -86,7 +86,7 @@ object Insights {
                 day(b.timestamp)?.takeIf { !it.isBefore(since) && !it.isAfter(today) }?.let { out += Event(it, Kind.DNF, b.document, at = b.timestamp) }
             }
         }
-        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips)
+        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips)
             .filter { it.id !in s.clipHidden && it.document in s.books }
             .distinctBy { it.id }
         clips.mapNotNull { c -> day(c.createdAt)?.takeIf { !it.isBefore(since) && !it.isAfter(today) }?.let { (it to c.document) to c.createdAt } }

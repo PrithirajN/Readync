@@ -421,6 +421,242 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- reading data, without sign-ins ----
+
+    fun exportAccountData(uri: android.net.Uri, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val error = try {
+                io {
+                    val bytes = io.github.prithirajn.trackersync.sync.AccountData.export(
+                        store.snapshot, io.github.prithirajn.trackersync.BuildConfig.VERSION_NAME, io.github.prithirajn.trackersync.BuildConfig.VERSION_CODE,
+                    )
+                    getApplication<Application>().contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                        ?: throw IllegalStateException("Couldn't write the file")
+                }
+                null
+            } catch (e: Exception) {
+                e.message ?: "Couldn't save your reading data"
+            }
+            if (error == null) notify("Reading data saved", "No sign-ins in it, but it has your reading and highlights: keep it private.")
+            else notify("Couldn't save", error, error = true)
+            done(error)
+        }
+    }
+
+    /** What an imported file turned out to be: reading data (merged in) or a full backup (needs its password). */
+    sealed class Incoming {
+        data class Data(val read: io.github.prithirajn.trackersync.sync.AccountData.Read) : Incoming()
+        object FullBackup : Incoming()
+    }
+
+    fun readIncoming(uri: android.net.Uri, done: (Incoming?, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val r = io {
+                    val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalStateException("Couldn't read the file")
+                    val format = runCatching { org.json.JSONObject(String(bytes)).optString("format") }.getOrDefault("")
+                    if (format == "tracker-sync-backup") Incoming.FullBackup
+                    else Incoming.Data(io.github.prithirajn.trackersync.sync.AccountData.read(bytes))
+                }
+                done(r, null)
+            } catch (e: Exception) {
+                done(null, e.message ?: "Couldn't read that file")
+            }
+        }
+    }
+
+    fun mergeAccountData(read: io.github.prithirajn.trackersync.sync.AccountData.Read, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                var m: io.github.prithirajn.trackersync.sync.AccountData.Merged? = null
+                io { store.update { s -> io.github.prithirajn.trackersync.sync.AccountData.merge(s, read.incoming).also { m = it }.snapshot } }
+                val r = m
+                notify(
+                    "Reading data brought in",
+                    if (r == null) null else listOf(
+                        "${r.added} book${if (r.added == 1) "" else "s"} added",
+                        "${r.updated} updated",
+                        "${r.highlights} highlight${if (r.highlights == 1) "" else "s"}",
+                    ).joinToString(", ") + ". Nothing was sent to your trackers.",
+                )
+                done(null)
+            } catch (e: Exception) {
+                done(e.message ?: "Couldn't bring it in")
+            }
+        }
+    }
+
+    // ---- reading history from elsewhere ----
+
+    /**
+     * A history file read and matched against the library, not brought in yet: a Goodreads,
+     * StoryGraph or Hardcover export (or any CSV with title and author columns), KOReader's
+     * statistics.sqlite3, or a ZIP holding one.
+     */
+    fun readHistoryFile(uri: android.net.Uri, done: (io.github.prithirajn.trackersync.sync.HistoryImport.Plan?, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val plan = io {
+                    val app = getApplication<Application>()
+                    val bytes = app.contentResolver.openInputStream(uri)?.use { input ->
+                        val buf = java.io.ByteArrayOutputStream()
+                        val chunk = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = input.read(chunk); if (n < 0) break
+                            buf.write(chunk, 0, n)
+                            if (buf.size() > 50L * 1024 * 1024) throw IllegalStateException("That file is over 50 MB")
+                        }
+                        buf.toByteArray()
+                    } ?: throw IllegalStateException("Couldn't read the file")
+                    val (source, entries, byAi) = historyEntries(bytes)
+                    if (entries.isEmpty()) throw IllegalStateException(
+                        if (aiReady()) "No books found in that file: not even the on-device AI could tell which column is the title"
+                        else "No books found in that file. If it's a CSV with unusual column names, set up the on-device AI (Services › On-device AI) and it can work them out",
+                    )
+                    io.github.prithirajn.trackersync.sync.HistoryImport.plan(store.snapshot, source, entries).copy(columnsByAi = byAi)
+                }
+                done(plan, null)
+            } catch (e: Exception) {
+                done(null, e.message ?: "Couldn't read that file")
+            }
+        }
+    }
+
+    private fun historyEntries(bytes: ByteArray): Triple<io.github.prithirajn.trackersync.sync.HistoryImport.Source, List<io.github.prithirajn.trackersync.sync.HistoryImport.Entry>, List<Pair<String, String>>> {
+        val HI = io.github.prithirajn.trackersync.sync.HistoryImport
+        fun ko(b: ByteArray) = Triple(HI.KOREADER, HI.fromKoreader(koreaderBooks(b)), emptyList<Pair<String, String>>())
+        val sqlite = "SQLite format 3".toByteArray()
+        fun isSqlite(b: ByteArray) = b.size > 16 && b.copyOfRange(0, sqlite.size).contentEquals(sqlite)
+        if (isSqlite(bytes)) return ko(bytes)
+        if (bytes.size > 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
+            // A ZIP: KOReader's statistics database inside it, else a CSV export.
+            var csv: ByteArray? = null
+            java.util.zip.ZipInputStream(bytes.inputStream()).use { zip ->
+                while (true) {
+                    val e = zip.nextEntry ?: break
+                    if (e.isDirectory) continue
+                    val name = e.name.lowercase()
+                    if (name.endsWith(".sqlite3") || name.endsWith(".sqlite") || name.endsWith(".db")) {
+                        val inner = zip.readBytes()
+                        if (isSqlite(inner)) return ko(inner)
+                    } else if (name.endsWith(".csv") && csv == null) csv = zip.readBytes()
+                }
+            }
+            csv?.let { return csvHistory(String(it, Charsets.UTF_8)) }
+            throw IllegalStateException("No KOReader statistics or CSV export in that ZIP")
+        }
+        return csvHistory(String(bytes, Charsets.UTF_8))
+    }
+
+    /**
+     * A CSV export read by its column names; when those don't say enough (another app's export,
+     * a spreadsheet of your own), the on-device model, if set up, works out which column is which
+     * from the header and a few rows, and only what the file's values bear out is used. Returns
+     * the columns the model added, to show before anything's brought in.
+     */
+    private fun csvHistory(text: String): Triple<io.github.prithirajn.trackersync.sync.HistoryImport.Source, List<io.github.prithirajn.trackersync.sync.HistoryImport.Entry>, List<Pair<String, String>>> {
+        val HI = io.github.prithirajn.trackersync.sync.HistoryImport
+        val (header, sample) = HI.preview(text, 6)
+        val known = HI.columns(header)
+        if (!HI.needsHelp(known)) return HI.fromCsv(text, cols = known).let { Triple(it.first, it.second, emptyList()) }
+        val model = runCatching { io.github.prithirajn.trackersync.ai.Ai.model() }.getOrNull()
+        val suggested = model?.let { m -> runCatching { io.github.prithirajn.trackersync.ai.Assistant.csvColumns(m, header, sample) }.getOrNull() }
+        val cols = if (suggested == null) known else HI.checkColumns(known, suggested, header, sample)
+        val added = cols.filterKeys { it !in known }.map { (f, c) -> f.label to (header.getOrNull(c) ?: "column ${c + 1}") }
+        val (source, entries) = HI.fromCsv(text, cols = cols)
+        return Triple(source, entries, added)
+    }
+
+    /** The books in KOReader's statistics database (settings/statistics.sqlite3), with pages read and first and last read. */
+    private fun koreaderBooks(bytes: ByteArray): List<io.github.prithirajn.trackersync.sync.HistoryImport.KoBook> {
+        val file = java.io.File(getApplication<Application>().cacheDir, "koreader-stats-${System.nanoTime()}.sqlite3")
+        file.writeBytes(bytes)
+        try {
+            val db = android.database.sqlite.SQLiteDatabase.openDatabase(file.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY)
+            try {
+                val withPages = """SELECT b.title, b.authors, COALESCE(NULLIF(b.pages, 0), MAX(p.total_pages)), b.total_read_pages,
+                                          MIN(p.start_time), COALESCE(MAX(p.start_time), b.last_open)
+                                   FROM book b LEFT JOIN page_stat_data p ON p.id_book = b.id GROUP BY b.id"""
+                val plain = "SELECT title, authors, pages, total_read_pages, NULL, last_open FROM book"
+                val cursor = runCatching { db.rawQuery(withPages, null) }.getOrNull()
+                    ?: runCatching { db.rawQuery(plain, null) }.getOrNull()
+                    ?: throw IllegalStateException("That database doesn't have KOReader's reading statistics")
+                val out = ArrayList<io.github.prithirajn.trackersync.sync.HistoryImport.KoBook>()
+                cursor.use { c ->
+                    while (c.moveToNext()) {
+                        fun intAt(i: Int) = if (c.isNull(i)) null else c.getLong(i)
+                        val title = if (c.isNull(0)) null else c.getString(0)
+                        if (title.isNullOrBlank()) continue
+                        out += io.github.prithirajn.trackersync.sync.HistoryImport.KoBook(
+                            title = title,
+                            authors = if (c.isNull(1)) null else c.getString(1),
+                            pages = intAt(2)?.toInt(),
+                            readPages = intAt(3)?.toInt(),
+                            firstRead = intAt(4)?.takeIf { it > 0 },
+                            lastRead = intAt(5)?.takeIf { it > 0 },
+                        )
+                    }
+                }
+                return out
+            } finally {
+                db.close()
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
+    /** The linked trackers whose whole history can be read straight from them. */
+    fun historyTrackers(): List<io.github.prithirajn.trackersync.trackers.Tracker> =
+        listOf(io.github.prithirajn.trackersync.trackers.HardcoverTracker, io.github.prithirajn.trackersync.trackers.SeekquelTracker)
+            .filter { store.snapshot.service(it.id).linked }
+
+    fun readHistoryFrom(tracker: io.github.prithirajn.trackersync.trackers.Tracker, done: (io.github.prithirajn.trackersync.sync.HistoryImport.Plan?, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val plan = io {
+                    val svc = store.snapshot.service(tracker.id)
+                    val session = io.github.prithirajn.trackersync.trackers.Session(svc.credential)
+                    val items = when (tracker) {
+                        io.github.prithirajn.trackersync.trackers.HardcoverTracker -> io.github.prithirajn.trackersync.trackers.HardcoverTracker.history(session)
+                        else -> tracker.library(session)
+                    }
+                    if (items.isEmpty()) throw IllegalStateException("No books on your ${tracker.name} shelves")
+                    // Books this app brought in from that tracker already are part of it: not matched again.
+                    io.github.prithirajn.trackersync.sync.HistoryImport.plan(
+                        store.snapshot,
+                        io.github.prithirajn.trackersync.sync.HistoryImport.Source(tracker.id, tracker.name),
+                        io.github.prithirajn.trackersync.sync.HistoryImport.fromLibrary(items),
+                    )
+                }
+                done(plan, null)
+            } catch (e: Exception) {
+                done(null, e.message ?: "Couldn't read your ${tracker.name} shelves")
+            }
+        }
+    }
+
+    fun applyHistory(plan: io.github.prithirajn.trackersync.sync.HistoryImport.Plan, withWantToRead: Boolean, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                var r: io.github.prithirajn.trackersync.sync.HistoryImport.Result? = null
+                io { store.update { s -> io.github.prithirajn.trackersync.sync.HistoryImport.apply(s, plan, withWantToRead).also { r = it }.snapshot } }
+                val res = r
+                if (res != null) {
+                    store.log(null, "Brought in ${plan.source.name} history: ${res.added} new, ${res.filled} filled in")
+                    notify(
+                        "${plan.source.name} history brought in",
+                        "${res.added} book${if (res.added == 1) "" else "s"} added, ${res.filled} filled in. Nothing was sent to your trackers.",
+                    )
+                }
+                done(null)
+            } catch (e: Exception) {
+                done(e.message ?: "Couldn't bring it in")
+            }
+        }
+    }
+
     private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
     // ---- crosspoint-sync account ----
@@ -890,6 +1126,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 notify("KOSync server added", "Checking your books on it now.")
                 syncNow(quiet = true)
             }
+        }
+    }
+
+    // ---- Moon+ Reader, through WebDAV (Koofr…) ----
+
+    fun addMoon(server: String, email: String, appPassword: String, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            var found = false
+            val error = try {
+                io {
+                    val address = server.trim().let { if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it" }.trimEnd('/')
+                    val account = io.github.prithirajn.trackersync.data.Account(address, email.trim(), appPassword.trim())
+                    val client = io.github.prithirajn.trackersync.source.MoonReaderClient(account)
+                    if (!client.verify()) throw IllegalStateException("The server rejected that email and app password. Check them (an app password, not your main one) and try again.")
+                    val folder = runCatching { client.findFolder() }.getOrNull()
+                    found = folder != null
+                    store.update {
+                        it.copy(
+                            moon = account, moonFolder = folder, moonOkAt = System.currentTimeMillis(),
+                            moonError = if (folder == null) Health.MOON_NO_FILES else null,
+                            moonSeen = emptyMap(), moonMods = emptyMap(),
+                        )
+                    }
+                }
+                null
+            } catch (e: Exception) {
+                when (e) {
+                    is io.github.prithirajn.trackersync.net.NetworkException -> "Couldn't reach that address. Check it, and that you're online."
+                    else -> e.message ?: "Couldn't connect"
+                }
+            }
+            done(error)
+            if (error == null) {
+                if (found) notify("Moon+ Reader connected", "Reading its progress now.")
+                else notify("Connected", "No Moon+ Reader sync files there yet. Turn on WebDAV sync in Moon+ Reader with the same account, then read a page.")
+                syncNow(quiet = true)
+            }
+        }
+    }
+
+    fun removeMoon() {
+        viewModelScope.launch { io { store.update { it.copy(moon = null, moonFolder = null, moonOkAt = 0L, moonError = null, moonSeen = emptyMap(), moonMods = emptyMap()) } } }
+    }
+
+    fun checkMoon() {
+        viewModelScope.launch {
+            io { runCatching { SyncEngine(store).pullMoon() } }
+            Health.moon(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
         }
     }
 
@@ -2196,7 +2480,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val finished = books.filter { it.status == ReadStatus.FINISHED && inMonth(it.finishedAt ?: it.timestamp) }
         val reading = books.filter { it.status == ReadStatus.READING && inMonth(it.timestamp) }.sortedByDescending { it.timestamp }
         val pages = io.github.prithirajn.trackersync.sync.Shelves.pagesThisMonth(s, null)
-        val highlights = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips).filter { it.id !in s.clipHidden && inMonth(it.createdAt) }.distinctBy { it.id }.size
+        val highlights = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).filter { it.id !in s.clipHidden && inMonth(it.createdAt) }.distinctBy { it.id }.size
         withModel("The model couldn't write a recap that kept to your numbers", { m ->
             io.github.prithirajn.trackersync.ai.Assistant.monthRecap(m, io.github.prithirajn.trackersync.sync.Shelves.monthName(), finished, reading, pages, highlights)
         }, done)
@@ -2217,7 +2501,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** An answer about your reading, from your library and highlights, worked out on the phone. */
     fun aiAsk(question: String, done: (String?, String?) -> Unit) {
         val s = store.snapshot
-        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips).filter { it.id !in s.clipHidden }.distinctBy { it.id }
+        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).filter { it.id !in s.clipHidden }.distinctBy { it.id }
         withModel("The model couldn't answer that", { m -> io.github.prithirajn.trackersync.ai.Assistant.ask(m, question, s.books.values, clips) }, done)
     }
 

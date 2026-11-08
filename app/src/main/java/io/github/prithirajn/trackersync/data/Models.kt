@@ -1260,6 +1260,18 @@ data class Snapshot(
     val kosyncError: String? = null,
     /** Where the round-robin check of books that aren't in progress continues next pass. */
     val kosyncRotation: Int = 0,
+    /**
+     * Moon+ Reader, through the WebDAV storage its sync writes to (Koofr, Nextcloud…): the sign-in
+     * (server = the WebDAV address, key = an app password), the folder its ".po" files were
+     * found in, and when it last worked or what went wrong.
+     */
+    val moon: Account? = null,
+    val moonFolder: String? = null,
+    val moonOkAt: Long = 0L,
+    val moonError: String? = null,
+    /** Each Moon+ sync file's last position brought in (path -> saved at, millis), and which book each file is (file name -> document). */
+    val moonSeen: Map<String, Long> = emptyMap(),
+    val moonDocs: Map<String, String> = emptyMap(),
     val kindle: KindleAccount? = null,
     val kindleOkAt: Long = 0L,
     val kindleError: String? = null,
@@ -1315,6 +1327,10 @@ data class Snapshot(
     val libbyOkAt: Long = 0L,
     val libbyError: String? = null,
     val libbyClips: List<io.github.prithirajn.trackersync.source.Clipping> = emptyList(),
+    /** Highlights from Moon+ Reader's sync files (its ".an" files), on the books they're from. */
+    val moonClips: List<io.github.prithirajn.trackersync.source.Clipping> = emptyList(),
+    /** Each Moon+ sync file's "last modified" when it was last read (path -> as the server gives it), so unchanged ones aren't fetched again. */
+    val moonMods: Map<String, String> = emptyMap(),
     /** Libby titles whose page count couldn't be found, so they aren't looked up on every sync. */
     val libbyNoPages: Set<String> = emptySet(),
     /** When Kindle was last asked (ms), worked or not: Amazon is asked at most every few hours. */
