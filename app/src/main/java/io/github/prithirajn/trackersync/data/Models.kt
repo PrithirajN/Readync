@@ -1334,6 +1334,14 @@ data class Snapshot(
      * ran or what went wrong.
      */
     val cpToKo: Boolean = false,
+    /**
+     * Books whose position came from KOReader (or another app using KOReader's sync), seen in
+     * CrossPoint's feed or on a KOSync server; when that was first seen, and whether you said
+     * "Not now" to bringing in KOReader's highlights.
+     */
+    val koreaderDocs: Set<String> = emptySet(),
+    val koSeenAt: Long = 0L,
+    val koNudgeOff: Boolean = false,
     val cpSentKo: Set<String> = emptySet(),
     val cpToKoOkAt: Long = 0L,
     val cpToKoNote: String? = null,

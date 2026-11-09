@@ -123,6 +123,9 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("koPlaced", org.json.JSONArray(s.koPlaced.toList()))
         o.put("koUnplaced", org.json.JSONArray(s.koUnplaced.toList()))
         o.put("cpToKo", s.cpToKo)
+        o.put("koreaderDocs", org.json.JSONArray(s.koreaderDocs.toList()))
+        o.put("koSeenAt", s.koSeenAt)
+        o.put("koNudgeOff", s.koNudgeOff)
         o.put("cpSentKo", org.json.JSONArray(s.cpSentKo.toList()))
         o.put("cpToKoOkAt", s.cpToKoOkAt)
         o.put("cpToKoNote", s.cpToKoNote ?: JSONObject.NULL)
@@ -321,6 +324,9 @@ class Store(private val file: File, private val secrets: Secrets) {
             koPlaced = o.optJSONArray("koPlaced")?.strings()?.toSet() ?: emptySet(),
             koUnplaced = o.optJSONArray("koUnplaced")?.strings()?.toSet() ?: emptySet(),
             cpToKo = o.optBoolean("cpToKo", false),
+            koreaderDocs = o.optJSONArray("koreaderDocs")?.strings()?.toSet() ?: emptySet(),
+            koSeenAt = o.long("koSeenAt") ?: 0L,
+            koNudgeOff = o.optBoolean("koNudgeOff", false),
             cpSentKo = o.optJSONArray("cpSentKo")?.strings()?.toSet() ?: emptySet(),
             cpToKoOkAt = o.long("cpToKoOkAt") ?: 0L,
             cpToKoNote = o.str("cpToKoNote"),

@@ -28,6 +28,8 @@ data class Change(
     val device: String?,
     /** The reader's chapter (spine item) index at that position, when it sends one. */
     val spine: Int? = null,
+    /** The sending app's own id ("crosspoint-reader" for a CrossPoint device, a random one for KOReader). */
+    val deviceId: String? = null,
 )
 
 /** A highlight from GET /api/v1/clippings. [createdAt] is unix seconds. */
@@ -70,6 +72,9 @@ data class LibraryItem(
     val coverUrl: String? = null,
     /** Print-edition page count (looked up by the server, or set by hand). */
     val pageCount: Int? = null,
+    /** The app that sent its newest position (see [Change.deviceId]). */
+    val device: String? = null,
+    val deviceId: String? = null,
 )
 
 /** A cover to choose from (GET /documents/{d}/cover/candidates). */
@@ -132,6 +137,7 @@ class CrossPointClient(private val account: Account) {
                 timestamp = c.long("timestamp") ?: 0L,
                 device = c.str("device"),
                 spine = c.obj("position")?.int("spine"),
+                deviceId = c.str("device_id"),
             )
         }
         return ChangesPage(o.long("cursor") ?: since, o.bool("more"), changes)
@@ -151,6 +157,8 @@ class CrossPointClient(private val account: Account) {
                 timestamp = i.long("timestamp") ?: 0L,
                 coverUrl = i.str("cover_url"),
                 pageCount = i.int("page_count"),
+                device = i.str("device"),
+                deviceId = i.str("device_id"),
             )
         }
     }

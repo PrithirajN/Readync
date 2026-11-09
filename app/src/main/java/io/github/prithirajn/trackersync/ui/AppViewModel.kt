@@ -1263,6 +1263,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Opens KOReader highlights' setup (under Services). */
+    fun openKoHighlights() {
+        AppActions.pending.value = AppAction.ServicePage("kohl")
+    }
+
+    /** "Not now" on the card offering KOReader's highlights. */
+    fun dismissKoNudge() {
+        viewModelScope.launch { io { store.update { it.copy(koNudgeOff = true) } } }
+    }
+
     fun setCpToKo(on: Boolean) {
         viewModelScope.launch {
             io { store.update { it.copy(cpToKo = on, cpToKoNote = null) } }

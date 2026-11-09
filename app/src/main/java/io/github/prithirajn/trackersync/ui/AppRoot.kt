@@ -133,6 +133,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                             AppAction.Releases -> { AppActions.pending.value = null; pager.animateScrollToPage(Tab.ACTIVITY.ordinal) }
                             // The SFF tab takes the action itself (to open the story); here it's only brought up.
                             is AppAction.Sff -> pager.animateScrollToPage(Tab.SFF.ordinal)
+                            // The Services tab opens the screen itself.
+                            is AppAction.ServicePage -> pager.animateScrollToPage(Tab.SERVICES.ordinal)
                             else -> {
                                 if (pager.currentPage != Tab.LIBRARY.ordinal) pager.animateScrollToPage(Tab.LIBRARY.ordinal)
                             }

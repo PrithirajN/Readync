@@ -400,6 +400,9 @@ class SyncEngine(private val store: Store) {
         do {
             val page = client.changes(cursor, DEVICE_ID)
             for (c in page.changes) changed[c.document] = c
+            // Books read in KOReader (its position came through this account): noted, to offer its highlights.
+            page.changes.filter { KoreaderDevice.isKoreader(it.device, it.deviceId) }.map { it.document }
+                .takeIf { it.isNotEmpty() }?.let { docs -> store.update { s -> KoreaderDevice.seen(s, docs) } }
             // Every reported position is kept for a while, to place highlights in the book.
             if (page.changes.isNotEmpty()) store.update { s -> HighlightPosition.record(s, page.changes) }
             cursor = page.cursor
@@ -408,6 +411,8 @@ class SyncEngine(private val store: Store) {
 
         val needLibrary = changed.isNotEmpty() || store.snapshot.books.isEmpty()
         val library = if (needLibrary) client.library() else emptyList()
+        library.filter { KoreaderDevice.isKoreader(it.device, it.deviceId) }.map { it.document }
+            .takeIf { it.isNotEmpty() }?.let { docs -> store.update { s -> KoreaderDevice.seen(s, docs) } }
         val now = System.currentTimeMillis()
 
         store.update { s ->
@@ -940,14 +945,17 @@ class SyncEngine(private val store: Store) {
         val start = if (rest.isEmpty()) 0 else store.snapshot.kosyncRotation % rest.size
         val turn = if (rest.isEmpty()) emptyList() else (rest.drop(start) + rest.take(start)).take(KOSYNC_ROTATE)
         val found = ArrayList<io.github.prithirajn.trackersync.source.KosyncProgress>()
+        // Positions there come from KOReader (or an app using its sync), not from this app.
+        val fromKo = ArrayList<String>()
         try {
             for (b in inProgress + turn) {
                 // The book's own ID and any linked by hand: the newest position among them counts.
                 val ids = listOf(b.document) + (store.snapshot.kosyncIds[b.document] ?: emptyList())
                 val p = ids.mapNotNull { client.progress(it) }.maxByOrNull { it.timestamp }?.copy(document = b.document) ?: continue
+                if (p.device == null || KoreaderDevice.isKoreader(p.device, null)) fromKo += b.document
                 if (p.timestamp > b.timestamp && kotlin.math.abs(p.percentage - b.percentage) > 0.0005) found.add(p)
             }
-            store.update { it.copy(kosyncOkAt = System.currentTimeMillis(), kosyncError = null, kosyncRotation = start + turn.size) }
+            store.update { KoreaderDevice.seen(it, fromKo).copy(kosyncOkAt = System.currentTimeMillis(), kosyncError = null, kosyncRotation = start + turn.size) }
         } catch (e: Exception) {
             store.update { it.copy(kosyncError = Health.describeKosync(e)) }
             store.log(null, "KOSync: ${e.message}", error = true)

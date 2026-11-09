@@ -274,6 +274,16 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
                 )
             }
         }
+        // Read in KOReader, highlights not set up: offered once (until "Not now" or set up).
+        if (state.koSeenAt > 0 && !state.koNudgeOff && io.github.prithirajn.trackersync.sync.KoreaderDevice.highlightsMissing(state)) {
+            item(key = "ko-nudge") {
+                KoreaderNudgeCard(
+                    onSetUp = { vm.openKoHighlights() },
+                    onLater = { vm.dismissKoNudge() },
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                )
+            }
+        }
         if (asks.size > 3) {
             item(key = "ask-more") {
                 Quiet("${asks.size - 3} more books have a different position on Seekquel; it's shown on each book.",

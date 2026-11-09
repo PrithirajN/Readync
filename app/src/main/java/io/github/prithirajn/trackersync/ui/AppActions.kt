@@ -19,6 +19,8 @@ sealed interface AppAction {
     data object Releases : AppAction
     /** The SFF tab, opened at a story ([storyId]) when there is one (from its notification). */
     data class Sff(val storyId: String? = null) : AppAction
+    /** One of the Services tab's screens ("kohl": KOReader highlights). */
+    data class ServicePage(val page: String) : AppAction
 }
 
 object AppActions {

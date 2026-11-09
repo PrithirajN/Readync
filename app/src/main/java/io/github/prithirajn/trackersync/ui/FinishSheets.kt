@@ -603,6 +603,17 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
     var summing by remember { mutableStateOf(false) }
     var catchingUp by remember { mutableStateOf(false) }
     val aiReady = remember { vm.aiReady() }
+    // Read in KOReader without its highlights coming in: said where they'd show.
+    if (book.document in state.koreaderDocs && io.github.prithirajn.trackersync.sync.KoreaderDevice.highlightsMissing(state)) {
+        VSpace(20)
+        CpCard {
+            Column(Modifier.padding(14.dp)) {
+                Quiet("You read this in KOReader. Its highlights and notes don't come through sync, but they can come from KOReader's own files.")
+                VSpace(8)
+                PillButton("Set up KOReader highlights", { vm.openKoHighlights() })
+            }
+        }
+    }
     if (items.isEmpty()) return
     val context = androidx.compose.ui.platform.LocalContext.current
     VSpace(20)
@@ -866,6 +877,25 @@ fun SeekquelProgressCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 PillButton("Use Seekquel's ${ask.percent}%", onUse, outlined = false)
                 PillButton("Keep ${book.percent}%", onKeep)
+            }
+        }
+    }
+}
+
+/** Offered once a book is seen being read in KOReader: bring KOReader's highlights in too. */
+@Composable
+fun KoreaderNudgeCard(onSetUp: () -> Unit, onLater: () -> Unit, modifier: Modifier = Modifier) {
+    val c = Cp.colors
+    CpCard(modifier) {
+        Column(Modifier.padding(14.dp)) {
+            Eyebrow("Reading in KOReader?")
+            Text("Bring its highlights in too", style = CpType.bodyStrong, color = c.text)
+            VSpace(4)
+            Quiet("Your position comes through sync, but KOReader's highlights and notes don't. They can come from KOReader's own files on this phone, or from its HighlightSync or AnnotationSync plugin on Koofr.", color = c.faint)
+            VSpace(10)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                PillButton("Set up", onSetUp, outlined = false)
+                PillButton("Not now", onLater)
             }
         }
     }

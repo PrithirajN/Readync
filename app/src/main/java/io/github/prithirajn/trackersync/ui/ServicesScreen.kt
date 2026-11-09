@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.KeyboardType
@@ -107,6 +108,11 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     var removingAudible by remember { mutableStateOf(false) }
     var removingLibby by remember { mutableStateOf(false) }
     var page by remember { mutableStateOf<String?>(null) }
+    // Opened from elsewhere (the KOReader card on Reading, a book's page).
+    val pendingAction by AppActions.pending.collectAsState()
+    LaunchedEffect(pendingAction) {
+        (pendingAction as? AppAction.ServicePage)?.let { page = it.page; AppActions.pending.value = null }
+    }
     val c = Cp.colors
     val linked = Trackers.all.filter { state.service(it.id).linked }
     val more = Trackers.all.filter { !state.service(it.id).linked }
@@ -218,16 +224,6 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     state.moon?.let { m -> m.username + " · " + m.server.substringAfter("://").substringBefore('/') } ?: "Not set up",
                     trailing = { Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } } },
                 ) { page = "moon" }
-                RowDivider()
-                NavRow(
-                    R.drawable.lucide_highlighter, "KOReader highlights",
-                    if (state.koHl == null && state.koLocal == null) "Not set up"
-                    else "${state.koClips.size} highlight${if (state.koClips.size == 1) "" else "s"} \u00B7 " + listOfNotNull(state.koLocal?.let { "this device" }, state.koHl?.let { it.server.substringAfter("://").substringBefore('/') }).joinToString(" + "),
-                    trailing = {
-                        listOfNotNull(Health.koLocal(state), Health.koHl(state)).let { hs -> hs.firstOrNull { it.level == Health.Level.BAD } ?: hs.firstOrNull { it.level == Health.Level.WARN } ?: hs.firstOrNull() }
-                            ?.let { h -> HealthLight(h) { vm.checkKoHighlights() } }
-                    },
-                ) { page = "kohl" }
             }
             SectionTitle("App")
             VSpace(12)
@@ -285,7 +281,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                         Health.source(state)?.let { h -> HealthLight(h) { vm.checkCrossPoint() } }
                     }
                     RowDivider()
-                    KoHlHint("Reading in KOReader with this account as its sync server? It sends only your position here, not highlights.") { page = "kohl" }
+                    KoHlHint(state, "Reading in KOReader too? Your position comes through sync, but its highlights and notes don't. They can come from KOReader's own files instead.") { page = "kohl" }
                     RowDivider()
                     Box(Modifier.padding(16.dp)) { BigButton("Sign out", { page = null; signingOut = true }, filled = false, danger = true) }
                 }
@@ -297,7 +293,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     KosyncCard(vm, state, onAdd = { addingKosync = true }, onRemove = { page = null; removingKosync = true })
                     if (state.kosync != null) {
                         VSpace(12)
-                        CpCard { KoHlHint("KOSync carries only your reading position, so KOReader's highlights and notes don't come with it.") { page = "kohl" } }
+                        CpCard { KoHlHint(state, "KOSync carries only your reading position, so KOReader's highlights and notes don't come with it. They can come from KOReader's own files instead.") { page = "kohl" } }
                     }
                 }
                 "kohl" -> KoHlCard(vm, state, onAdd = { addingKoHl = true }, onRemove = { page = null; removingKoHl = true })
@@ -2681,14 +2677,33 @@ private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRem
     if (guide) KoHlGuideSheet { guide = false }
 }
 
-/** A pointer to KOReader highlights from the cards of the servers KOReader syncs its position with. */
+/**
+ * KOReader highlights' way in, on the cards of the servers KOReader syncs its position with (it
+ * has no row of its own): what it's for until it's set up, then how it's doing.
+ */
 @Composable
-private fun KoHlHint(text: String, onOpen: () -> Unit) {
+private fun KoHlHint(state: Snapshot, text: String, onOpen: () -> Unit) {
     val c = Cp.colors
+    val on = state.koHl != null || state.koLocal != null
     Column(Modifier.padding(16.dp)) {
-        Quiet(text)
-        VSpace(8)
-        PillButton("Set up KOReader highlights", onOpen)
+        if (on) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("KOReader highlights", style = CpType.label, color = c.text, modifier = Modifier.weight(1f))
+                listOfNotNull(Health.koLocal(state), Health.koHl(state)).let { hs -> hs.firstOrNull { it.level == Health.Level.BAD } ?: hs.firstOrNull { it.level == Health.Level.WARN } ?: hs.firstOrNull() }
+                    ?.let { h -> HealthLight(h) { onOpen() } }
+            }
+            Quiet(
+                "${state.koClips.size} highlight${if (state.koClips.size == 1) "" else "s"} \u00B7 from " +
+                    listOfNotNull(state.koLocal?.let { "this device" }, state.koHl?.let { it.server.substringAfter("://").substringBefore('/') }).joinToString(" and "),
+                maxLines = 1,
+            )
+            VSpace(8)
+            PillButton("KOReader highlights", onOpen)
+        } else {
+            Quiet(text)
+            VSpace(8)
+            PillButton("Set up KOReader highlights", onOpen)
+        }
     }
 }
 
