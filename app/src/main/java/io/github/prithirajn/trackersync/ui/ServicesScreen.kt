@@ -2539,6 +2539,7 @@ private fun MoonSheet(vm: AppViewModel, onGuide: () -> Unit, onClose: () -> Unit
  * (KOReader on this phone or tablet), or a sync plugin's files on Koofr / WebDAV (KOReader
  * anywhere else). Either or both; the same highlight never comes in twice.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRemove: () -> Unit) {
     val c = Cp.colors
@@ -2579,12 +2580,13 @@ private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRem
                     state.koLocalError?.let { VSpace(6); Quiet(it, color = c.faint) }
                     VSpace(6)
                     Quiet(
-                        if (state.koBooks.isNotEmpty()) "${state.koBooks.size} EPUB${if (state.koBooks.size == 1) "" else "s"} found here too, so highlights can go on their exact words on a CrossPoint device."
-                        else "No EPUBs in this folder. To put highlights on their exact words on a CrossPoint device, pick the folder the books themselves are in.",
+                        state.koBooks.keys.count { it.startsWith("local:") }.let { n -> if (n > 0) "$n EPUB${if (n == 1) "" else "s"} found here too, so highlights can go on their exact words on a CrossPoint device." else null }
+                            ?: "No EPUBs in this folder. To put highlights on their exact words on a CrossPoint device, pick the folder the books themselves are in.",
                         color = c.faint,
                     )
                     VSpace(10)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Wraps on narrow phones instead of cutting the last button off.
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         PillButton("Read now", { vm.checkKoHighlights() })
                         PillButton("Change folder", { runCatching { pickFolder.launch(null) } })
                         PillButton("Remove", { vm.removeKoLocal() }, danger = true)
@@ -2617,16 +2619,63 @@ private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRem
                         PillButton("Check now", { vm.checkKoHighlights() })
                         PillButton("Remove", onRemove, danger = true)
                     }
+                    // Your EPUBs on the same storage: for KOReader on another device, where this phone has no copy of the books.
+                    VSpace(14)
+                    RowDivider()
+                    VSpace(12)
+                    Text("Your books here (optional)", style = CpType.label, color = c.text)
+                    VSpace(4)
+                    val davBooks = state.koBooks.keys.count { it.startsWith("dav:") }
+                    Quiet(
+                        state.koDavBooks?.let { f -> "Reading EPUBs in $f" + (if (davBooks > 0) " · $davBooks found." else " · none read yet.") }
+                            ?: "If your EPUBs are on this storage too (a Calibre library, say), pick that folder: books named only by KOReader's ID get their titles, and highlights can go on their exact words on a CrossPoint device.",
+                        color = c.faint,
+                    )
+                    VSpace(8)
+                    var editing by remember { mutableStateOf(false) }
+                    var path by remember(state.koDavBooks) { mutableStateOf(state.koDavBooks ?: "") }
+                    var finding by remember { mutableStateOf(false) }
+                    if (editing) {
+                        CpTextField(path, { path = it }, "Folder", placeholder = "/Calibre Library")
+                        VSpace(8)
+                    }
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (editing) {
+                            PillButton("Save", { editing = false; vm.setKoDavBooks(path) }, outlined = false)
+                            PillButton("Cancel", { editing = false; path = state.koDavBooks ?: "" })
+                        } else {
+                            PillButton(if (finding) "Looking…" else "Find it", { if (!finding) { finding = true; vm.findKoDavBooks { finding = false } } }, outlined = state.koDavBooks != null)
+                            PillButton("Type it", { editing = true })
+                            if (state.koDavBooks != null) PillButton("Stop", { vm.setKoDavBooks(null) }, danger = true)
+                        }
+                    }
                 }
             }
         }
         if (state.koHlUnmatched.isNotEmpty()) {
             VSpace(10)
-            Quiet(
-                "Not matched to a book here yet: " + state.koHlUnmatched.take(5).joinToString(", ") + (if (state.koHlUnmatched.size > 5) " and ${state.koHlUnmatched.size - 5} more" else "") +
-                    ". They come in once the book is in your library (or its KOSync document is linked to it).",
-                Modifier.padding(horizontal = 4.dp), color = c.faint,
-            )
+            // Named where the title is known; the rest are only KOReader document IDs, so they're counted, not listed.
+            val named = state.koHlUnmatched.mapNotNull { io.github.prithirajn.trackersync.sync.KoHighlightSync.nameOf(state, it) }.distinct()
+            val unnamed = state.koHlUnmatched.size - named.size
+            val parts = ArrayList<String>()
+            if (named.isNotEmpty()) parts += "Highlights waiting for their book: " + named.take(5).joinToString(", ") +
+                (if (named.size > 5) " and ${named.size - 5} more" else "") + ". They come in once the book is in your library (or its KOSync document is linked to it)."
+            if (unnamed > 0) parts += "$unnamed book${if (unnamed == 1) "" else "s"} with KOReader highlights can't be named yet: the plugin's files only carry KOReader's document ID. " +
+                "Show Readync the same EPUB files, either in a folder on this phone (KOReader on this device) or on your storage (Your books here, under From Koofr / WebDAV), and they come in with their titles. Or turn on AnnotationSync's \u201CUse filename instead of hash\u201D."
+            Quiet(parts.joinToString("\n\n"), Modifier.padding(horizontal = 4.dp), color = c.faint)
+            if (unnamed > 0) {
+                // Or from a list you have: IDs with names, or IDs with Calibre numbers plus Calibre's catalog.
+                var namesMsg by remember { mutableStateOf<String?>(null) }
+                val pickNames = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+                    if (uris.isNotEmpty()) vm.importBookNames(uris) { namesMsg = it }
+                }
+                VSpace(8)
+                Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    PillButton("Name them from a file", { runCatching { pickNames.launch(arrayOf("*/*")) } })
+                }
+                VSpace(4)
+                Quiet(namesMsg ?: "A list of KOReader document IDs with names, or with Calibre book numbers plus Calibre's CSV catalog. Pick several files at once if they go together.", Modifier.padding(horizontal = 4.dp), color = c.faint)
+            }
         }
         // ---- KOReader's highlights on to a CrossPoint reader ----
         if (state.account != null && (state.koHl != null || state.koLocal != null)) {

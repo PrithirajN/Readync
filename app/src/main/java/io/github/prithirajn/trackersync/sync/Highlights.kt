@@ -42,7 +42,7 @@ object Highlights {
                         in libbyIds -> "Libby"
                         in moonIds -> "Moon+ Reader"
                         in historyIds -> historyFrom(c.id)
-                        in koIds -> "KOReader"
+                        in koIds -> if (KoHighlightSync.isNote(c.id)) "KOReader note" else "KOReader"
                         else -> "CrossPoint"
                     },
                     edited = c.id in s.clipEdits,

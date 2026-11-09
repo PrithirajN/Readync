@@ -560,13 +560,24 @@ object PageboundTracker : Tracker {
     /** Pagebound's title for a post: "Quote from 26% (ch. 4, pg 56)", as its app builds it. */
     internal fun postTitle(label: String, percent: Int?, chapter: String?, page: Int?): String {
         if (percent == null) return label
-        val where = listOfNotNull(chapter?.trim()?.takeIf { it.isNotEmpty() }?.let { "ch. $it" }, page?.let { "pg $it" })
+        val where = listOfNotNull(shortChapter(chapter)?.let { "ch. $it" }, page?.let { "pg $it" })
         return "$label from $percent%" + if (where.isNotEmpty()) " (${where.joinToString(", ")})" else ""
     }
 
-    /** The passage as a block quote ("> " on each line), then your note, as Pagebound's quote posts are. */
+    /**
+     * A chapter as Pagebound's Chapter box takes it ("4"): "Chapter 3: The Third Labyrinth" or
+     * "CHAPTER 3" -> "3", "Chapter Seven: In Another Bedroom" -> "Seven"; a chapter named without a
+     * number ("Interlude") as it is, kept short.
+     */
+    internal fun shortChapter(chapter: String?): String? {
+        val c = chapter?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        Regex("""^(?:chapter|chap\.?|ch\.?)\s+([^\s:.,–—-]+(?:-[A-Za-z]+)?)""", RegexOption.IGNORE_CASE).find(c)?.let { return it.groupValues[1] }
+        return if (c.length <= 40) c else c.take(39).trimEnd() + "…"
+    }
+
+    /** The passage as a block quote ("> " on each line, ">" on a blank one), then your note, as Pagebound's app builds it. */
     internal fun quoteContent(text: String, note: String?): String {
-        val quote = text.trim().split("\n").joinToString("\n") { "> " + it.trimEnd() }
+        val quote = text.trim().split("\n").joinToString("\n") { if (it.trim().isEmpty()) ">" else "> " + it.trimEnd() }
         return listOfNotNull(quote, note?.trim()?.takeIf { it.isNotEmpty() }).joinToString("\n\n")
     }
 

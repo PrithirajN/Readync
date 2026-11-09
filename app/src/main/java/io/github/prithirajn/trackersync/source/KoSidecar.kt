@@ -13,7 +13,7 @@ package io.github.prithirajn.trackersync.source
 object KoSidecar {
 
     /** One sidecar file read: where it is (a stable id) and its text. */
-    data class Raw(val path: String, val text: String)
+    data class Raw(val path: String, val text: String, val modified: Long = 0L)
 
     /**
      * Lists the sidecar files under the picked folder [tree] and reads the ones whose "last
@@ -32,6 +32,24 @@ object KoSidecar {
 
     /** A book file's bytes, or null. Set by the app. */
     @Volatile var bookBytes: ((tree: String, path: String) -> ByteArray?)? = null
+
+    /**
+     * Where KOReader is in the book, from its sidecar ("percent_finished", and the book marked
+     * finished in its status), as of when the file was last saved ([modifiedMs]). For KOReader on
+     * this device without any sync. Null when it doesn't say.
+     */
+    fun position(path: String, lua: String, modifiedMs: Long): KoPosition? {
+        if (modifiedMs <= 0) return null
+        val root = runCatching { Lua.parse(lua) }.getOrNull() as? Map<*, *> ?: return null
+        var pct = (root["percent_finished"] as? Double)?.takeIf { !it.isNaN() && it >= 0 }?.coerceAtMost(1.0) ?: return null
+        if (((root["summary"] as? Map<*, *>)?.get("status") as? String) == "complete") pct = 1.0
+        val f = parse(path, lua)
+        val pages = (root["doc_pages"] as? Double)?.toInt()?.takeIf { it > 0 }
+        return KoPosition(
+            path = path, documentId = f?.documentId, bookName = f?.bookName, percentage = pct, timestamp = modifiedMs / 1000,
+            device = "KOReader on this device", page = pages?.let { Math.round(it * pct).toInt().coerceAtLeast(1) }, fileName = f?.fileName,
+        )
+    }
 
     /** A sidecar's highlights, as the same per-book file the sync plugins give. Null when it isn't one. */
     fun parse(path: String, lua: String): KoFile? {
@@ -69,7 +87,14 @@ object KoSidecar {
             }
             json.put(o)
         }
-        return KoHighlightsClient.parse(path, json.toString())?.copy(path = path, documentId = docId, bookName = name)
+        return KoHighlightsClient.parse(path, json.toString())?.copy(
+            path = path, documentId = docId, bookName = name, title = title, author = authors,
+            pages = (root["doc_pages"] as? Double)?.toInt()?.takeIf { it > 0 },
+            // The book file: the ".sdr" folder's name plus the extension in "metadata.<ext>.lua".
+            fileName = fromFolder?.let { stem ->
+                path.substringAfterLast('/').removePrefix("metadata.").removeSuffix(".lua").takeIf { it.isNotEmpty() && !it.contains('/') }?.let { "$stem.$it" }
+            },
+        )
     }
 
     /**

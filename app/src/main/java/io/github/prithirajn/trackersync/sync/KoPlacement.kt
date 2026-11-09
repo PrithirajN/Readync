@@ -17,9 +17,28 @@ import java.time.format.DateTimeFormatter
  */
 object KoPlacement {
 
-    /** The EPUB in the picked folder that is [document] (the same file, so the same ID), or null. */
-    fun bookPath(s: Snapshot, document: String): String? =
-        s.koBooks.entries.firstOrNull { it.value.substringAfterLast('|') == document }?.key
+    /**
+     * KOReader's and CrossPoint's document ID for a book by its file name ("Document matching:
+     * Filename"): the MD5 of the file's name, without its folder.
+     */
+    fun fileId(fileName: String): String =
+        java.security.MessageDigest.getInstance("MD5").digest(fileName.substringAfterLast('/').toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
+    /** An EPUB in the picked folder for a book: [sameFile] when it's that very file (by content), else only by its name. */
+    data class Found(val path: String, val sameFile: Boolean)
+
+    /**
+     * The EPUB in the picked folder that is [document]: the same file (its content gives the ID,
+     * "Binary" matching), else one with the same name ("Filename" matching, which may be another
+     * copy of it). Null when there's neither.
+     */
+    fun bookFor(s: Snapshot, document: String): Found? {
+        s.koBooks.entries.firstOrNull { it.value.substringAfterLast('|') == document }?.let { return Found(it.key, true) }
+        return s.koBooks.keys.firstOrNull { fileId(it) == document }?.let { Found(it, false) }
+    }
+
+    fun bookPath(s: Snapshot, document: String): String? = bookFor(s, document)?.path
 
     /** [found] (path -> "modified|size") with each file's ID: kept for unchanged files, worked out by [id] for the rest. */
     fun refresh(old: Map<String, String>, found: Map<String, String>, id: (String) -> String?): Map<String, String> =
@@ -29,9 +48,17 @@ object KoPlacement {
             else id(path)?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }?.let { path to "$stamp|$it" }
         }.toMap()
 
-    /** Where each KOReader highlight goes on CrossPoint, for the ones found exactly once. */
-    fun forCrossPoint(book: EpubText.Book, clips: List<Clipping>): Map<String, EpubText.Place> =
-        clips.mapNotNull { c -> runCatching { EpubText.find(book, c.text, c.spine) }.getOrNull()?.let { c.id to it } }.toMap()
+    /**
+     * Where each KOReader highlight goes on CrossPoint, for the ones found exactly once. When the
+     * EPUB here is only the same by name ([sameFile] false), a place counts only when it's in the
+     * very chapter KOReader says, so a copy laid out differently isn't trusted.
+     */
+    fun forCrossPoint(book: EpubText.Book, clips: List<Clipping>, sameFile: Boolean = true): Map<String, EpubText.Place> =
+        clips.mapNotNull { c ->
+            runCatching { EpubText.find(book, c.text, c.spine) }.getOrNull()
+                ?.takeIf { sameFile || (c.spine != null && it.spine == c.spine) }
+                ?.let { c.id to it }
+        }.toMap()
 
     private fun key(t: String) = t.lowercase().filter { it.isLetterOrDigit() }
 
@@ -44,10 +71,12 @@ object KoPlacement {
      * text there is the highlight's, else where its words are found once. Checked both ways (the
      * positions lead back to the same words), or null.
      */
-    fun koreaderPlace(book: EpubText.Book, c: Clipping): Triple<EpubText.Place, String, String>? {
+    fun koreaderPlace(book: EpubText.Book, c: Clipping, sameFile: Boolean = true): Triple<EpubText.Place, String, String>? {
         val given = if (c.spine != null && c.start != null && c.end != null) {
             EpubText.Place(c.spine, c.start, c.end).takeIf { EpubText.matches(book, it, c.text) }
         } else null
+        // A copy that's the same only by name: only when CrossPoint's own place reads the same words here.
+        if (!sameFile && given == null) return null
         val place = given ?: EpubText.find(book, c.text, c.spine) ?: return null
         val ch = book.chapter(place.spine) ?: return null
         val (p0, p1) = ch.koreaderRange(place.start, place.end) ?: return null
@@ -66,7 +95,7 @@ object KoPlacement {
      * highlighted and whose place is sure. Everything already in the file is kept as it was.
      * Null when the file isn't HighlightSync's kind (AnnotationSync's isn't written to).
      */
-    fun addToHighlightSync(existing: String?, book: EpubText.Book, clips: List<Clipping>, zone: ZoneId = ZoneId.systemDefault()): Added? {
+    fun addToHighlightSync(existing: String?, book: EpubText.Book, clips: List<Clipping>, zone: ZoneId = ZoneId.systemDefault(), sameFile: Boolean = true): Added? {
         val text = existing?.trim().orEmpty()
         val arr = when {
             text.isEmpty() -> JSONArray()
@@ -87,7 +116,7 @@ object KoPlacement {
         for (c in clips) {
             val k = key(c.text)
             if (k.isEmpty() || have.any { it.contains(k) || k.contains(it) }) { skipped += c.id; continue }
-            val found = koreaderPlace(book, c)
+            val found = koreaderPlace(book, c, sameFile)
             if (found == null) { skipped += c.id; continue }
             val (place, p0, p1) = found
             // KOReader works out page numbers itself; a near one keeps the list in order meanwhile.

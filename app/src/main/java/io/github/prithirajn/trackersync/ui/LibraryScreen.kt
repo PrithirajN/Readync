@@ -1139,6 +1139,7 @@ internal fun originLabel(origin: String): String? = when (origin.lowercase()) {
     "anilist" -> "AniList"
     "logged" -> "your log"
     "moonreader" -> "Moon+ Reader"
+    "koreader" -> "KOReader"
     else -> io.github.prithirajn.trackersync.sync.HistoryImport.originName(origin) ?: Trackers.byId(origin)?.name
 }
 

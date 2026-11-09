@@ -1326,6 +1326,12 @@ data class Snapshot(
      * the ones whose words couldn't be found just once.
      */
     val koBooks: Map<String, String> = emptyMap(),
+    /** Titles and authors of KOReader's books (document ID -> "title<TAB>author"), from the EPUBs and sidecars in that folder. */
+    val koTitles: Map<String, String> = emptyMap(),
+    /** How many pages KOReader lays each book out in (book document -> pages), to place its highlights in the book. */
+    val koPages: Map<String, Int> = emptyMap(),
+    /** A folder of EPUBs on that WebDAV storage (a Calibre library, say), for KOReader on another device: titles and exact places come from there. */
+    val koDavBooks: String? = null,
     val koPlaced: Set<String> = emptySet(),
     val koUnplaced: Set<String> = emptySet(),
     /**

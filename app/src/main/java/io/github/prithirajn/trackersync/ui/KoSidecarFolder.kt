@@ -69,7 +69,7 @@ object KoSidecarFolder {
                             context.contentResolver.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, d.id))?.use { String(it.readBytes(), Charsets.UTF_8) }
                         }.getOrNull() ?: continue
                         seen[key] = stamp
-                        out += KoSidecar.Raw(key, text)
+                        out += KoSidecar.Raw(key, text, d.modified)
                     }
                 }
             }

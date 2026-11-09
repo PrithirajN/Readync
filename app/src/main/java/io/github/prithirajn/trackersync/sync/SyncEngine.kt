@@ -1020,11 +1020,16 @@ class SyncEngine(private val store: Store) {
      * CrossPoint as well, so it isn't sent to your trackers a second time when it comes back.
      */
     /** The EPUB of [document] from KOReader's books folder on this device, opened, or null. */
-    private fun koEpub(s: Snapshot, document: String): io.github.prithirajn.trackersync.source.EpubText.Book? {
-        val tree = s.koLocal ?: return null
-        val path = KoPlacement.bookPath(s, document) ?: return null
-        val bytes = io.github.prithirajn.trackersync.source.KoSidecar.bookBytes?.invoke(tree, path) ?: return null
-        return io.github.prithirajn.trackersync.source.EpubText.open(bytes)
+    private fun koEpub(s: Snapshot, document: String): Pair<io.github.prithirajn.trackersync.source.EpubText.Book, Boolean>? {
+        val found = KoPlacement.bookFor(s, document) ?: return null
+        val bytes = if (found.path.startsWith("dav:")) {
+            // From the books folder on WebDAV (KOReader on another device).
+            s.koHl?.let { io.github.prithirajn.trackersync.source.KoHighlightsClient(it).bytes(found.path.removePrefix("dav:")) }
+        } else {
+            val tree = s.koLocal ?: return null
+            io.github.prithirajn.trackersync.source.KoSidecar.bookBytes?.invoke(tree, found.path)
+        } ?: return null
+        return io.github.prithirajn.trackersync.source.EpubText.open(bytes)?.let { it to found.sameFile }
     }
 
     internal fun pushKoToCrossPoint() {
@@ -1033,7 +1038,7 @@ class SyncEngine(private val store: Store) {
         val account = s0.account ?: return
         fun key(t: String) = t.lowercase().filter { it.isLetterOrDigit() }.take(120)
         val onCp = s0.cpClips.groupBy { it.document }.mapValues { e -> e.value.map { key(it.text) }.toSet() }
-        val cpBook = s0.koClips.filter { s0.books[it.document]?.origin == null && s0.books.containsKey(it.document) }
+        val cpBook = s0.koClips.filter { s0.books[it.document]?.origin == null && s0.books.containsKey(it.document) && !KoHighlightSync.isNote(it.id) }
         // New ones (not on CrossPoint already), and ones sent before that can now go on their exact words.
         val fresh = cpBook.filter { c -> c.id !in s0.koSentCp && key(c.text) !in (onCp[c.document] ?: emptySet()) }
         val again = cpBook.filter { c -> c.id in s0.koSentCp && c.id !in s0.koPlaced && c.id !in s0.koUnplaced && KoPlacement.bookPath(s0, c.document) != null }
@@ -1043,7 +1048,7 @@ class SyncEngine(private val store: Store) {
         var placedCount = 0
         for ((doc, group) in (fresh + again).groupBy { it.document }) {
             val book = runCatching { koEpub(s0, doc) }.getOrNull()
-            val places = book?.let { KoPlacement.forCrossPoint(it, group) } ?: emptyMap()
+            val places = book?.let { (b, same) -> KoPlacement.forCrossPoint(b, group, same) } ?: emptyMap()
             val unplaced = if (book != null) group.map { it.id }.filter { it !in places } else emptyList()
             // Sent before and still not placeable: nothing to send again.
             val send = group.filter { it.id !in s0.koSentCp || it.id in places }.filter { it.spine != null || it.id in places }
@@ -1092,8 +1097,8 @@ class SyncEngine(private val store: Store) {
         if (!s0.cpToKo) return
         val account = s0.account ?: return
         val dav = s0.koHl?.let { io.github.prithirajn.trackersync.source.MoonReaderClient(it) }
-        if (dav == null || s0.koLocal == null) {
-            store.update { it.copy(cpToKoNote = "Needs the HighlightSync plugin on Koofr or WebDAV and KOReader's books folder on this phone") }
+        if (dav == null || (s0.koLocal == null && s0.koDavBooks == null)) {
+            store.update { it.copy(cpToKoNote = "Needs the HighlightSync plugin on Koofr or WebDAV, and your EPUBs: KOReader's books folder on this phone, or a books folder on that storage") }
             return
         }
         val fromKo = s0.koSentCp.values.toSet()
@@ -1109,11 +1114,11 @@ class SyncEngine(private val store: Store) {
             // The plugin's file for this book: one already read that belongs to it.
             val files = s0.koHlDocs.filter { it.value == doc && !it.key.startsWith("local:") }.keys
             if (files.isEmpty()) continue
-            val book = runCatching { koEpub(s0, doc) }.getOrNull() ?: continue
+            val (book, sameFile) = runCatching { koEpub(s0, doc) }.getOrNull() ?: continue
             for (rel in files) {
                 try {
                     val before = dav.fetch(rel)?.let { String(it, Charsets.UTF_8) }
-                    val r = KoPlacement.addToHighlightSync(before, book, group)
+                    val r = KoPlacement.addToHighlightSync(before, book, group, sameFile = sameFile)
                     if (r == null) { notes += "${title(doc)}: that's an AnnotationSync file, which Readync doesn't write to"; continue }
                     if (r.added.isNotEmpty()) {
                         if (before != null) dav.put("$rel.readync-backup", before)
@@ -1144,6 +1149,8 @@ class SyncEngine(private val store: Store) {
     internal fun pullKoHighlights() {
         val stamps = HashMap<String, String>()
         val files = ArrayList<io.github.prithirajn.trackersync.source.KoFile>()
+        val positions = ArrayList<io.github.prithirajn.trackersync.source.KoPosition>()
+        val pagesBefore = store.snapshot.koPages
         // The sync plugins' files on WebDAV (Koofr…).
         store.snapshot.koHl?.let { account ->
             val client = io.github.prithirajn.trackersync.source.KoHighlightsClient(account)
@@ -1152,8 +1159,31 @@ class SyncEngine(private val store: Store) {
                 if (folders.isEmpty()) {
                     store.update { it.copy(koHlOkAt = System.currentTimeMillis(), koHlError = Health.KOHL_NO_FILES) }
                 } else {
-                    files += client.files(folders, store.snapshot.koHlMods, stamps)
+                    files += client.files(folders, store.snapshot.koHlMods, stamps, positions)
                     store.update { s -> s.copy(koHlFolders = folders, koHlOkAt = System.currentTimeMillis(), koHlError = null) }
+                }
+                // A folder of your EPUBs there (for KOReader on another device): each new or changed one read once, for its IDs and title.
+                store.snapshot.koDavBooks?.let { folder ->
+                    val listed = client.epubs(folder)
+                    val old = store.snapshot.koBooks
+                    val books = HashMap(old.filterKeys { !it.startsWith("dav:") })
+                    var downloads = 0
+                    for (e in listed) {
+                        val key = "dav:" + e.path
+                        val stamp = (e.modified ?: "") + "|0"
+                        val prev = old[key]
+                        if (prev != null && prev.substringBeforeLast('|') == stamp) { books[key] = prev; continue }
+                        if (downloads >= DAV_BOOKS_PER_SYNC) continue // the rest next time
+                        val bytes = runCatching { client.bytes(e.path) }.getOrNull() ?: continue
+                        downloads++
+                        val id = io.github.prithirajn.trackersync.source.EpubText.partialMd5(bytes.size.toLong()) { o, n -> bytes.copyOfRange(o.toInt(), o.toInt() + n) }
+                        books[key] = "$stamp|$id"
+                        // Its title now, while it's here.
+                        val (t, a) = io.github.prithirajn.trackersync.source.EpubText.metadata(bytes)
+                        val value = (t ?: e.path.substringAfterLast('/').substringBeforeLast('.')) + "\t" + (a ?: "")
+                        store.update { it.copy(koTitles = it.koTitles + mapOf(id to value, KoPlacement.fileId(e.path) to value)) }
+                    }
+                    if (books != old) store.update { it.copy(koBooks = books) }
                 }
             } catch (e: Exception) {
                 store.update { it.copy(koHlError = Health.describeKoHl(e)) }
@@ -1166,13 +1196,36 @@ class SyncEngine(private val store: Store) {
                 val read = io.github.prithirajn.trackersync.source.KoSidecar.reader ?: throw IllegalStateException("Folder access isn't available")
                 val raws = read(tree, store.snapshot.koHlMods, stamps)
                 files += raws.mapNotNull { io.github.prithirajn.trackersync.source.KoSidecar.parse(it.path, it.text) }
+                // Where KOReader on this device is in each book (when it isn't syncing that anywhere).
+                positions += raws.mapNotNull { io.github.prithirajn.trackersync.source.KoSidecar.position(it.path, it.text, it.modified) }
                 // The EPUBs next to them, by KOReader document ID, for putting highlights on their exact words.
                 val idOf = io.github.prithirajn.trackersync.source.KoSidecar.bookId
                 val found = io.github.prithirajn.trackersync.source.KoSidecar.books
                 if (idOf != null) {
-                    val books = KoPlacement.refresh(store.snapshot.koBooks, found) { idOf(tree, it) }
-                    if (books != store.snapshot.koBooks) store.update { it.copy(koBooks = books) }
+                    val old = store.snapshot.koBooks
+                    // This folder's books worked out again; ones from WebDAV are kept as they are.
+                    val books = KoPlacement.refresh(old.filterKeys { it.startsWith("local:") }, found) { idOf(tree, it) } + old.filterKeys { !it.startsWith("local:") }
+                    if (books != old) store.update { it.copy(koBooks = books) }
                 }
+                // Each book's title and author: from its sidecar, else from the EPUB itself (read once).
+                val titles = HashMap(store.snapshot.koTitles)
+                for (f in files) {
+                    val t = f.title ?: continue
+                    // Under both IDs a reader might use for it: by content, and by file name.
+                    for (id in KoHighlightSync.idsOf(f)) titles[id] = t + "\t" + (f.author ?: "")
+                }
+                val bytesOf = io.github.prithirajn.trackersync.source.KoSidecar.bookBytes
+                if (bytesOf != null) for ((path, v) in store.snapshot.koBooks.filterKeys { it.startsWith("local:") }) {
+                    val id = v.substringAfterLast('|')
+                    val byName = KoPlacement.fileId(path)
+                    if (titles.containsKey(id) && titles.containsKey(byName)) continue
+                    val known = titles[id] ?: titles[byName]
+                    val value = known ?: runCatching { bytesOf(tree, path)?.let { io.github.prithirajn.trackersync.source.EpubText.metadata(it) } }.getOrNull()
+                        ?.let { (t, a) -> (t ?: path.substringAfterLast('/').substringBeforeLast('.')) + "\t" + (a ?: "") } ?: continue
+                    titles[id] = value
+                    titles[byName] = value
+                }
+                if (titles != store.snapshot.koTitles) store.update { it.copy(koTitles = titles) }
                 val any = stamps.keys.any { it.startsWith("local:") }
                 store.update { it.copy(koLocalOkAt = System.currentTimeMillis(), koLocalError = if (any) null else Health.KOLOCAL_NO_FILES) }
             } catch (e: Exception) {
@@ -1182,13 +1235,31 @@ class SyncEngine(private val store: Store) {
         }
         if (files.isEmpty() && stamps.isEmpty()) return
         var r: KoHighlightSync.Result? = null
-        store.update { s ->
+        var m: KoHighlightSync.Moved? = null
+        store.update { s0 ->
+            // Where KOReader is (AnnotationSync's position files) first, so its books are here for their highlights.
+            val moved = KoHighlightSync.applyPositions(s0, positions).also { m = it }
+            val s = moved.snapshot
             val res = KoHighlightSync.apply(s, files).also { r = it }
-            // Files that matched no book are read again next time (a book may have arrived).
-            res.snapshot.copy(koHlMods = s.koHlMods + stamps - res.unmatchedPaths.toSet())
+            // Files that matched no book are read again next time (a book or its title may have arrived).
+            res.snapshot.copy(koHlMods = s.koHlMods + stamps - res.unmatchedPaths.toSet() - moved.unmatchedPaths.toSet())
+        }
+        // Highlights read before their book's page count was known: their files are read again next time, to place them.
+        store.snapshot.let { s1 ->
+            val learned = s1.koPages.filter { (d, n) -> pagesBefore[d] != n }.keys
+            val unplacedDocs = s1.koClips.filter { it.percent == null && !KoHighlightSync.isNote(it.id) && it.document in learned }.map { it.document }.toSet()
+            if (unplacedDocs.isNotEmpty()) {
+                val paths = s1.koHlDocs.filterValues { it in unplacedDocs }.keys
+                if (paths.any { it in s1.koHlMods }) store.update { it.copy(koHlMods = it.koHlMods - paths) }
+            }
+        }
+        m?.let { mv ->
+            if (mv.added > 0) store.log(null, "${mv.added} book${if (mv.added == 1) "" else "s"} added from KOReader")
+            if (mv.moved > 0) store.log(null, "${mv.moved} book${if (mv.moved == 1) "" else "s"} moved ahead from KOReader")
         }
         val res = r ?: return
         if (res.added > 0) store.log(null, "${res.added} new highlight${if (res.added == 1) "" else "s"} from KOReader")
+        if (res.created > 0) store.log(null, "${res.created} book${if (res.created == 1) "" else "s"} added from KOReader highlights (not sent to trackers until you turn them on)")
     }
 
     /**
@@ -2465,7 +2536,7 @@ class SyncEngine(private val store: Store) {
         val s = store.snapshot
         if (!highlightsOn(t, s)) return emptyList()
         val since = s.service(t.id).highlightsSince
-        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden }
+        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden && !KoHighlightSync.isNote(it.id) }
             .map { HighlightPosition.withPage(edited(it, s.clipEdits), s.books[it.document]) }
             .filter { val key = "${t.id}|${it.id}"; it.createdAt >= since && key !in s.sentClippings && key !in s.resend }
     }
@@ -2479,7 +2550,8 @@ class SyncEngine(private val store: Store) {
         if (active.isEmpty()) return 0
         // CrossPoint's highlights and ones photographed from paper, as you edited them.
         val clips = (s0.cpClips + s0.paperClips + s0.kindleClips + s0.libbyClips + s0.moonClips + s0.historyClips + s0.koClips)
-            .filter { it.id !in s0.clipHidden && (onlyDocument == null || it.document == onlyDocument) }
+            // KOReader's notes on bookmarks have no passage: they stay here, not sent as quotes.
+            .filter { it.id !in s0.clipHidden && (onlyDocument == null || it.document == onlyDocument) && !KoHighlightSync.isNote(it.id) }
             .map { HighlightPosition.withPage(edited(it, s0.clipEdits), s0.books[it.document]) }
         if (clips.isEmpty()) return 0
         val sent = java.util.concurrent.atomic.AtomicInteger(0)
@@ -3108,6 +3180,8 @@ class SyncEngine(private val store: Store) {
         }
 
         const val DEVICE_ID = "tracker-sync-android"
+        /** EPUBs read from a WebDAV books folder per sync (each once; the rest follow on later syncs). */
+        const val DAV_BOOKS_PER_SYNC = 15
         private const val SENT_KEEP = 15
         const val DAY = 86_400L
         /** Unsure matches the on-device model is asked about per sync. */

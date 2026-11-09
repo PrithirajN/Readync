@@ -101,6 +101,18 @@ object EpubText {
         Book(byName, spine)
     }.getOrNull()
 
+    /** The EPUB's title and first author from its package file, or nulls. */
+    fun metadata(bytes: ByteArray): Pair<String?, String?> = runCatching {
+        val files = entries(bytes)
+        fun file(name: String) = files[name] ?: files.entries.firstOrNull { it.key.equals(name, true) }?.value
+        val container = file("META-INF/container.xml")?.let { String(it, Charsets.UTF_8) } ?: return null to null
+        val opfPath = tags(container, "rootfile").firstNotNullOfOrNull { it["full-path"] } ?: return null to null
+        val opf = file(opfPath)?.let { String(it, Charsets.UTF_8) } ?: return null to null
+        fun first(name: String) = Regex("""<(?:[\w.-]+:)?$name\b[^>]*>([\s\S]*?)</(?:[\w.-]+:)?$name>""").find(opf)?.groupValues?.get(1)
+            ?.replace(Regex("<[^>]+>"), "")?.let(::unescape)?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotEmpty() }
+        first("title") to first("creator")
+    }.getOrDefault(null to null)
+
     // ---- A chapter -----------------------------------------------------------------------------
 
     internal class El(val name: String, val parent: El?) {

@@ -317,6 +317,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun postHighlight(tracker: Tracker, clipId: String, done: (String?) -> Unit) =
         edit("Posting to ${tracker.name}", done, syncAfter = true) { Highlights.resend(store, clipId, listOf(tracker.id)) }
 
+    /**
+     * Trackers a book's highlights could still go to, with how many each hasn't had: linked and
+     * able to take highlights, the book matched there, and (for public posts) your updates public.
+     * Notes kept on bookmarks don't count.
+     */
+    fun unsentHighlights(document: String): List<Pair<Tracker, Int>> {
+        val s = store.snapshot
+        val clips = Highlights.forBook(s, document).map { it.clip }.filter { !io.github.prithirajn.trackersync.sync.KoHighlightSync.isNote(it.id) }
+        if (clips.isEmpty()) return emptyList()
+        return Trackers.all.mapNotNull { t ->
+            val svc = s.service(t.id)
+            if (!svc.linked || !svc.enabled || svc.needsReauth || t.highlights == io.github.prithirajn.trackersync.trackers.HighlightSupport.NONE) return@mapNotNull null
+            if (t.highlights == io.github.prithirajn.trackersync.trackers.HighlightSupport.PUBLIC_POST && svc.visibility != Visibility.PUBLIC && !t.highlightsIgnoreVisibility) return@mapNotNull null
+            val link = s.link(t.id, document) ?: return@mapNotNull null
+            if (link.externalId == null || link.source == io.github.prithirajn.trackersync.data.LinkSource.NONE || !link.confirmed) return@mapNotNull null
+            val n = clips.count { "${t.id}|${it.id}" !in s.sentClippings && "${t.id}|${it.id}" !in s.resend }
+            if (n == 0) null else t to n
+        }
+    }
+
+    /** Sends a book's highlights [trackers] haven't had yet (older ones included), each at its own place in the book. */
+    fun sendBookHighlights(document: String, trackers: Collection<String>) {
+        val s = store.snapshot
+        val clips = Highlights.forBook(s, document).map { it.clip.id }.filter { !io.github.prithirajn.trackersync.sync.KoHighlightSync.isNote(it) }
+        val keys = trackers.flatMap { t -> clips.map { "$t|$it" } }.filter { it !in s.sentClippings && it !in s.resend }
+        if (keys.isEmpty()) return
+        edit("Sending ${keys.size} highlight${if (keys.size == 1) "" else "s"}", {}, syncAfter = true) { store.update { it.copy(resend = it.resend + keys) } }
+    }
+
     fun resendHighlight(clipId: String) {
         val targets = resendTargets(clipId).map { it.id }
         if (targets.isEmpty()) return
@@ -1260,6 +1289,62 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             io { store.update { it.copy(koToCrossPoint = on) } }
             if (on) syncNow(quiet = true)
+        }
+    }
+
+    /**
+     * Names for books known only by KOReader's ID, from files you pick (a list of IDs and names,
+     * or IDs with Calibre numbers plus a Calibre catalog). [done] gets what happened.
+     */
+    fun importBookNames(uris: List<android.net.Uri>, done: (String) -> Unit) {
+        viewModelScope.launch {
+            val msg = try {
+                io {
+                    val app = getApplication<Application>()
+                    val texts = uris.take(10).mapNotNull { u ->
+                        app.contentResolver.openInputStream(u)?.use { input ->
+                            val b = input.readBytes()
+                            if (b.size > 20 * 1024 * 1024) throw IllegalStateException("That file is over 20 MB")
+                            String(b, Charsets.UTF_8)
+                        }
+                    }
+                    val r = io.github.prithirajn.trackersync.sync.NameImport.read(texts)
+                    if (r.names.isEmpty()) {
+                        if (r.unresolved > 0) "Those IDs point to ${r.unresolved} other numbers (Calibre's, say) but nothing gave those numbers names. Pick that file too: Calibre's CSV catalog, or the file listing the books."
+                        else "No KOReader document IDs with names in there."
+                    } else {
+                        var here = 0
+                        store.update { s -> here = io.github.prithirajn.trackersync.sync.NameImport.relevant(s, r); io.github.prithirajn.trackersync.sync.NameImport.apply(s, r) }
+                        "Named ${r.names.size} book${if (r.names.size == 1) "" else "s"}" + (if (here > 0) ", $here of them waiting here" else "") +
+                            (if (r.unresolved > 0) "; ${r.unresolved} couldn't be named" else "") + ". Matching them now."
+                    }
+                }
+            } catch (e: Exception) {
+                e.message ?: "Couldn't read that file"
+            }
+            done(msg)
+            syncNow(quiet = true)
+        }
+    }
+
+    /** The folder of your EPUBs on the KOReader highlights' WebDAV storage (null stops reading it). */
+    fun setKoDavBooks(folder: String?) {
+        viewModelScope.launch {
+            val f = folder?.trim()?.takeIf { it.isNotEmpty() }?.let { if (it.startsWith("/")) it else "/$it" }?.trimEnd('/')?.ifEmpty { "/" }
+            io { store.update { s -> s.copy(koDavBooks = f, koBooks = if (f == null) s.koBooks.filterKeys { !it.startsWith("dav:") } else s.koBooks) } }
+            if (f != null) syncNow(quiet = true)
+        }
+    }
+
+    /** Looks for your EPUBs on that storage and reads that folder. */
+    fun findKoDavBooks(done: () -> Unit) {
+        viewModelScope.launch {
+            val found = runCatching {
+                io { store.snapshot.koHl?.let { io.github.prithirajn.trackersync.source.KoHighlightsClient(it).findBooksFolder() } }
+            }.getOrNull()
+            done()
+            if (found == null) notify("No EPUBs found", "Type the folder they're in instead.")
+            else { notify("Books found", "Reading EPUBs in $found."); setKoDavBooks(found) }
         }
     }
 

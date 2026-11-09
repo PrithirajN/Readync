@@ -120,6 +120,9 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("koLocalError", s.koLocalError ?: JSONObject.NULL)
         o.put("koSentCp", JSONObject().also { j -> s.koSentCp.forEach { (k, v) -> j.put(k, v) } })
         o.put("koBooks", JSONObject().also { j -> s.koBooks.forEach { (k, v) -> j.put(k, v) } })
+        o.put("koTitles", JSONObject().also { j -> s.koTitles.forEach { (k, v) -> j.put(k, v) } })
+        o.put("koPages", JSONObject().also { j -> s.koPages.forEach { (k, v) -> j.put(k, v) } })
+        o.put("koDavBooks", s.koDavBooks ?: JSONObject.NULL)
         o.put("koPlaced", org.json.JSONArray(s.koPlaced.toList()))
         o.put("koUnplaced", org.json.JSONArray(s.koUnplaced.toList()))
         o.put("cpToKo", s.cpToKo)
@@ -321,6 +324,9 @@ class Store(private val file: File, private val secrets: Secrets) {
             koLocalError = o.str("koLocalError"),
             koSentCp = o.obj("koSentCp")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             koBooks = o.obj("koBooks")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            koTitles = o.obj("koTitles")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            koDavBooks = o.str("koDavBooks"),
+            koPages = o.obj("koPages")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) }.filterValues { it > 0 } } ?: emptyMap(),
             koPlaced = o.optJSONArray("koPlaced")?.strings()?.toSet() ?: emptySet(),
             koUnplaced = o.optJSONArray("koUnplaced")?.strings()?.toSet() ?: emptySet(),
             cpToKo = o.optBoolean("cpToKo", false),

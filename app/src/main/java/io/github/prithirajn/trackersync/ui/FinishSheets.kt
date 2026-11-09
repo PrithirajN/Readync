@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -678,8 +679,59 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
             Quiet("Where you were, from your highlights so far.", color = c.faint)
         }
     }
+    // Highlights the trackers haven't had (older ones aren't sent by themselves): sent from here when you choose.
+    val unsent = remember(items, state.sentClippings, state.resend, state.links, state.services) { vm.unsentHighlights(book.document) }
+    var sending by remember { mutableStateOf(false) }
+    if (unsent.isNotEmpty()) {
+        VSpace(8)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            PillButton("Send to trackers", { sending = true })
+            HSpace(8)
+            Quiet("${unsent.maxOf { it.second }} not sent yet.", color = c.faint)
+        }
+    }
+    if (sending) SendHighlightsSheet(vm, book, unsent) { sending = false }
     if (catchingUp) CatchUpSheet(vm, book) { catchingUp = false }
     if (summing) HighlightSummarySheet(vm, state, book) { summing = false }
+}
+
+/** Pick the trackers a book's not-yet-sent highlights go to. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SendHighlightsSheet(vm: AppViewModel, book: Book, targets: List<Pair<io.github.prithirajn.trackersync.trackers.Tracker, Int>>, onClose: () -> Unit) {
+    val c = Cp.colors
+    val picked = remember { mutableStateMapOf<String, Boolean>().apply { targets.forEach { (t, _) -> put(t.id, true) } } }
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = CpShapes.sheet,
+        containerColor = c.page,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            Text("Send to trackers", style = CpType.section, color = c.text)
+            Quiet("${book.displayTitle}'s highlights that haven't gone there yet, older ones too. Each goes at its own place in the book, a few at a time.")
+            VSpace(16)
+            CpCard {
+                targets.forEachIndexed { i, (t, n) ->
+                    if (i > 0) RowDivider()
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(t.name, style = CpType.bodyStrong, color = c.text)
+                            Quiet("$n highlight${if (n == 1) "" else "s"}", color = c.faint)
+                        }
+                        CpToggle(picked[t.id] == true, { picked[t.id] = it }, "Send to ${t.name}")
+                    }
+                }
+            }
+            VSpace(16)
+            val chosen = targets.filter { picked[it.first.id] == true }
+            BigButton(
+                if (chosen.isEmpty()) "Pick a tracker" else "Send ${chosen.sumOf { it.second }}",
+                { vm.sendBookHighlights(book.document, chosen.map { it.first.id }); onClose() },
+                enabled = chosen.isNotEmpty(),
+            )
+        }
+    }
 }
 
 private fun highlightLine(item: Highlights.Item): String {
@@ -689,6 +741,8 @@ private fun highlightLine(item: Highlights.Item): String {
     io.github.prithirajn.trackersync.sync.HighlightPosition.label(item.clip)?.let { parts += it }
     parts += java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(item.clip.createdAt * 1000))
     parts += when {
+        // A note on a bookmark has no passage to quote: it's kept here only.
+        io.github.prithirajn.trackersync.sync.KoHighlightSync.isNote(item.clip.id) -> "kept here"
         item.resending.isNotEmpty() -> "sending again"
         item.sentTo.isEmpty() -> "not sent yet"
         else -> "sent to " + item.sentTo.joinToString(", ") { Trackers.byId(it)?.name ?: it }
