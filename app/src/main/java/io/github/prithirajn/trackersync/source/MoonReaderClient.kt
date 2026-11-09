@@ -40,7 +40,7 @@ data class MoonHighlight(
  * Moon+ Reader's progress, through the WebDAV storage its sync writes to (Koofr, Nextcloud or any
  * WebDAV server). With sync on, Moon+ keeps one small file per book, named after the book's file
  * with ".po" added, holding a line like "1502878256645*28@0#15529:12.3%": when it was saved, the
- * chapter, a position in it, and how far through the book. Nothing here is written.
+ * chapter, a position in it, and how far through the book. Moon+'s files are never written.
  *
  * [account]'s server is the WebDAV address (for Koofr, https://app.koofr.net/dav/Koofr), its
  * username the account's email and its key an app password.
@@ -106,8 +106,8 @@ class MoonReaderClient(private val account: Account) {
     }
 
     /** A file's bytes, or null when it isn't there. */
-    private fun fetch(rel: String): ByteArray? {
-        val r = Http.request("GET", urlFor(rel), headers())
+    internal fun fetch(rel: String): ByteArray? {
+        val r = Http.request("GET", fileUrl(rel), headers())
         if (r.code == 401 || r.code == 403) throw AuthException("The WebDAV server rejected the email or app password")
         if (!r.ok) return null
         // The body comes back as text; ".an" files are compressed, so they're read again as bytes.
@@ -115,11 +115,40 @@ class MoonReaderClient(private val account: Account) {
     }
 
     private fun rawFetch(rel: String): ByteArray? = runCatching {
-        val conn = java.net.URL(urlFor(rel)).openConnection() as java.net.HttpURLConnection
+        val conn = java.net.URL(fileUrl(rel)).openConnection() as java.net.HttpURLConnection
         headers().forEach { (k, v) -> conn.setRequestProperty(k, v) }
         conn.connectTimeout = 20_000; conn.readTimeout = 20_000
         try { if (conn.responseCode in 200..299) conn.inputStream.use { it.readBytes() } else null } finally { conn.disconnect() }
     }.getOrNull()
+
+    /**
+     * Folders (relative to the WebDAV address) holding a file [wanted] approves of: [likely] ones
+     * first, then up to [max] found looking a few levels down. Used for other apps' sync files too.
+     */
+    fun findFolders(likely: List<String>, max: Int = 3, wanted: (Entry) -> Boolean): List<String> {
+        val out = ArrayList<String>()
+        val tried = HashSet<String>()
+        for (p in likely) {
+            if (!tried.add(p.trimEnd('/'))) continue
+            if (runCatching { list(urlFor(p)) }.getOrElse { if (it is AuthException) throw it else emptyList() }.any { !it.folder && wanted(it) }) out += p
+            if (out.size >= max) return out
+        }
+        var level = listOf("")
+        var seen = 0
+        repeat(5) {
+            val next = ArrayList<String>()
+            for (dir in level) {
+                val entries = runCatching { list(urlFor(dir)) }.getOrElse { if (it is AuthException) throw it else emptyList() }
+                val rel = dir.ifEmpty { "/" }
+                if (rel.trimEnd('/') !in out.map { it.trimEnd('/') } && entries.any { !it.folder && wanted(it) }) out += rel
+                if (out.size >= max) return out
+                for (e in entries) if (e.folder && ++seen < 400) next += relative(e.path)
+            }
+            level = next.sortedByDescending { it.contains("koreader", true) || it.contains("highlight", true) || it.contains("annotation", true) }.take(120)
+            if (level.isEmpty()) return out
+        }
+        return out
+    }
 
     /**
      * Every book's position in [folder] (as [findFolder] gave it), with its highlights. Files
@@ -149,16 +178,30 @@ class MoonReaderClient(private val account: Account) {
     }
 
     /** A path below the WebDAV address as a full URL, each part encoded. */
-    private fun urlFor(rel: String): String {
+    internal fun urlFor(rel: String): String {
         val parts = rel.split('/').filter { it.isNotEmpty() }.joinToString("/") { Http.enc(it).replace("+", "%20") }
         return if (parts.isEmpty()) "$base/" else "$base/$parts/".let { if (rel.endsWith(".po", true)) it.trimEnd('/') else it }
+    }
+
+    /** A file below the WebDAV address as a full URL (no trailing slash). */
+    internal fun fileUrl(rel: String): String =
+        "$base/" + rel.split('/').filter { it.isNotEmpty() }.joinToString("/") { Http.enc(it).replace("+", "%20") }
+
+    /**
+     * Writes [text] to a file below the WebDAV address. Only used for the KOReader sync plugin's
+     * file, and only when you've turned that on.
+     */
+    internal fun put(rel: String, text: String, type: String = "application/json") {
+        val r = Http.request("PUT", fileUrl(rel), headers(mapOf("Content-Type" to "$type; charset=utf-8")), text)
+        if (r.code == 401 || r.code == 403) throw AuthException("The WebDAV server rejected the email or app password")
+        if (!r.ok) throw ServiceException("The WebDAV server answered HTTP ${r.code}")
     }
 
     /** The decoded path of a URL from the server's root. */
     private fun pathOf(url: String): String = runCatching { URI(url).rawPath }.getOrDefault(url).let(::decode)
 
     /** A path from the server's root, made relative to the WebDAV address. */
-    private fun relative(path: String): String {
+    internal fun relative(path: String): String {
         val root = pathOf("$base/").trimEnd('/')
         return if (path.startsWith(root)) path.removePrefix(root) else path
     }

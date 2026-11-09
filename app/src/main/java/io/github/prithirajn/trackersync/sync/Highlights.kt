@@ -15,6 +15,8 @@ object Highlights {
         val clip: Clipping,
         val fromPaper: Boolean,
         val edited: Boolean,
+        /** Where it came from, to show: "CrossPoint", "Physical book", "Kindle", "Moon+ Reader", "Hardcover history"… */
+        val from: String = if (fromPaper) "Physical book" else "CrossPoint",
         /** Trackers it was sent to, and those waiting to send it again. */
         val sentTo: List<String>,
         val resending: List<String>,
@@ -22,13 +24,27 @@ object Highlights {
 
     fun forBook(s: Snapshot, document: String): List<Item> {
         val paperIds = s.paperClips.map { it.id }.toSet()
-        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).filter { it.document == document && it.id !in s.clipHidden }
+        val kindleIds = s.kindleClips.map { it.id }.toSet()
+        val libbyIds = s.libbyClips.map { it.id }.toSet()
+        val moonIds = s.moonClips.map { it.id }.toSet()
+        val historyIds = s.historyClips.map { it.id }.toSet()
+        val koIds = s.koClips.map { it.id }.toSet()
+        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden }
             .distinctBy { it.id }
             .sortedByDescending { it.createdAt }
             .map { c ->
                 Item(
                     clip = SyncEngine.edited(c, s.clipEdits),
                     fromPaper = c.id in paperIds,
+                    from = when (c.id) {
+                        in paperIds -> "Physical book"
+                        in kindleIds -> "Kindle"
+                        in libbyIds -> "Libby"
+                        in moonIds -> "Moon+ Reader"
+                        in historyIds -> historyFrom(c.id)
+                        in koIds -> "KOReader"
+                        else -> "CrossPoint"
+                    },
                     edited = c.id in s.clipEdits,
                     sentTo = Trackers.all.filter { "${it.id}|${c.id}" in s.sentClippings }.map { it.id },
                     resending = Trackers.all.filter { "${it.id}|${c.id}" in s.resend }.map { it.id },
@@ -36,9 +52,15 @@ object Highlights {
             }
     }
 
+    /** "Hardcover history" for an imported highlight, from its id ("hist-hardcover-…"). */
+    private fun historyFrom(id: String): String {
+        val src = id.removePrefix("hist-").substringBefore('-')
+        return (HistoryImport.originName(HistoryImport.ORIGIN_PREFIX + src) ?: "Imported") + " history"
+    }
+
     /** Every highlight and note across the library, newest first (books removed from it left out). */
     fun all(s: Snapshot): List<Item> {
-        val docs = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).map { it.document }.toSet().filter { it in s.books }
+        val docs = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).map { it.document }.toSet().filter { it in s.books }
         return docs.flatMap { forBook(s, it) }.sortedByDescending { it.clip.createdAt }
     }
 

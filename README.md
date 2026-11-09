@@ -49,6 +49,7 @@ You read, and your trackers keep up. You don't have to update page numbers by ha
 
 ### 📖 Any way you read
 - **E-readers**: CrossPoint Sync, or KOReader through a KOSync server.
+- **KOReader highlights**: straight from KOReader's own files when it runs on the same phone or tablet (no plugin needed), or from the HighlightSync or AnnotationSync plugin on Koofr (or any WebDAV) when it runs elsewhere. They come in under each book, go to your trackers, and can be added to a CrossPoint device too, **on their exact words** so the Xteink draws them on the page (when the book's EPUB is in KOReader's books folder on your phone). Optionally, highlights made on the CrossPoint device go the other way into KOReader, through HighlightSync.
 - **Moon+ Reader**: its sync to a free WebDAV storage like Koofr is read, so progress and highlights in Moon+ on your phone or tablet reach your trackers too. Step-by-step setup is in the app.
 - **Physical books**: snap a photo of the page you're on, and the page number is read on your phone (offline).
 - **Barcode scanning** adds a book from its ISBN.
@@ -58,7 +59,7 @@ You read, and your trackers keep up. You don't have to update page numbers by ha
 - An **SFF news tab** for science fiction and fantasy readers.
 - **Home-screen widgets**: a sync card, a progress ring and a shelf of the books you're reading.
 - **Quick Settings tile** and app shortcuts (Snap page, Add a book, Sync now).
-- **Import your reading history** from a Goodreads, StoryGraph or Hardcover export, KOReader's statistics, or straight from Hardcover and Seekquel. What's already in Readync is kept, and nothing is sent to your trackers. The on-device AI can work out an unfamiliar CSV's columns.
+- **Import your reading history** from a Goodreads, StoryGraph or Hardcover export, KOReader's statistics, or straight from Hardcover and Seekquel, with dates, ratings, reviews, Hardcover's quotes as highlights, and **day-by-day reading** where the source keeps it (KOReader's pages and minutes per day, Hardcover's progress updates). What's already in Readync is kept, and nothing is sent to your trackers. The on-device AI can work out an unfamiliar CSV's columns.
 - **Backups and moving phones**: a full backup locked with a password, or your reading data without any sign-ins, which merges into another phone and works across app versions.
 - Optional **on-device AI** helpers. Nothing leaves your phone.
 

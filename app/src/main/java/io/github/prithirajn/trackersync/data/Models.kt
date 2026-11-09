@@ -1237,6 +1237,28 @@ data class LogEntry(val time: Long, val service: String?, val message: String, v
 }
 
 /** Everything the app keeps, as one immutable value. */
+/**
+ * One day's reading of one book: the pages read that day, the minutes when known, how far through
+ * the book you were by the end of it (0–1) when that's what's known, and where it came from.
+ */
+data class ReadDay(val pages: Int? = null, val minutes: Int? = null, val reached: Double? = null, val source: String) {
+    fun toJson(): org.json.JSONObject = org.json.JSONObject().apply {
+        pages?.let { put("p", it) }; minutes?.let { put("m", it) }; reached?.let { put("r", it) }; put("s", source)
+    }
+
+    companion object {
+        fun fromJson(o: org.json.JSONObject) = ReadDay(
+            pages = if (o.has("p")) o.optInt("p") else null,
+            minutes = if (o.has("m")) o.optInt("m") else null,
+            reached = if (o.has("r")) o.optDouble("r").takeIf { !it.isNaN() } else null,
+            source = o.optString("s", "imported"),
+        )
+    }
+}
+
+/** A highlight that comes with a reading history (a Hardcover quote…), before it's put on a book. Times are unix seconds. */
+data class ImportedQuote(val text: String, val note: String? = null, val createdAt: Long? = null, val page: Int? = null, val percent: Double? = null)
+
 data class Snapshot(
     val account: Account? = null,
     val cursor: Long = 0L,
@@ -1261,6 +1283,11 @@ data class Snapshot(
     /** Where the round-robin check of books that aren't in progress continues next pass. */
     val kosyncRotation: Int = 0,
     /**
+     * Other KOSync document IDs for a book (document -> IDs), linked by hand: the same book read on
+     * a device that fingerprints it differently (another copy of the file, another matching method).
+     */
+    val kosyncIds: Map<String, List<String>> = emptyMap(),
+    /**
      * Moon+ Reader, through the WebDAV storage its sync writes to (Koofr, Nextcloud…): the sign-in
      * (server = the WebDAV address, key = an app password), the folder its ".po" files were
      * found in, and when it last worked or what went wrong.
@@ -1272,6 +1299,44 @@ data class Snapshot(
     /** Each Moon+ sync file's last position brought in (path -> saved at, millis), and which book each file is (file name -> document). */
     val moonSeen: Map<String, Long> = emptyMap(),
     val moonDocs: Map<String, String> = emptyMap(),
+    /**
+     * KOReader highlights from its sync plugins' files (HighlightSync, AnnotationSync) on WebDAV
+     * storage like Koofr: the sign-in, the folders the files are in, when it last worked or what
+     * went wrong, each file's "last modified" when read, which book each file is, the files that
+     * matched no book, and the highlights themselves.
+     */
+    val koHl: Account? = null,
+    val koHlFolders: List<String> = emptyList(),
+    val koHlOkAt: Long = 0L,
+    val koHlError: String? = null,
+    val koHlMods: Map<String, String> = emptyMap(),
+    val koHlDocs: Map<String, String> = emptyMap(),
+    val koHlUnmatched: List<String> = emptyList(),
+    val koClips: List<io.github.prithirajn.trackersync.source.Clipping> = emptyList(),
+    /** KOReader highlights are also added to CrossPoint (books read on CrossPoint, where the chapter is known); which went (id here -> id there). */
+    val koToCrossPoint: Boolean = false,
+    /** KOReader's sidecar files from a folder on this device (Android's folder access, as a link), when it was last read or what went wrong. */
+    val koLocal: String? = null,
+    val koLocalOkAt: Long = 0L,
+    val koLocalError: String? = null,
+    val koSentCp: Map<String, String> = emptyMap(),
+    /**
+     * EPUBs found in that folder (path -> "last modified|size|document ID"), so a KOReader
+     * highlight can be put on its exact words on CrossPoint; the ones sent placed like that, and
+     * the ones whose words couldn't be found just once.
+     */
+    val koBooks: Map<String, String> = emptyMap(),
+    val koPlaced: Set<String> = emptySet(),
+    val koUnplaced: Set<String> = emptySet(),
+    /**
+     * CrossPoint highlights are also given to KOReader, through the HighlightSync plugin's file on
+     * WebDAV (needs the book's EPUB in that folder); which went (CrossPoint ids), when it last
+     * ran or what went wrong.
+     */
+    val cpToKo: Boolean = false,
+    val cpSentKo: Set<String> = emptySet(),
+    val cpToKoOkAt: Long = 0L,
+    val cpToKoNote: String? = null,
     val kindle: KindleAccount? = null,
     val kindleOkAt: Long = 0L,
     val kindleError: String? = null,
@@ -1329,6 +1394,16 @@ data class Snapshot(
     val libbyClips: List<io.github.prithirajn.trackersync.source.Clipping> = emptyList(),
     /** Highlights from Moon+ Reader's sync files (its ".an" files), on the books they're from. */
     val moonClips: List<io.github.prithirajn.trackersync.source.Clipping> = emptyList(),
+    /**
+     * Highlights brought in with a reading history (Hardcover's quotes…). Already on the tracker
+     * they came from, so they're marked as sent there and never sent back.
+     */
+    val historyClips: List<io.github.prithirajn.trackersync.source.Clipping> = emptyList(),
+    /**
+     * Day by day: what you read of each book on each day, from wherever it's known (KOReader's
+     * statistics, Hardcover's reading journal…). document -> ("2024-03-09" -> that day).
+     */
+    val readingDays: Map<String, Map<String, ReadDay>> = emptyMap(),
     /** Each Moon+ sync file's "last modified" when it was last read (path -> as the server gives it), so unchanged ones aren't fetched again. */
     val moonMods: Map<String, String> = emptyMap(),
     /** Libby titles whose page count couldn't be found, so they aren't looked up on every sync. */

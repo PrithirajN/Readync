@@ -66,8 +66,51 @@ class KosyncClient(private val account: Account) {
         if (!r.ok) throw ServiceException("The KOSync server answered HTTP ${r.code}")
     }
 
+    /**
+     * Every document on the server with its position, device and time, where the server can list
+     * them. Stock KOSync can't; some servers can, with the same sign-in (kosync-dotnet's
+     * /manage/users/documents, and the like). Null when this server offers no list.
+     */
+    fun documents(): List<KosyncProgress>? {
+        val u = Http.enc(account.username)
+        val tries = listOf("/manage/users/documents?username=$u", "/syncs/progress", "/api/documents", "/documents", "/api/v1/documents")
+        for (path in tries) {
+            val r = runCatching { Http.request("GET", account.server + path, headers()) }.getOrNull() ?: continue
+            if (r.code == 401 || r.code == 403 || !r.ok) continue
+            parseDocuments(r.body)?.let { return it }
+        }
+        return null
+    }
+
     companion object {
         const val SUGGESTED_SERVER = "https://sync.koreader.rocks"
+
+        /**
+         * A list of documents in whatever shape a server sends: an array, or one inside
+         * "documents" / "items" / "data", each with its hash ("document", "documentHash",
+         * "hash", "id"), percentage (0–1, or 0–100), device and time. Null when it isn't one.
+         */
+        internal fun parseDocuments(body: String): List<KosyncProgress>? {
+            val t = body.trim()
+            val arr = when {
+                t.startsWith("[") -> runCatching { org.json.JSONArray(t) }.getOrNull()
+                t.startsWith("{") -> runCatching { JSONObject(t) }.getOrNull()?.let { o ->
+                    listOf("documents", "items", "data", "results", "progress").firstNotNullOfOrNull { k -> o.optJSONArray(k) }
+                }
+                else -> null
+            } ?: return null
+            val out = ArrayList<KosyncProgress>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = listOf("document", "documentHash", "document_hash", "hash", "id").firstNotNullOfOrNull { k -> o.str(k)?.takeIf { it.matches(Regex("(?i)[0-9a-f]{32}")) } } ?: continue
+                val pct = (o.num("percentage") ?: o.num("progress_percent"))?.let { if (it > 1.0) it / 100.0 else it } ?: continue
+                fun iso(k: String) = o.str(k)?.let { s -> runCatching { java.time.OffsetDateTime.parse(s).toEpochSecond() }.getOrNull() ?: runCatching { java.time.LocalDateTime.parse(s.removeSuffix("Z")).toEpochSecond(java.time.ZoneOffset.UTC) }.getOrNull() }
+                val ts = (o.long("timestamp") ?: o.long("updated") ?: iso("timestamp") ?: iso("updatedAt") ?: iso("updated_at") ?: 0L)
+                    .let { if (it > 100_000_000_000L) it / 1000 else it }
+                out += KosyncProgress(id.lowercase(), pct.coerceIn(0.0, 1.0), ts, o.str("device"))
+            }
+            return out.takeIf { it.isNotEmpty() || arr.length() == 0 }
+        }
 
         /**
          * Signs in: tries the address as given (https first when no scheme is typed) and

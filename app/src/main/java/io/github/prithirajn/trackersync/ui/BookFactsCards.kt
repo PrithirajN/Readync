@@ -6,6 +6,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -20,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
@@ -215,6 +218,75 @@ fun ReadingStatsCard(book: Book) {
                 }
             }
             if (r.eta != null) Quiet("At your pace since you started.", color = c.faint)
+        }
+    }
+}
+
+/**
+ * Day by day: each day you read the book, with the pages and minutes when they're known (from
+ * KOReader's statistics, Hardcover's journal…), newest first, with a strip of bars for the shape
+ * of it. Shown only when there's any.
+ */
+@Composable
+fun DayByDayCard(days: Map<String, io.github.prithirajn.trackersync.data.ReadDay>?) {
+    if (days.isNullOrEmpty()) return
+    val c = Cp.colors
+    val sorted = remember(days) { days.entries.sortedByDescending { it.key } }
+    var all by remember(days) { mutableStateOf(false) }
+    val totalPages = remember(days) { days.values.mapNotNull { it.pages }.sum() }
+    val totalMinutes = remember(days) { days.values.mapNotNull { it.minutes }.sum() }
+    val fmt = remember { java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy") }
+    fun hours(m: Int) = if (m < 60) "$m min" else "${m / 60} h" + (if (m % 60 > 0) " ${m % 60} min" else "")
+    VSpace(16)
+    CpCard {
+        Column(Modifier.padding(16.dp)) {
+            Text("Day by day", style = CpType.small, color = c.quiet)
+            VSpace(4)
+            Text(
+                listOfNotNull(
+                    "${days.size} day${if (days.size == 1) "" else "s"} of reading",
+                    totalPages.takeIf { it > 0 }?.let { "$it pages" },
+                    totalMinutes.takeIf { it > 0 }?.let { hours(it) },
+                ).joinToString(" · "),
+                style = CpType.bodyStrong, color = c.text,
+            )
+            // The shape of it: one bar per day (oldest on the left), by pages, else minutes.
+            val bars = sorted.reversed().takeLast(60)
+            val values = bars.map { (it.value.pages ?: it.value.minutes ?: 0).toFloat() }
+            val top = values.maxOrNull()?.takeIf { it > 0f }
+            if (top != null && bars.size > 1) {
+                VSpace(12)
+                Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    for (v in values) {
+                        Box(
+                            Modifier.weight(1f).fillMaxHeight((v / top).coerceIn(0.06f, 1f))
+                                .clip(CpShapes.pill).background(c.accent.copy(alpha = 0.75f))
+                        )
+                    }
+                }
+            }
+            VSpace(10)
+            for ((day, d) in (if (all) sorted else sorted.take(7))) {
+                val date = runCatching { java.time.LocalDate.parse(day) }.getOrNull()
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(date?.let { fmt.format(it) } ?: day, style = CpType.body, color = c.textMid, modifier = Modifier.weight(1f))
+                    Text(
+                        listOfNotNull(
+                            d.pages?.let { "$it page${if (it == 1) "" else "s"}" },
+                            d.minutes?.let { hours(it) },
+                            d.reached?.let { "to ${Math.round(it * 100)}%" },
+                        ).joinToString(" · ").ifEmpty { "read" },
+                        style = CpType.body, color = c.text,
+                    )
+                }
+            }
+            if (sorted.size > 7) {
+                VSpace(6)
+                PillButton(if (all) "Show fewer" else "All ${sorted.size} days", { all = !all })
+            }
+            val from = remember(days) { days.values.map { it.source }.distinct().joinToString(", ") }
+            VSpace(6)
+            Quiet("From $from.", color = c.faint)
         }
     }
 }

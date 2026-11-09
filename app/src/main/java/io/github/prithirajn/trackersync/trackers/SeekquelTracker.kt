@@ -580,8 +580,8 @@ object SeekquelTracker : Tracker {
                         fraction = fractionOf(b),
                         updatedAt = b.str("updated_at")?.let { parseTime(it) } ?: 0L,
                         keys = keysOf(b, "book"),
-                        finishedAt = b.str("finished_at")?.let { parseTime(it) },
-                        startedAt = b.str("started_at")?.let { parseTime(it) },
+                        finishedAt = dateOf(b, "finished_at", "finished_on", "date_finished", "finish_date", "read_at", "completed_at"),
+                        startedAt = dateOf(b, "started_at", "started_on", "date_started", "start_date"),
                         rating = b.num("rating")?.takeIf { it > 0 },
                         pageCount = b.num("page_count")?.toInt()?.takeIf { it > 0 },
                         mediaKind = b.str("media_kind"),
@@ -647,9 +647,28 @@ object SeekquelTracker : Tracker {
         return null
     }
 
-    private fun parseTime(s: String): Long? =
-        runCatching { java.time.OffsetDateTime.parse(s).toEpochSecond() }.getOrNull()
-            ?: runCatching { java.time.LocalDateTime.parse(s.removeSuffix("Z")).toEpochSecond(java.time.ZoneOffset.UTC) }.getOrNull()
+    /**
+     * A time Seekquel sends: a full timestamp ("2024-02-10T18:20:00Z"), or a plain day
+     * ("2024-02-10", how reading dates usually come), read as noon that day here so it stays that day.
+     */
+    internal fun parseTime(s: String): Long? {
+        val t = s.trim()
+        return runCatching { java.time.OffsetDateTime.parse(t).toEpochSecond() }.getOrNull()
+            ?: runCatching { java.time.LocalDateTime.parse(t.removeSuffix("Z")).toEpochSecond(java.time.ZoneOffset.UTC) }.getOrNull()
+            ?: runCatching { java.time.LocalDate.parse(t.take(10)).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toEpochSecond() }.getOrNull()
+            ?: t.toLongOrNull()?.let { if (it > 100_000_000_000L) it / 1000 else it }?.takeIf { it > 0 }
+    }
+
+    /** The first of [keys] that holds a time: at the top, or in a "dates" / "read" / "reading" object inside. */
+    private fun dateOf(b: JSONObject, vararg keys: String): Long? {
+        val places = listOfNotNull(b, b.obj("dates"), b.obj("read"), b.obj("reading"), b.obj("latest_read"), b.optJSONArray("reads")?.optJSONObject(0))
+        for (o in places) for (k in keys) {
+            val v = o.opt(k) ?: continue
+            if (v == JSONObject.NULL) continue
+            parseTime(v.toString())?.let { return it }
+        }
+        return null
+    }
 
     override fun state(session: Session, link: Link): RemoteState {
         val r = send(session, "GET", "/documents/${Http.enc(link.document)}")

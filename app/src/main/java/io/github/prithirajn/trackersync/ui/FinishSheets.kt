@@ -431,7 +431,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
 
     val existing = state.paperClips.filter { it.document == book.document }.sortedByDescending { it.createdAt }
     // The highlight you already have for this passage (from your e-reader or an earlier snap), so it isn't added twice.
-    val already = remember(text, state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips) {
+    val already = remember(text, state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips) {
         if (text.length < 8) null
         else Highlights.forBook(state, book.document).map { it.clip }.firstOrNull { cl ->
             val a = cl.text.lowercase().filter { it.isLetterOrDigit() }
@@ -595,7 +595,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
 @Composable
 fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
     val c = Cp.colors
-    val items = remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.clipEdits, state.sentClippings, state.resend, state.clipHidden, book.document) {
+    val items = remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.sentClippings, state.resend, state.clipHidden, book.document) {
         Highlights.forBook(state, book.document)
     }
     var open by remember { mutableStateOf<String?>(null) }
@@ -673,7 +673,7 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
 
 private fun highlightLine(item: Highlights.Item): String {
     val parts = ArrayList<String>()
-    parts += if (item.fromPaper) "Physical book" else "CrossPoint"
+    parts += item.from
     if (item.edited) parts += "edited"
     io.github.prithirajn.trackersync.sync.HighlightPosition.label(item.clip)?.let { parts += it }
     parts += java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(item.clip.createdAt * 1000))
@@ -710,8 +710,11 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
 
     FlowSheet("Highlight", onClose) {
         Quiet(
-            if (item.fromPaper) "From your physical book. Your changes replace it here."
-            else "From CrossPoint. Your note is saved on crosspoint-sync too; an edited passage is kept here and sent from here.",
+            when (item.from) {
+                "CrossPoint" -> "From CrossPoint. Your note is saved on crosspoint-sync too; an edited passage is kept here and sent from here."
+                "Physical book" -> "From your physical book. Your changes replace it here."
+                else -> "From ${item.from}. Your changes are kept here and sent from here."
+            },
         )
         VSpace(14)
         MultiLineField(text, { text = it }, "Passage", "The highlighted text", minHeight = 90)
@@ -788,7 +791,7 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
             }, danger = true)
             PillButton("Delete", { deleting = !deleting }, danger = true)
         }
-        if (!item.fromPaper) {
+        if (item.from == "CrossPoint") {
             VSpace(6)
             Quiet("Note changes (and deleting it) go to CrossPoint too; the passage's text stays as it is there.", color = c.faint)
         }
@@ -798,7 +801,7 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
                 Column(Modifier.padding(14.dp)) {
                     Text("Delete this highlight?", style = CpType.bodyStrong, color = c.text)
                     Quiet("It's removed from this book here and never sent again.")
-                    if (!item.fromPaper) {
+                    if (item.from == "CrossPoint") {
                         VSpace(10)
                         CpToggle(alsoCrossPoint, { alsoCrossPoint = it }, "Also delete on CrossPoint (and your reader)")
                         if (!alsoCrossPoint) Quiet("Kept on crosspoint-sync and the reader; just hidden here.", color = c.faint)
@@ -815,7 +818,7 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
                     VSpace(12)
                     BigButton("Delete highlight", {
                         busy = true; error = null
-                        vm.deleteHighlight(item.clip.id, onCrossPoint = !item.fromPaper && alsoCrossPoint, fromTrackers = alsoTrackers) { e ->
+                        vm.deleteHighlight(item.clip.id, onCrossPoint = item.from == "CrossPoint" && alsoCrossPoint, fromTrackers = alsoTrackers) { e ->
                             busy = false; if (e == null) onClose() else error = e
                         }
                     }, danger = true, busy = busy)

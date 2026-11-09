@@ -271,7 +271,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Trackers.all.filter { it.updatesHighlights && store.snapshot.clipRemote["${it.id}|$clipId"] != null }.map { it.id }
         edit("Note deleted", done, syncAfter = inPlace.isNotEmpty()) {
             val s = store.snapshot
-            val shown = Highlights.forBook(s, (s.cpClips + s.paperClips).firstOrNull { it.id == clipId }?.document ?: "")
+            val shown = Highlights.forBook(s, (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).firstOrNull { it.id == clipId }?.document ?: "")
                 .firstOrNull { it.clip.id == clipId }?.clip ?: throw IllegalStateException("That highlight is gone")
             noteToCrossPoint(clipId, null)
             Highlights.edit(store, clipId, shown.text, null)
@@ -576,9 +576,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val db = android.database.sqlite.SQLiteDatabase.openDatabase(file.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY)
             try {
                 val withPages = """SELECT b.title, b.authors, COALESCE(NULLIF(b.pages, 0), MAX(p.total_pages)), b.total_read_pages,
-                                          MIN(p.start_time), COALESCE(MAX(p.start_time), b.last_open)
+                                          MIN(p.start_time), COALESCE(MAX(p.start_time), b.last_open), b.id
                                    FROM book b LEFT JOIN page_stat_data p ON p.id_book = b.id GROUP BY b.id"""
-                val plain = "SELECT title, authors, pages, total_read_pages, NULL, last_open FROM book"
+                val plain = "SELECT title, authors, pages, total_read_pages, NULL, last_open, id FROM book"
+                // Day by day: pages turned and minutes spent on each book each day, in this phone's time zone.
+                val perDay = HashMap<Long, MutableMap<String, io.github.prithirajn.trackersync.data.ReadDay>>()
+                runCatching {
+                    db.rawQuery(
+                        """SELECT id_book, date(start_time, 'unixepoch', 'localtime') AS d, COUNT(DISTINCT page), SUM(duration)
+                           FROM page_stat_data WHERE start_time > 0 GROUP BY id_book, d""", null,
+                    ).use { c ->
+                        while (c.moveToNext()) {
+                            val day = if (c.isNull(1)) continue else c.getString(1)
+                            val minutes = Math.round(c.getLong(3) / 60.0).toInt()
+                            perDay.getOrPut(c.getLong(0)) { HashMap() }[day] = io.github.prithirajn.trackersync.data.ReadDay(
+                                pages = c.getInt(2).takeIf { it > 0 }, minutes = minutes.takeIf { it > 0 }, source = "KOReader",
+                            )
+                        }
+                    }
+                }
                 val cursor = runCatching { db.rawQuery(withPages, null) }.getOrNull()
                     ?: runCatching { db.rawQuery(plain, null) }.getOrNull()
                     ?: throw IllegalStateException("That database doesn't have KOReader's reading statistics")
@@ -595,6 +611,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             readPages = intAt(3)?.toInt(),
                             firstRead = intAt(4)?.takeIf { it > 0 },
                             lastRead = intAt(5)?.takeIf { it > 0 },
+                            days = intAt(6)?.let { perDay[it] } ?: emptyMap(),
                         )
                     }
                 }
@@ -647,7 +664,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     store.log(null, "Brought in ${plan.source.name} history: ${res.added} new, ${res.filled} filled in")
                     notify(
                         "${plan.source.name} history brought in",
-                        "${res.added} book${if (res.added == 1) "" else "s"} added, ${res.filled} filled in. Nothing was sent to your trackers.",
+                        listOfNotNull(
+                            "${res.added} book${if (res.added == 1) "" else "s"} added",
+                            "${res.filled} filled in",
+                            res.highlights.takeIf { it > 0 }?.let { "$it highlight${if (it == 1) "" else "s"}" },
+                            res.days.takeIf { it > 0 }?.let { "$it reading day${if (it == 1) "" else "s"}" },
+                        ).joinToString(", ") + ". Nothing was sent to your trackers.",
                     )
                 }
                 done(null)
@@ -1166,6 +1188,95 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- KOReader highlights, from HighlightSync / AnnotationSync files on WebDAV (Koofr…) ----
+
+    fun addKoHighlights(server: String, email: String, appPassword: String, folder: String, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            var found = 0
+            val error = try {
+                io {
+                    val address = server.trim().let { if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it" }.trimEnd('/')
+                    val account = io.github.prithirajn.trackersync.data.Account(address, email.trim(), appPassword.trim())
+                    val client = io.github.prithirajn.trackersync.source.KoHighlightsClient(account)
+                    if (!client.verify()) throw IllegalStateException("The server rejected that email and app password. Check them (an app password, not your main one) and try again.")
+                    val hint = folder.trim().takeIf { it.isNotEmpty() }?.let { if (it.startsWith("/")) it else "/$it" }
+                    val folders = runCatching { client.findFolders(listOfNotNull(hint)) }.getOrDefault(emptyList())
+                    found = folders.size
+                    store.update {
+                        it.copy(
+                            koHl = account, koHlFolders = folders.ifEmpty { listOfNotNull(hint) }, koHlOkAt = System.currentTimeMillis(),
+                            koHlError = if (folders.isEmpty()) Health.KOHL_NO_FILES else null, koHlMods = emptyMap(), koHlUnmatched = emptyList(),
+                        )
+                    }
+                }
+                null
+            } catch (e: Exception) {
+                when (e) {
+                    is io.github.prithirajn.trackersync.net.NetworkException -> "Couldn't reach that address. Check it, and that you're online."
+                    else -> e.message ?: "Couldn't connect"
+                }
+            }
+            done(error)
+            if (error == null) {
+                if (found > 0) notify("KOReader highlights connected", "Reading them now.")
+                else notify("Connected", "No KOReader highlight files there yet. Check the plugin syncs to this storage, or type its folder.")
+                syncNow(quiet = true)
+            }
+        }
+    }
+
+    /** Forgets the connection; the highlights already brought in stay unless [dropHighlights]. */
+    fun removeKoHighlights(dropHighlights: Boolean = false) {
+        viewModelScope.launch {
+            io {
+                store.update {
+                    it.copy(koHl = null, koHlFolders = emptyList(), koHlOkAt = 0L, koHlError = null, koHlMods = emptyMap(), koHlUnmatched = emptyList(),
+                        koClips = if (dropHighlights) emptyList() else it.koClips)
+                }
+            }
+        }
+    }
+
+    /** KOReader's sidecars from a folder on this device: the books folder, or koreader/docsettings. */
+    fun setKoLocal(uri: android.net.Uri) {
+        viewModelScope.launch {
+            runCatching { getApplication<Application>().contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            io { store.update { it.copy(koLocal = uri.toString(), koLocalOkAt = 0L, koLocalError = null) } }
+            io { runCatching { SyncEngine(store).pullKoHighlights() } }
+            Health.koLocal(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
+            syncNow(quiet = true)
+        }
+    }
+
+    fun removeKoLocal() {
+        viewModelScope.launch {
+            val folder = store.snapshot.koLocal
+            io { store.update { s -> s.copy(koLocal = null, koLocalOkAt = 0L, koLocalError = null, koHlMods = s.koHlMods.filterKeys { !it.startsWith("local:") }) } }
+            folder?.let { f -> runCatching { getApplication<Application>().contentResolver.releasePersistableUriPermission(android.net.Uri.parse(f), android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+        }
+    }
+
+    fun setKoToCrossPoint(on: Boolean) {
+        viewModelScope.launch {
+            io { store.update { it.copy(koToCrossPoint = on) } }
+            if (on) syncNow(quiet = true)
+        }
+    }
+
+    fun setCpToKo(on: Boolean) {
+        viewModelScope.launch {
+            io { store.update { it.copy(cpToKo = on, cpToKoNote = null) } }
+            if (on) syncNow(quiet = true)
+        }
+    }
+
+    fun checkKoHighlights() {
+        viewModelScope.launch {
+            io { runCatching { SyncEngine(store).pullKoHighlights() } }
+            Health.koHl(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
+        }
+    }
+
     fun removeMoon() {
         viewModelScope.launch { io { store.update { it.copy(moon = null, moonFolder = null, moonOkAt = 0L, moonError = null, moonSeen = emptyMap(), moonMods = emptyMap()) } } }
     }
@@ -1176,6 +1287,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Health.moon(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
         }
     }
+
+    // ---- KOSync documents linked to a book by hand ----
+
+    /** What KOSync holds for a document ID (position, device, when), to check it's the right book before linking. */
+    fun kosyncPeek(id: String, done: (io.github.prithirajn.trackersync.source.KosyncProgress?, String?) -> Unit) {
+        val account = store.snapshot.kosync ?: return done(null, "Add your KOSync server under Services first")
+        viewModelScope.launch {
+            try {
+                val p = io { KosyncClient(account).progress(id.trim().lowercase()) }
+                done(p, if (p == null) "KOSync has nothing under that ID. Check it's copied exactly from your KOSync dashboard." else null)
+            } catch (e: Exception) {
+                done(null, e.message ?: "Couldn't reach KOSync")
+            }
+        }
+    }
+
+    /** Every document on the KOSync server, newest first, when the server can list them (null when it can't). */
+    fun kosyncDocuments(done: (List<io.github.prithirajn.trackersync.source.KosyncProgress>?) -> Unit) {
+        val account = store.snapshot.kosync ?: return done(null)
+        viewModelScope.launch {
+            val list = runCatching { io { KosyncClient(account).documents() } }.getOrNull()
+            done(list?.sortedByDescending { it.timestamp })
+        }
+    }
+
+    fun linkKosync(document: String, id: String) {
+        val clean = id.trim().lowercase()
+        if (clean.isEmpty() || clean == document) return
+        viewModelScope.launch {
+            io { store.update { s -> s.copy(kosyncIds = s.kosyncIds + (document to ((s.kosyncIds[document] ?: emptyList()) + clean).distinct())) } }
+            notify("KOSync document linked", "Its position is checked with this book's on every sync.")
+            syncNow(quiet = true)
+        }
+    }
+
+    fun unlinkKosync(document: String, id: String) {
+        viewModelScope.launch {
+            io {
+                store.update { s ->
+                    val left = (s.kosyncIds[document] ?: emptyList()) - id
+                    s.copy(kosyncIds = if (left.isEmpty()) s.kosyncIds - document else s.kosyncIds + (document to left))
+                }
+            }
+        }
+    }
+
+    /** The KOSync ID KOReader gives a file when it matches by file name: the MD5 of the name. */
+    fun kosyncIdForFileName(name: String): String = io.github.prithirajn.trackersync.source.CrossPointClient.md5(name.trim())
 
     fun removeKosync() {
         viewModelScope.launch { io { store.update { it.copy(kosync = null, kosyncOkAt = 0L, kosyncError = null) } } }
@@ -2132,8 +2291,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun syncNow(quiet: Boolean = false) {
         viewModelScope.launch {
-            val result = io { SyncEngine(store).run() }
-            if (!quiet) notify(result.message, error = result.needsAttention.isNotEmpty())
+            // Told as soon as your trackers are up to date; the extras finish quietly after.
+            var told = false
+            val result = io {
+                SyncEngine(store).runThen { r ->
+                    told = true
+                    if (!quiet) viewModelScope.launch { notify(r.message, error = r.needsAttention.isNotEmpty()) }
+                }
+            }
+            if (!quiet && !told) notify(result.message, error = result.needsAttention.isNotEmpty())
         }
     }
 
@@ -2480,7 +2646,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val finished = books.filter { it.status == ReadStatus.FINISHED && inMonth(it.finishedAt ?: it.timestamp) }
         val reading = books.filter { it.status == ReadStatus.READING && inMonth(it.timestamp) }.sortedByDescending { it.timestamp }
         val pages = io.github.prithirajn.trackersync.sync.Shelves.pagesThisMonth(s, null)
-        val highlights = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).filter { it.id !in s.clipHidden && inMonth(it.createdAt) }.distinctBy { it.id }.size
+        val highlights = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.id !in s.clipHidden && inMonth(it.createdAt) }.distinctBy { it.id }.size
         withModel("The model couldn't write a recap that kept to your numbers", { m ->
             io.github.prithirajn.trackersync.ai.Assistant.monthRecap(m, io.github.prithirajn.trackersync.sync.Shelves.monthName(), finished, reading, pages, highlights)
         }, done)
@@ -2501,7 +2667,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** An answer about your reading, from your library and highlights, worked out on the phone. */
     fun aiAsk(question: String, done: (String?, String?) -> Unit) {
         val s = store.snapshot
-        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).filter { it.id !in s.clipHidden }.distinctBy { it.id }
+        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.id !in s.clipHidden }.distinctBy { it.id }
         withModel("The model couldn't answer that", { m -> io.github.prithirajn.trackersync.ai.Assistant.ask(m, question, s.books.values, clips) }, done)
     }
 

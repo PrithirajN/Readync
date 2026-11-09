@@ -48,6 +48,7 @@ class TrackerSyncApp : Application() {
         }
         // Mihon's automatic backups, from the folder you chose.
         io.github.prithirajn.trackersync.ui.MihonFolder.install(this)
+        io.github.prithirajn.trackersync.ui.KoSidecarFolder.install(this)
         fixLinksFromV010()
         resendFromV011()
         highlightsFromV012()

@@ -858,6 +858,7 @@ private fun BookSheet(
             )
             FeelCard(state.facts[book.document])
             ReadingStatsCard(book)
+            DayByDayCard(state.readingDays[book.document])
             HighlightsSection(vm, state, book)
             // Right under the book, where it's reachable without scrolling past every tracker.
             if (book.held) {

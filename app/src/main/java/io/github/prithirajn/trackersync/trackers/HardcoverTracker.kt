@@ -516,7 +516,97 @@ object HardcoverTracker : Tracker {
             if (rows.size < 200) break
             offset += 200
         }
-        return out
+        // Your reading journal: quotes become highlights, dated progress updates become reading days.
+        val journal = runCatching { journal(session) }.getOrDefault(emptyMap())
+        if (journal.isEmpty()) return out
+        return out.map { lb ->
+            val j = journal[lb.id] ?: return@map lb
+            lb.copy(quotes = j.first, days = j.second)
+        }
+    }
+
+    /**
+     * Your reading journal on Hardcover, per book id: its quotes (as highlights) and its progress
+     * updates, as what you'd reached by the end of each day and the pages read since the day
+     * before. Empty when Hardcover doesn't share it with this token.
+     */
+    internal fun journal(session: Session): Map<String, Pair<List<io.github.prithirajn.trackersync.data.ImportedQuote>, Map<String, io.github.prithirajn.trackersync.data.ReadDay>>> {
+        val fields = "id event entry book_id action_at created_at metadata"
+        val events = """["quote", "progress_updated"]"""
+        val viaMe = """query (${"$"}o: Int!) { me { reading_journals(order_by: { id: asc }, limit: 200, offset: ${"$"}o, where: { event: { _in: $events } }) { $fields } } }"""
+        val viaUser = """query (${"$"}o: Int!, ${"$"}u: Int!) { reading_journals(order_by: { id: asc }, limit: 200, offset: ${"$"}o, where: { user_id: { _eq: ${"$"}u }, event: { _in: $events } }) { $fields } }"""
+        val rows = ArrayList<JSONObject>()
+        var userId: Int? = null
+        var useMe = true
+        var offset = 0
+        while (offset < 20_000) {
+            val page = try {
+                if (useMe) me(gql(session, viaMe, JSONObject().put("o", offset)))?.arr("reading_journals")?.objects()
+                else gql(session, viaUser, JSONObject().put("o", offset).put("u", userId)).arr("reading_journals")?.objects()
+            } catch (e: ServiceException) {
+                if (!useMe || offset > 0) break
+                // Not reachable from "me": by your user id instead.
+                userId = runCatching { me(gql(session, "query { me { id } }"))?.int("id") }.getOrNull() ?: break
+                useMe = false
+                continue
+            } ?: break
+            rows += page
+            if (page.size < 200) break
+            offset += 200
+        }
+        val zone = java.time.ZoneId.systemDefault()
+        fun timeOf(o: JSONObject): Long? = (o.str("action_at") ?: o.str("created_at"))?.let { t ->
+            runCatching { java.time.OffsetDateTime.parse(t).toEpochSecond() }.getOrNull()
+                ?: runCatching { java.time.LocalDateTime.parse(t.removeSuffix("Z")).toEpochSecond(java.time.ZoneOffset.UTC) }.getOrNull()
+                ?: runCatching { java.time.LocalDate.parse(t.take(10)).atTime(12, 0).atZone(zone).toEpochSecond() }.getOrNull()
+        }
+        fun meta(o: JSONObject): JSONObject? = when (val m = o.opt("metadata")) {
+            is JSONObject -> m
+            is String -> runCatching { JSONObject(m) }.getOrNull()
+            else -> null
+        }
+        val out = HashMap<String, Pair<MutableList<io.github.prithirajn.trackersync.data.ImportedQuote>, java.util.TreeMap<String, Pair<Int?, Double?>>>>()
+        for (r in rows) {
+            val book = r.idString("book_id") ?: continue
+            val at = timeOf(r)
+            val m = meta(r)
+            val slot = out.getOrPut(book) { mutableListOf<io.github.prithirajn.trackersync.data.ImportedQuote>() to java.util.TreeMap() }
+            when (r.str("event")) {
+                "quote" -> {
+                    val text = r.str("entry")?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+                    slot.first += io.github.prithirajn.trackersync.data.ImportedQuote(
+                        text = text,
+                        note = m?.str("note") ?: m?.str("comment"),
+                        createdAt = at,
+                        page = m?.firstNumber("page", "pages", "page_number")?.toInt()?.takeIf { it > 0 },
+                        percent = m?.firstNumber("percent", "percentage", "progress")?.let { if (it > 1.0) it / 100.0 else it }?.coerceIn(0.0, 1.0),
+                    )
+                }
+                "progress_updated" -> {
+                    val day = at?.let { java.time.Instant.ofEpochSecond(it).atZone(zone).toLocalDate().toString() } ?: continue
+                    val pageNow = m?.firstNumber("page", "pages", "progress_pages", "current_page")?.toInt()
+                    val pct = m?.firstNumber("percent", "percentage", "progress")?.let { if (it > 1.0) it / 100.0 else it }?.coerceIn(0.0, 1.0)
+                    if (pageNow == null && pct == null) continue
+                    // The furthest you'd got by the end of that day.
+                    val prev = slot.second[day]
+                    slot.second[day] = maxOf(pageNow ?: 0, prev?.first ?: 0).takeIf { it > 0 } to (listOfNotNull(pct, prev?.second).maxOrNull())
+                }
+            }
+        }
+        return out.mapValues { (_, v) ->
+            var lastPage: Int? = null
+            val days = LinkedHashMap<String, io.github.prithirajn.trackersync.data.ReadDay>()
+            for ((day, reached) in v.second) {
+                val (page, pct) = reached
+                days[day] = io.github.prithirajn.trackersync.data.ReadDay(
+                    pages = if (page != null && lastPage != null) (page - lastPage!!).takeIf { it > 0 } else null,
+                    reached = pct,
+                    source = "Hardcover",
+                )
+                if (page != null) lastPage = page
+            }
+            v.first.toList() to days
+        }.filterValues { it.first.isNotEmpty() || it.second.isNotEmpty() }
     }
 
     override fun shelfCandidates(session: Session): List<RemoteBook> {

@@ -155,6 +155,10 @@ data class LibraryBook(
     val description: String? = null,
     /** Your review there, when the tracker shares it (for bringing your history in). */
     val review: String? = null,
+    /** Day by day, when the tracker keeps it ("2024-03-09" -> that day), for bringing your history in. */
+    val days: Map<String, io.github.prithirajn.trackersync.data.ReadDay> = emptyMap(),
+    /** Your highlights there, when the tracker shares them, for bringing your history in. */
+    val quotes: List<io.github.prithirajn.trackersync.data.ImportedQuote> = emptyList(),
 )
 
 interface Tracker {

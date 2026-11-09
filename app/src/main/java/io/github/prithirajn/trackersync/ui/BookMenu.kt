@@ -55,7 +55,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 /** What the ⋯ menu on a book opens. */
-enum class BookAction { EDIT, COVER, DATES, PAGES, MERGE, SEPARATE, REMOVE, REREAD, WEBNOVEL }
+enum class BookAction { EDIT, COVER, DATES, PAGES, MERGE, SEPARATE, REMOVE, REREAD, WEBNOVEL, KOSYNC }
 
 /**
  * The companion app's ⋯ menu for a book: edit title & author, change cover, reading dates,
@@ -87,6 +87,11 @@ fun BookMenuButton(state: Snapshot, book: Book, webNovelLinked: Boolean = false,
             MenuItem(R.drawable.lucide_hash, "Print pages", trailing = pagesTrailing) { pick(BookAction.PAGES) }
             MenuItem(R.drawable.lucide_merge, "Merge a duplicate", trailing = likelyTrailing) { pick(BookAction.MERGE) }
             if (!webNovelLinked && !book.isMangaOrComic) MenuItem(R.drawable.lucide_globe, "Find it as a web novel") { pick(BookAction.WEBNOVEL) }
+            if (state.kosync != null) {
+                val n = state.kosyncIds[book.document]?.size ?: 0
+                val linkedTrailing: (@Composable () -> Unit)? = if (n > 0) { @Composable { Text(n.toString(), style = CpType.body, color = c.quiet) } } else null
+                MenuItem(R.drawable.lucide_link, "KOSync documents", trailing = linkedTrailing) { pick(BookAction.KOSYNC) }
+            }
             if (book.aliases.isNotEmpty()) {
                 MenuItem(
                     R.drawable.lucide_split,
@@ -125,6 +130,7 @@ fun BookActionSheet(vm: AppViewModel, state: Snapshot, book: Book, action: BookA
         BookAction.COVER -> CoverSheet(vm, book, onClose)
         BookAction.DATES -> DatesSheet(vm, book, onClose)
         BookAction.PAGES -> PagesSheet(vm, book, onClose)
+        BookAction.KOSYNC -> KosyncLinkSheet(vm, state, book, onClose)
         BookAction.MERGE -> MergeSheet(vm, state, book, onClose)
         BookAction.SEPARATE -> ConfirmSheet(
             title = if (book.aliases.size == 1) "Separate the merged copy?" else "Separate ${book.aliases.size} merged copies?",
@@ -480,5 +486,111 @@ private fun MergeSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: (
             onConfirm = { vm.merge(dupe.document, book.document, stats) { if (it == null) onClose() } },
             onClose = { confirm = null },
         )
+    }
+}
+
+
+/**
+ * KOSync documents for this book: the same book read on a device that fingerprints it differently
+ * (another copy of the file, or another matching method), linked by hand so its position counts.
+ * An ID is checked against KOSync first; a file name can be turned into the ID KOReader gives it
+ * when it matches by name.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun KosyncLinkSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit) {
+    val c = Cp.colors
+    var id by remember { mutableStateOf("") }
+    var fileName by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var found by remember { mutableStateOf<io.github.prithirajn.trackersync.source.KosyncProgress?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val linked = state.kosyncIds[book.document] ?: emptyList()
+    val fmt = remember { java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm") }
+    // The server's own list, where it can give one: pick instead of pasting.
+    var docs by remember { mutableStateOf<List<io.github.prithirajn.trackersync.source.KosyncProgress>?>(null) }
+    var listed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { vm.kosyncDocuments { docs = it; listed = true } }
+    // IDs some book here already uses (its own, or linked): not offered for this one.
+    val taken = remember(state.books, state.kosyncIds) { state.books.keys + state.books.values.flatMap { it.aliases } + state.kosyncIds.values.flatten() }
+    fun check(target: String) {
+        busy = true; error = null; found = null
+        vm.kosyncPeek(target) { p, e -> busy = false; found = p; error = e }
+    }
+    MenuSheet("KOSync documents", onClose) {
+        Quiet("KOSync knows a book only by a fingerprint of its file, so the same book read on another device can turn up under a different ID. Link that ID here and its position counts for this book too.")
+        VSpace(12)
+        Text("This book on CrossPoint", style = CpType.small, color = c.quiet)
+        Text(book.document, style = CpType.body, color = c.textMid)
+        if (linked.isNotEmpty()) {
+            VSpace(12)
+            Text("Linked", style = CpType.small, color = c.quiet)
+            for (l in linked) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(l, style = CpType.body, color = c.text, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    PillButton("Unlink", { vm.unlinkKosync(book.document, l) }, danger = true)
+                }
+            }
+        }
+        val choices = docs?.filter { it.document != book.document && it.document !in linked && it.document !in taken }
+        if (!listed) {
+            VSpace(14)
+            Quiet("Looking for your documents on the KOSync server…", color = c.faint)
+        } else if (choices != null) {
+            VSpace(16)
+            Text("On your KOSync server", style = CpType.label, color = c.text)
+            Quiet(
+                if (choices.isEmpty()) "Every document there already belongs to a book here."
+                else "Not linked to any book here, newest first. The likeliest (a position close to this book's) are marked; tap one to check it.",
+                color = c.faint,
+            )
+            VSpace(6)
+            for (d in choices.take(30)) {
+                val likely = kotlin.math.abs(d.percentage - book.percentage) <= 0.05
+                Row(
+                    Modifier.fillMaxWidth().clickable { id = d.document; found = d; error = null }.padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${Math.round(d.percentage * 1000) / 10.0}% \u00B7 ${d.device ?: "unknown device"}", style = CpType.body, color = c.text)
+                        Text(
+                            d.document.take(12) + "\u2026 \u00B7 " + (if (d.timestamp > 0) fmt.format(Instant.ofEpochSecond(d.timestamp).atZone(ZoneId.systemDefault())) else "no date"),
+                            style = CpType.small, color = c.quiet,
+                        )
+                    }
+                    if (likely) Chip("likely", color = c.accentText, background = c.accentTint)
+                }
+            }
+        }
+        VSpace(16)
+        CpTextField(id, { id = it.trim(); found = null; error = null }, if (choices != null) "Or paste a document ID" else "Document ID", placeholder = "From your KOSync dashboard, e.g. 51e343…")
+        VSpace(8)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PillButton(if (busy) "Checking…" else "Check it", { if (id.isNotBlank() && !busy) check(id) }, outlined = false)
+        }
+        found?.let { p ->
+            VSpace(10)
+            CpCard {
+                Column(Modifier.padding(14.dp)) {
+                    Text("${Math.round(p.percentage * 1000) / 10.0}% · ${p.device ?: "unknown device"}", style = CpType.bodyStrong, color = c.text)
+                    Quiet("Updated " + fmt.format(Instant.ofEpochSecond(p.timestamp).atZone(ZoneId.systemDefault())) + ". This book is at ${book.percent}% here.", color = c.faint)
+                    VSpace(10)
+                    BigButton("Link to this book", { vm.linkKosync(book.document, p.document); onClose() }, enabled = p.document.lowercase() !in linked && p.document.lowercase() != book.document)
+                }
+            }
+        }
+        error?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
+        VSpace(18)
+        Text("Or from the file's name", style = CpType.label, color = c.text)
+        Quiet("If KOReader on that device matches by file name (Progress sync › Document matching › Filename), type the file's exact name, extension included.", color = c.faint)
+        VSpace(8)
+        CpTextField(fileName, { fileName = it; found = null; error = null }, "File name", placeholder = "The Gate of the Feral Gods - Matt Dinniman.epub")
+        if (fileName.isNotBlank()) {
+            val fromName = remember(fileName) { vm.kosyncIdForFileName(fileName) }
+            VSpace(6)
+            Quiet("Its ID: $fromName" + if (id.isNotBlank()) { if (id.equals(fromName, ignoreCase = true)) " · matches the ID above" else " · not the ID above" } else "", color = c.textMid)
+            VSpace(6)
+            PillButton(if (busy) "Checking…" else "Check this name's ID", { if (!busy) { id = fromName; check(fromName) } })
+        }
     }
 }

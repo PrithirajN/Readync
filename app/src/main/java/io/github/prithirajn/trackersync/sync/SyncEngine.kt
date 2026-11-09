@@ -47,7 +47,7 @@ class SyncEngine(private val store: Store) {
     )
 
     /** Highlights posted by hand in this sync, per tracker and book (to keep to a few each time). */
-    private val byHandSent = HashMap<String, Int>()
+    private val byHandSent = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     /** Set when a request failed because the phone had no connection (not because a service was down). */
     @Volatile private var offlineThisRun = false
@@ -66,7 +66,7 @@ class SyncEngine(private val store: Store) {
     }
 
     /** Whether the phone couldn't reach the internet at all this sync (checked once, by finding two well-known sites). */
-    private var onlineThisRun: Boolean? = null
+    @Volatile private var onlineThisRun: Boolean? = null
 
     private fun reallyOffline(): Boolean {
         onlineThisRun?.let { return !it }
@@ -97,9 +97,52 @@ class SyncEngine(private val store: Store) {
     /** Notes what the sync is on now, for the "Syncing…" line. */
     private fun step(what: String) = store.update { it.copy(syncStep = what) }
 
-    fun run(): Result {
-        if (!lock.tryLock()) return Result("A sync is already running")
+    /** How long each part of this sync took (part -> millis), for the line in the activity log. */
+    private val timings = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun <T> timed(part: String, block: () -> T): T {
+        val t0 = System.nanoTime()
+        try { return block() } finally { timings.merge(part, (System.nanoTime() - t0) / 1_000_000, Long::plus) }
+    }
+
+    /**
+     * [block] for each of [items] at the same time, one worker each (up to 8), and back when all
+     * are done. What one worker throws is thrown here once the others have finished.
+     */
+    private fun <T> inParallel(items: List<T>, block: (T) -> Unit) {
+        if (items.size <= 1) { items.forEach(block); return }
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(items.size, 8))
         try {
+            val futures = items.map { item -> pool.submit { block(item) } }
+            var first: Throwable? = null
+            for (f in futures) {
+                try { f.get() } catch (e: java.util.concurrent.ExecutionException) { if (first == null) first = e.cause ?: e }
+            }
+            first?.let { throw it }
+        } finally {
+            pool.shutdown()
+        }
+    }
+
+    /** "Sync took 42s: CrossPoint 3s · Kindle 18s · Trackers 15s", the slowest parts first. */
+    private fun timingLine(totalMs: Long): String {
+        fun secs(ms: Long) = if (ms < 10_000) String.format(java.util.Locale.US, "%.1fs", ms / 1000.0) else "${Math.round(ms / 1000.0)}s"
+        val parts = timings.entries.filter { it.key != "Extras" && it.value >= 300 }.sortedByDescending { it.value }.take(6)
+        return "Sync took ${secs(totalMs)}" + if (parts.isEmpty()) "" else ": " + parts.joinToString(" \u00B7 ") { "${it.key} ${secs(it.value)}" }
+    }
+
+    /**
+     * A full sync. Your progress, highlights and reviews go out first; [onDone] hears the result
+     * then, and the "Syncing…" line goes away, while the slower extras (ratings, web novels, new
+     * releases, the SFF feed) carry on in the same call before it returns.
+     */
+    fun run(): Result = runThen(null)
+
+    fun runThen(onDone: ((Result) -> Unit)?): Result {
+        if (!lock.tryLock()) return Result(if (store.snapshot.running) "A sync is already running" else "Still finishing the last sync's extras; try again in a moment")
+        try {
+            timings.clear()
+            val startedAt = System.nanoTime()
             store.update { it.copy(running = true) }
             val finishedBefore = store.snapshot.books.values.filter { it.status == ReadStatus.FINISHED }.map { it.document }.toSet()
             val result = try {
@@ -107,7 +150,7 @@ class SyncEngine(private val store: Store) {
                 var sourceNeedsAuth = false
                 if (store.snapshot.account != null) {
                     try {
-                        pullChanges()
+                        timed("CrossPoint") { pullChanges() }
                         store.update { it.copy(sourceOkAt = System.currentTimeMillis(), sourceError = null) }
                     } catch (e: AuthException) {
                         val desc = Health.describeSource(e)
@@ -128,60 +171,48 @@ class SyncEngine(private val store: Store) {
                     }
                 }
                 libraries.clear()
-                step("Kindle")
-                pullKindle()
-                step("Libby")
-                pullLibby()
-                step("Audible")
-                pullAudible()
-                step("Manga")
-                pullManga()
-                step("Sources")
-                pullSources()
-                step("KOSync")
-                pullKosync()
-                step("Moon+ Reader")
-                runCatching { pullMoon() }
+                // The other sources don't depend on each other: read all at once, each in its own
+                // worker (the store takes their changes one at a time). The trackers' own shelves
+                // come after, since they check what Kindle, Libby and Audible brought in.
+                step("Reading your sources")
+                inParallel(listOfNotNull<Pair<String, () -> Unit>>(
+                    ("Kindle" to { pullKindle() }).takeIf { store.snapshot.kindle != null },
+                    ("Libby" to { pullLibby() }).takeIf { store.snapshot.libby != null },
+                    ("Audible" to { pullAudible() }).takeIf { store.snapshot.audible != null },
+                    "Manga" to { pullManga() },
+                    ("KOSync" to { pullKosync() }).takeIf { store.snapshot.kosync != null },
+                    ("Moon+ Reader" to { runCatching { pullMoon() }; Unit }).takeIf { store.snapshot.moon != null },
+                    ("KOReader highlights" to { runCatching { pullKoHighlights() }; Unit }).takeIf { store.snapshot.koHl != null || store.snapshot.koLocal != null },
+                )) { (name, pull) -> timed(name) { pull() } }
+                step("Tracker shelves")
+                timed("Tracker shelves") { pullSources() }
                 runCatching { Handoff.find(store) }
-                runCatching { pushToCrossPoint() }
-                refreshClips()
+                timed("Back to CrossPoint") { runCatching { pushToCrossPoint() }; runCatching { pushKoToCrossPoint() } }
+                if (store.snapshot.cpToKo) timed("To KOReader") { runCatching { pushCrossPointToKo() } }
+                timed("Highlights") { refreshClips() }
                 runCatching { deleteHighlights() }
-                val highlights = try {
-                    pushHighlights()
-                } catch (e: Exception) {
-                    store.log(null, "Highlights: ${e.message}", error = true)
-                    0
-                }
                 step("Sending to trackers")
-                val progress = pushPending()
+                val highlights = timed("Highlights") {
+                    try {
+                        pushHighlights()
+                    } catch (e: Exception) {
+                        store.log(null, "Highlights: ${e.message}", error = true)
+                        0
+                    }
+                }
+                val progress = timed("Trackers") { pushPending() }
                 // Books matched just now, while their progress was sent: their highlights go in this
                 // same sync rather than waiting for the next one.
-                val highlightsAfter = try {
-                    pushHighlights()
-                } catch (e: Exception) {
-                    store.log(null, "Highlights: ${e.message}", error = true)
-                    0
+                val highlightsAfter = timed("Highlights") {
+                    try {
+                        pushHighlights()
+                    } catch (e: Exception) {
+                        store.log(null, "Highlights: ${e.message}", error = true)
+                        0
+                    }
                 }
-                val reviews = runCatching { pushReviews() }.getOrDefault(0)
+                val reviews = timed("Reviews") { runCatching { pushReviews() }.getOrDefault(0) }
                 runCatching { adoptTrackerNames(store) }
-                // The slower extras come after your progress has gone out, so a slow or unreachable
-                // site never holds up the trackers; anything they queue goes out at the end.
-                step("Extras")
-                runCatching { pullRatings() }
-                runCatching { refreshSerials() }
-                step("Web novels")
-                runCatching { findWebNovels() }
-                step("New releases")
-                runCatching { Releases.check(store) }
-                step("SFF Radar")
-                runCatching { SffRadar.refresh(store, force = false) }
-                // A probe that came back while you were away has its briefing ready when you look.
-                runCatching { SffRadar.claimProbe(store) }
-                runCatching { val t = System.currentTimeMillis() / 1000; store.update { it.copy(sffSky = SffChart.tick(it, t)) } }
-                if (store.snapshot.pending.isNotEmpty()) {
-                    step("Sending to trackers")
-                    runCatching { pushPending() }
-                }
                 var msg = progress.message
                 val allHighlights = highlights + highlightsAfter
                 if (allHighlights > 0) msg += " · $allHighlights highlight${if (allHighlights == 1) "" else "s"}"
@@ -194,7 +225,26 @@ class SyncEngine(private val store: Store) {
                 if (sourceErrorMsg != null && progress.needsAttention.isEmpty() && !progress.failed && msg == "Up to date") {
                     msg = "$sourceErrorMsg (trackers up to date)"
                 }
-                progress.copy(message = msg, needsAttention = attention)
+                val main = progress.copy(message = msg, needsAttention = attention)
+                // Your trackers are up to date: the sync shows as done, and the extras carry on quietly.
+                val mainMs = (System.nanoTime() - startedAt) / 1_000_000
+                store.update { Shelves.recordPages(it).copy(running = false, syncStep = null, lastRun = System.currentTimeMillis()) }
+                runCatching { onDone?.invoke(main) }
+                // The slower extras come after your progress has gone out, so a slow or unreachable
+                // site never holds up the trackers; anything they queue goes out at the end.
+                timed("Extras") {
+                    runCatching { pullRatings() }
+                    runCatching { refreshSerials() }
+                    runCatching { findWebNovels() }
+                    runCatching { Releases.check(store) }
+                    runCatching { SffRadar.refresh(store, force = false) }
+                    // A probe that came back while you were away has its briefing ready when you look.
+                    runCatching { SffRadar.claimProbe(store) }
+                    runCatching { val t = System.currentTimeMillis() / 1000; store.update { it.copy(sffSky = SffChart.tick(it, t)) } }
+                    if (store.snapshot.pending.isNotEmpty()) runCatching { pushPending() }
+                }
+                runCatching { store.log(null, timingLine(mainMs) + timings["Extras"]?.takeIf { it >= 1000 }?.let { " (then extras ${Math.round(it / 1000.0)}s)" }.orEmpty()) }
+                main
             } catch (e: AuthException) {
                 store.log(null, e.message ?: "crosspoint-sync sign-in failed", error = true)
                 Result(e.message ?: "crosspoint-sync sign-in failed", failed = true)
@@ -492,7 +542,7 @@ class SyncEngine(private val store: Store) {
     }
 
     /** Libraries read this pass, so ratings don't fetch them twice. */
-    private val libraries = HashMap<String, List<LibraryBook>>()
+    private val libraries = java.util.concurrent.ConcurrentHashMap<String, List<LibraryBook>>()
 
     /**
      * Your Seekquel ratings, copied to the same books here so they go to your other trackers;
@@ -881,7 +931,8 @@ class SyncEngine(private val store: Store) {
     internal fun pullKosync() {
         val account = store.snapshot.kosync ?: return
         val client = KosyncClient(account)
-        val own = store.snapshot.books.values.filter { it.origin == null }
+        // CrossPoint's books, and any other book with a KOSync document linked to it.
+        val own = store.snapshot.books.values.filter { it.origin == null || store.snapshot.kosyncIds.containsKey(it.document) }
         val inProgress = own.filter { it.status == null || it.status == ReadStatus.READING || it.status == ReadStatus.PAUSED }
             .sortedByDescending { it.timestamp }
             .take(KOSYNC_ACTIVE)
@@ -891,7 +942,9 @@ class SyncEngine(private val store: Store) {
         val found = ArrayList<io.github.prithirajn.trackersync.source.KosyncProgress>()
         try {
             for (b in inProgress + turn) {
-                val p = client.progress(b.document) ?: continue
+                // The book's own ID and any linked by hand: the newest position among them counts.
+                val ids = listOf(b.document) + (store.snapshot.kosyncIds[b.document] ?: emptyList())
+                val p = ids.mapNotNull { client.progress(it) }.maxByOrNull { it.timestamp }?.copy(document = b.document) ?: continue
                 if (p.timestamp > b.timestamp && kotlin.math.abs(p.percentage - b.percentage) > 0.0005) found.add(p)
             }
             store.update { it.copy(kosyncOkAt = System.currentTimeMillis(), kosyncError = null, kosyncRotation = start + turn.size) }
@@ -951,6 +1004,183 @@ class SyncEngine(private val store: Store) {
         if (res.moved > 0) store.log(null, "${res.moved} book${if (res.moved == 1) "" else "s"} moved ahead in Moon+ Reader" + if (res.finished > 0) " (${res.finished} finished)" else "")
         if (res.added > 0) store.log(null, "Brought in ${res.added} book${if (res.added == 1) "" else "s"} you're reading in Moon+ Reader")
         if (res.highlights > 0) store.log(null, "${res.highlights} new highlight${if (res.highlights == 1) "" else "s"} from Moon+ Reader")
+    }
+
+    /**
+     * KOReader highlights added to CrossPoint too, when that's on: for books read on CrossPoint,
+     * placed in their chapter, each once. What each was already sent to counts for the copy on
+     * CrossPoint as well, so it isn't sent to your trackers a second time when it comes back.
+     */
+    /** The EPUB of [document] from KOReader's books folder on this device, opened, or null. */
+    private fun koEpub(s: Snapshot, document: String): io.github.prithirajn.trackersync.source.EpubText.Book? {
+        val tree = s.koLocal ?: return null
+        val path = KoPlacement.bookPath(s, document) ?: return null
+        val bytes = io.github.prithirajn.trackersync.source.KoSidecar.bookBytes?.invoke(tree, path) ?: return null
+        return io.github.prithirajn.trackersync.source.EpubText.open(bytes)
+    }
+
+    internal fun pushKoToCrossPoint() {
+        val s0 = store.snapshot
+        if (!s0.koToCrossPoint || s0.koClips.isEmpty()) return
+        val account = s0.account ?: return
+        fun key(t: String) = t.lowercase().filter { it.isLetterOrDigit() }.take(120)
+        val onCp = s0.cpClips.groupBy { it.document }.mapValues { e -> e.value.map { key(it.text) }.toSet() }
+        val cpBook = s0.koClips.filter { s0.books[it.document]?.origin == null && s0.books.containsKey(it.document) }
+        // New ones (not on CrossPoint already), and ones sent before that can now go on their exact words.
+        val fresh = cpBook.filter { c -> c.id !in s0.koSentCp && key(c.text) !in (onCp[c.document] ?: emptySet()) }
+        val again = cpBook.filter { c -> c.id in s0.koSentCp && c.id !in s0.koPlaced && c.id !in s0.koUnplaced && KoPlacement.bookPath(s0, c.document) != null }
+        if (fresh.isEmpty() && again.isEmpty()) return
+        val client = CrossPointClient(account)
+        var added = 0
+        var placedCount = 0
+        for ((doc, group) in (fresh + again).groupBy { it.document }) {
+            val book = runCatching { koEpub(s0, doc) }.getOrNull()
+            val places = book?.let { KoPlacement.forCrossPoint(it, group) } ?: emptyMap()
+            val unplaced = if (book != null) group.map { it.id }.filter { it !in places } else emptyList()
+            // Sent before and still not placeable: nothing to send again.
+            val send = group.filter { it.id !in s0.koSentCp || it.id in places }.filter { it.spine != null || it.id in places }
+            if (send.isEmpty()) { store.update { it.copy(koUnplaced = it.koUnplaced + unplaced) }; continue }
+            try {
+                val ids = client.addClippings(doc, send, places, keepNote = send.map { it.id }.filter { it in s0.koSentCp }.toSet())
+                added += ids.keys.count { it !in s0.koSentCp }
+                placedCount += ids.keys.count { it in places }
+                store.update { s ->
+                    var sent = s.sentClippings
+                    var remote = s.clipRemote
+                    for ((koId, cpId) in ids) {
+                        for (t in Trackers.all) {
+                            if ("${t.id}|$koId" in sent) sent = sent + "${t.id}|$cpId"
+                            remote["${t.id}|$koId"]?.let { remote = remote + ("${t.id}|$cpId" to it) }
+                        }
+                    }
+                    s.copy(
+                        koSentCp = s.koSentCp + ids, sentClippings = sent, clipRemote = remote,
+                        koPlaced = s.koPlaced + ids.keys.filter { it in places }, koUnplaced = s.koUnplaced + unplaced,
+                    )
+                }
+            } catch (e: NetworkException) {
+                return
+            } catch (e: AuthException) {
+                throw e
+            } catch (e: Exception) {
+                store.log(null, "${title(doc)}: KOReader highlights not added to CrossPoint (${e.message})", error = true)
+            }
+        }
+        if (added > 0) store.log(null, "$added KOReader highlight${if (added == 1) "" else "s"} added to CrossPoint" +
+            if (placedCount > 0) " ($placedCount on their exact words)" else "")
+        else if (placedCount > 0) store.log(null, "$placedCount KOReader highlight${if (placedCount == 1) "" else "s"} put on their exact words on CrossPoint")
+    }
+
+    /**
+     * CrossPoint highlights (made on the Xteink, say) given to KOReader, when you've turned that
+     * on: added to the HighlightSync plugin's file for the book on your WebDAV storage, which
+     * KOReader merges in on its next sync. Only books whose EPUB is in KOReader's books folder
+     * here (the same file), only highlights whose place is sure, never ones that came from
+     * KOReader, never words KOReader already has highlighted, and each one only once (so one you
+     * delete in KOReader stays deleted). The file as it was is kept next to it first.
+     */
+    internal fun pushCrossPointToKo() {
+        val s0 = store.snapshot
+        if (!s0.cpToKo) return
+        val account = s0.account ?: return
+        val dav = s0.koHl?.let { io.github.prithirajn.trackersync.source.MoonReaderClient(it) }
+        if (dav == null || s0.koLocal == null) {
+            store.update { it.copy(cpToKoNote = "Needs the HighlightSync plugin on Koofr or WebDAV and KOReader's books folder on this phone") }
+            return
+        }
+        val fromKo = s0.koSentCp.values.toSet()
+        val all = try { CrossPointClient(account).clippings() } catch (e: Exception) { if (e is AuthException) throw e; return }
+        val todo = all.filter { c ->
+            c.id !in fromKo && c.id !in s0.cpSentKo && c.text.isNotBlank() && s0.books[c.document]?.origin == null && s0.books.containsKey(c.document) &&
+                KoPlacement.bookPath(s0, c.document) != null
+        }
+        if (todo.isEmpty()) { store.update { it.copy(cpToKoOkAt = System.currentTimeMillis(), cpToKoNote = null) }; return }
+        var added = 0
+        val notes = ArrayList<String>()
+        for ((doc, group) in todo.groupBy { it.document }) {
+            // The plugin's file for this book: one already read that belongs to it.
+            val files = s0.koHlDocs.filter { it.value == doc && !it.key.startsWith("local:") }.keys
+            if (files.isEmpty()) continue
+            val book = runCatching { koEpub(s0, doc) }.getOrNull() ?: continue
+            for (rel in files) {
+                try {
+                    val before = dav.fetch(rel)?.let { String(it, Charsets.UTF_8) }
+                    val r = KoPlacement.addToHighlightSync(before, book, group)
+                    if (r == null) { notes += "${title(doc)}: that's an AnnotationSync file, which Readync doesn't write to"; continue }
+                    if (r.added.isNotEmpty()) {
+                        if (before != null) dav.put("$rel.readync-backup", before)
+                        dav.put(rel, r.json)
+                        added += r.added.size
+                    }
+                    // Placed or not, each is only tried once.
+                    store.update { it.copy(cpSentKo = it.cpSentKo + r.added + r.skipped) }
+                    break
+                } catch (e: NetworkException) {
+                    return
+                } catch (e: AuthException) {
+                    store.update { it.copy(cpToKoNote = e.message) }
+                    return
+                } catch (e: Exception) {
+                    store.log(null, "${title(doc)}: CrossPoint highlights not given to KOReader (${e.message})", error = true)
+                }
+            }
+        }
+        store.update { it.copy(cpToKoOkAt = System.currentTimeMillis(), cpToKoNote = notes.firstOrNull()) }
+        if (added > 0) store.log(null, "$added CrossPoint highlight${if (added == 1) "" else "s"} given to KOReader (in after its next HighlightSync)")
+    }
+
+    /**
+     * KOReader highlights from its sync plugins' files on WebDAV storage (Koofr…). Problems only
+     * turn its light red; the rest of the sync carries on.
+     */
+    internal fun pullKoHighlights() {
+        val stamps = HashMap<String, String>()
+        val files = ArrayList<io.github.prithirajn.trackersync.source.KoFile>()
+        // The sync plugins' files on WebDAV (Koofr…).
+        store.snapshot.koHl?.let { account ->
+            val client = io.github.prithirajn.trackersync.source.KoHighlightsClient(account)
+            try {
+                val folders = client.findFolders(store.snapshot.koHlFolders)
+                if (folders.isEmpty()) {
+                    store.update { it.copy(koHlOkAt = System.currentTimeMillis(), koHlError = Health.KOHL_NO_FILES) }
+                } else {
+                    files += client.files(folders, store.snapshot.koHlMods, stamps)
+                    store.update { s -> s.copy(koHlFolders = folders, koHlOkAt = System.currentTimeMillis(), koHlError = null) }
+                }
+            } catch (e: Exception) {
+                store.update { it.copy(koHlError = Health.describeKoHl(e)) }
+                store.log(null, "KOReader highlights: ${e.message}", error = true)
+            }
+        }
+        // KOReader's own sidecar files, from a folder on this device.
+        store.snapshot.koLocal?.let { tree ->
+            try {
+                val read = io.github.prithirajn.trackersync.source.KoSidecar.reader ?: throw IllegalStateException("Folder access isn't available")
+                val raws = read(tree, store.snapshot.koHlMods, stamps)
+                files += raws.mapNotNull { io.github.prithirajn.trackersync.source.KoSidecar.parse(it.path, it.text) }
+                // The EPUBs next to them, by KOReader document ID, for putting highlights on their exact words.
+                val idOf = io.github.prithirajn.trackersync.source.KoSidecar.bookId
+                val found = io.github.prithirajn.trackersync.source.KoSidecar.books
+                if (idOf != null) {
+                    val books = KoPlacement.refresh(store.snapshot.koBooks, found) { idOf(tree, it) }
+                    if (books != store.snapshot.koBooks) store.update { it.copy(koBooks = books) }
+                }
+                val any = stamps.keys.any { it.startsWith("local:") }
+                store.update { it.copy(koLocalOkAt = System.currentTimeMillis(), koLocalError = if (any) null else Health.KOLOCAL_NO_FILES) }
+            } catch (e: Exception) {
+                store.update { it.copy(koLocalError = e.message ?: "Couldn't read that folder") }
+                store.log(null, "KOReader folder: ${e.message}", error = true)
+            }
+        }
+        if (files.isEmpty() && stamps.isEmpty()) return
+        var r: KoHighlightSync.Result? = null
+        store.update { s ->
+            val res = KoHighlightSync.apply(s, files).also { r = it }
+            // Files that matched no book are read again next time (a book may have arrived).
+            res.snapshot.copy(koHlMods = s.koHlMods + stamps - res.unmatchedPaths.toSet())
+        }
+        val res = r ?: return
+        if (res.added > 0) store.log(null, "${res.added} new highlight${if (res.added == 1) "" else "s"} from KOReader")
     }
 
     /**
@@ -2039,18 +2269,20 @@ class SyncEngine(private val store: Store) {
 
     /** Sends every queued update, one tracker at a time (or for onlyDocument if specified). */
     private fun pushPending(onlyDocument: String? = null): Result {
-        val attention = ArrayList<String>()
-        var sent = 0
-        for (tracker in Trackers.all) {
+        val attention = java.util.Collections.synchronizedList(ArrayList<String>())
+        val sent = java.util.concurrent.atomic.AtomicInteger(0)
+        // Every tracker at once, each in its own worker; each tracker's own updates still go one
+        // at a time, at its usual pace.
+        inParallel(Trackers.all) { tracker ->
             val svc = store.snapshot.service(tracker.id)
-            if (!svc.linked || !svc.enabled || svc.needsReauth) continue
+            if (!svc.linked || !svc.enabled || svc.needsReauth) return@inParallel
             val queue = store.snapshot.pending.values
                 .filter { it.service == tracker.id && (onlyDocument == null || it.document == onlyDocument) }
                 .sortedBy { it.queuedAt }
             if (queue.isEmpty()) {
                 // Nothing waiting means nothing is failing: clear an old error.
                 if (svc.lastError != null) store.updateService(tracker.id) { it.copy(lastError = null) }
-                continue
+                return@inParallel
             }
             var failed = false
             val session = Session(svc.credential).also { it.visibility = svc.visibility }
@@ -2062,7 +2294,7 @@ class SyncEngine(private val store: Store) {
                     }
                     try {
                         val outcome = process(tracker, session, p)
-                        if (outcome != null) sent++
+                        if (outcome != null) sent.incrementAndGet()
                         store.update { s -> s.copy(pending = s.pending - p.key) }
                     } catch (e: AwaitingConfirm) {
                         // Matched, and waiting for you to confirm it's the right book: kept queued.
@@ -2104,11 +2336,11 @@ class SyncEngine(private val store: Store) {
             }
         }
         val msg = when {
-            attention.isNotEmpty() -> "Sign in again: ${attention.joinToString(", ")}"
-            sent == 0 -> "Up to date"
-            else -> "Sent $sent update${if (sent == 1) "" else "s"}"
+            attention.isNotEmpty() -> "Sign in again: ${attention.toList().joinToString(", ")}"
+            sent.get() == 0 -> "Up to date"
+            else -> "Sent ${sent.get()} update${if (sent.get() == 1) "" else "s"}"
         }
-        return Result(msg, attention)
+        return Result(msg, attention.toList())
     }
 
     /**
@@ -2159,7 +2391,7 @@ class SyncEngine(private val store: Store) {
             val b = store.snapshot.books[doc]
             if (b == null) { store.update { s -> s.copy(toKosync = s.toKosync - doc) }; continue }
             try {
-                client.putProgress(doc, b.percentage, DEVICE_ID)
+                for (id in listOf(doc) + (store.snapshot.kosyncIds[doc] ?: emptyList())) client.putProgress(id, b.percentage, DEVICE_ID)
                 store.update { s -> s.copy(toKosync = s.toKosync - doc) }
                 store.log(null, "${b.displayTitle}: ${b.percent}% sent to KOSync")
             } catch (e: NetworkException) {
@@ -2225,7 +2457,7 @@ class SyncEngine(private val store: Store) {
         val s = store.snapshot
         if (!highlightsOn(t, s)) return emptyList()
         val since = s.service(t.id).highlightsSince
-        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips).filter { it.document == document && it.id !in s.clipHidden }
+        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden }
             .map { HighlightPosition.withPage(edited(it, s.clipEdits), s.books[it.document]) }
             .filter { val key = "${t.id}|${it.id}"; it.createdAt >= since && key !in s.sentClippings && key !in s.resend }
     }
@@ -2238,19 +2470,21 @@ class SyncEngine(private val store: Store) {
         }
         if (active.isEmpty()) return 0
         // CrossPoint's highlights and ones photographed from paper, as you edited them.
-        val clips = (s0.cpClips + s0.paperClips + s0.kindleClips + s0.libbyClips + s0.moonClips)
+        val clips = (s0.cpClips + s0.paperClips + s0.kindleClips + s0.libbyClips + s0.moonClips + s0.historyClips + s0.koClips)
             .filter { it.id !in s0.clipHidden && (onlyDocument == null || it.document == onlyDocument) }
             .map { HighlightPosition.withPage(edited(it, s0.clipEdits), s0.books[it.document]) }
         if (clips.isEmpty()) return 0
-        var sent = 0
-        for (t in active) {
+        val sent = java.util.concurrent.atomic.AtomicInteger(0)
+        // Every tracker at once; on each one the highlights still go out a few at a time, a little
+        // apart, so the waits on one tracker don't hold up the others.
+        inParallel(active) { t ->
             val svc = store.snapshot.service(t.id)
             val on = highlightsOn(t, store.snapshot)
             val fresh = clips.filter {
                 val key = "${t.id}|${it.id}"
                 key in store.snapshot.resend || (on && it.createdAt >= svc.highlightsSince && key !in store.snapshot.sentClippings)
             }
-            if (fresh.isEmpty()) continue
+            if (fresh.isEmpty()) return@inParallel
             val session = Session(svc.credential).also { it.visibility = svc.visibility }
             try {
                 for ((doc, group) in fresh.groupBy { it.document }) {
@@ -2293,7 +2527,7 @@ class SyncEngine(private val store: Store) {
                             }
                             store.log(t.id, "$name: $what")
                             recordSent(t.id, doc, SendEvent(at = System.currentTimeMillis(), other = what))
-                            sent++
+                            sent.incrementAndGet()
                         }
                         if (sortedNew.isNotEmpty()) {
                             if (t.oneEntryPerHighlight) {
@@ -2332,7 +2566,7 @@ class SyncEngine(private val store: Store) {
                                 if (restoredProgress != null) "$atStr, back to $restoredProgress%" else atStr
                             } else null
                             recordSent(t.id, doc, SendEvent(at = System.currentTimeMillis(), highlights = sortedNew.size, other = where))
-                            sent += sortedNew.size
+                            sent.addAndGet(sortedNew.size)
                         }
                     } catch (e: AuthException) {
                         throw e
@@ -2355,7 +2589,7 @@ class SyncEngine(private val store: Store) {
                 }
             }
         }
-        return sent
+        return sent.get()
     }
 
     /** Marks one highlight sent to one tracker, keeping the entry's id there when it gave one. */
@@ -2678,7 +2912,7 @@ class SyncEngine(private val store: Store) {
     }
 
     /** Model answers asked for this run (each takes seconds on a phone). */
-    private var aiAsked = 0
+    @Volatile private var aiAsked = 0
 
     /**
      * The rules couldn't pick: the on-device model, when set up, is asked which listing is the

@@ -93,6 +93,8 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     var addingMoon by remember { mutableStateOf(false) }
     var removingMoon by remember { mutableStateOf(false) }
     var moonGuide by remember { mutableStateOf(false) }
+    var addingKoHl by remember { mutableStateOf(false) }
+    var removingKoHl by remember { mutableStateOf(false) }
     var linkingKindle by remember { mutableStateOf(false) }
     var removingKindle by remember { mutableStateOf(false) }
     var linkingLibby by remember { mutableStateOf(false) }
@@ -216,6 +218,16 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     state.moon?.let { m -> m.username + " · " + m.server.substringAfter("://").substringBefore('/') } ?: "Not set up",
                     trailing = { Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } } },
                 ) { page = "moon" }
+                RowDivider()
+                NavRow(
+                    R.drawable.lucide_highlighter, "KOReader highlights",
+                    if (state.koHl == null && state.koLocal == null) "Not set up"
+                    else "${state.koClips.size} highlight${if (state.koClips.size == 1) "" else "s"} \u00B7 " + listOfNotNull(state.koLocal?.let { "this device" }, state.koHl?.let { it.server.substringAfter("://").substringBefore('/') }).joinToString(" + "),
+                    trailing = {
+                        listOfNotNull(Health.koLocal(state), Health.koHl(state)).let { hs -> hs.firstOrNull { it.level == Health.Level.BAD } ?: hs.firstOrNull { it.level == Health.Level.WARN } ?: hs.firstOrNull() }
+                            ?.let { h -> HealthLight(h) { vm.checkKoHighlights() } }
+                    },
+                ) { page = "kohl" }
             }
             SectionTitle("App")
             VSpace(12)
@@ -254,7 +266,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     page?.let { p ->
         SettingsSheet(
             when (p) {
-                "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"
+                "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"; "kohl" -> "KOReader highlights"
                 "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; else -> "App update"
             },
             onClose = { page = null },
@@ -273,13 +285,22 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                         Health.source(state)?.let { h -> HealthLight(h) { vm.checkCrossPoint() } }
                     }
                     RowDivider()
+                    KoHlHint("Reading in KOReader with this account as its sync server? It sends only your position here, not highlights.") { page = "kohl" }
+                    RowDivider()
                     Box(Modifier.padding(16.dp)) { BigButton("Sign out", { page = null; signingOut = true }, filled = false, danger = true) }
                 }
                 "kindle" -> KindleCard(vm, state, onLink = { linkingKindle = true }, onRemove = { page = null; removingKindle = true })
                 "mihon" -> MihonCard(vm, state, onRemove = { removingMihon = true }, onLinkMu = { linkingMu = true }, onRemoveMu = { removingMu = true }, onLinkAl = { linkingAl = true }, onRemoveAl = { removingAl = true })
                 "audible" -> AudibleCard(vm, state, onLink = { linkingAudible = true }, onRemove = { page = null; removingAudible = true })
                 "libby" -> LibbyCard(vm, state, onLink = { linkingLibby = true }, onRemove = { page = null; removingLibby = true })
-                "kosync" -> KosyncCard(vm, state, onAdd = { addingKosync = true }, onRemove = { page = null; removingKosync = true })
+                "kosync" -> Column {
+                    KosyncCard(vm, state, onAdd = { addingKosync = true }, onRemove = { page = null; removingKosync = true })
+                    if (state.kosync != null) {
+                        VSpace(12)
+                        CpCard { KoHlHint("KOSync carries only your reading position, so KOReader's highlights and notes don't come with it.") { page = "kohl" } }
+                    }
+                }
+                "kohl" -> KoHlCard(vm, state, onAdd = { addingKoHl = true }, onRemove = { page = null; removingKoHl = true })
                 "moon" -> MoonCard(vm, state, onAdd = { addingMoon = true }, onGuide = { moonGuide = true }, onRemove = { page = null; removingMoon = true })
                 "sync" -> SyncSettingsCard(vm, state)
                 "ai" -> OnDeviceAiCard(vm, state)
@@ -372,6 +393,16 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     if (addingKosync) KosyncSheet(vm) { addingKosync = false }
     if (addingMoon) MoonSheet(vm, onGuide = { moonGuide = true }) { addingMoon = false }
     if (moonGuide) MoonGuideSheet { moonGuide = false }
+    if (addingKoHl) KoHlSheet(vm, state) { addingKoHl = false }
+    if (removingKoHl) {
+        ConfirmSheet(
+            title = "Remove KOReader highlights?",
+            body = "${io.github.prithirajn.trackersync.Edition.name} stops reading the plugin's files. Highlights already brought in stay, and nothing changes in KOReader, on Koofr or on your trackers.",
+            action = "Remove",
+            onConfirm = { vm.removeKoHighlights() },
+            onClose = { removingKoHl = false },
+        )
+    }
     if (removingMoon) {
         ConfirmSheet(
             title = "Remove Moon+ Reader?",
@@ -2503,6 +2534,261 @@ private fun MoonSheet(vm: AppViewModel, onGuide: () -> Unit, onClose: () -> Unit
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) { PillButton("How to set it up", onGuide) }
             VSpace(10)
             Quiet("Use an app password made for this, not your main Koofr password; it's kept encrypted on this phone. Readync only reads Moon+ Reader's sync files and never changes anything there.", color = c.faint)
+        }
+    }
+}
+
+/**
+ * KOReader highlights, two ways in: KOReader's own sidecar files from a folder on this device
+ * (KOReader on this phone or tablet), or a sync plugin's files on Koofr / WebDAV (KOReader
+ * anywhere else). Either or both; the same highlight never comes in twice.
+ */
+@Composable
+private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRemove: () -> Unit) {
+    val c = Cp.colors
+    var guide by remember { mutableStateOf(false) }
+    val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { vm.setKoLocal(it) } }
+    Column {
+        CpCard {
+            Column(Modifier.padding(16.dp)) {
+                Quiet("KOReader sends only your reading position to CrossPoint Sync or a KOSync server; its highlights and notes stay in KOReader. Bring them in here, from wherever KOReader runs.")
+                VSpace(10)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton("Which do I need?", { guide = true }, outlined = false)
+                    if (state.koClips.isNotEmpty()) {
+                        val books = state.koClips.map { it.document }.toSet().size
+                        Quiet("${state.koClips.size} highlight${if (state.koClips.size == 1) "" else "s"} on $books book${if (books == 1) "" else "s"}", color = c.faint)
+                    }
+                }
+            }
+        }
+        VSpace(12)
+        // ---- 1. KOReader on this device: its sidecar files ----
+        CpCard {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("KOReader on this device", style = CpType.label, color = c.text, modifier = Modifier.weight(1f))
+                    Health.koLocal(state)?.let { h -> HealthLight(h) { vm.checkKoHighlights() } }
+                }
+                VSpace(4)
+                if (state.koLocal == null) {
+                    Quiet("For KOReader on this phone or tablet (a Boox too, with ${io.github.prithirajn.trackersync.Edition.name} installed on it). Pick the folder your books are in: KOReader keeps each book's highlights in a “.sdr” folder next to it. No plugin needed.")
+                    VSpace(10)
+                    PillButton("Pick the books folder", { runCatching { pickFolder.launch(null) } }, outlined = false)
+                    VSpace(6)
+                    Quiet("If KOReader keeps book settings in its own folder instead (Settings › Document › Book metadata location), pick koreader/docsettings (or hashdocsettings).", color = c.faint)
+                } else {
+                    val folder = remember(state.koLocal) { android.net.Uri.parse(state.koLocal).lastPathSegment?.substringAfter(':')?.ifEmpty { "Main storage" } ?: "your folder" }
+                    Quiet("Reading $folder" + (state.koLocalOkAt.takeIf { it > 0 }?.let { " · checked ${ago(it)}" } ?: "") + ".", color = c.faint)
+                    state.koLocalError?.let { VSpace(6); Quiet(it, color = c.faint) }
+                    VSpace(6)
+                    Quiet(
+                        if (state.koBooks.isNotEmpty()) "${state.koBooks.size} EPUB${if (state.koBooks.size == 1) "" else "s"} found here too, so highlights can go on their exact words on a CrossPoint device."
+                        else "No EPUBs in this folder. To put highlights on their exact words on a CrossPoint device, pick the folder the books themselves are in.",
+                        color = c.faint,
+                    )
+                    VSpace(10)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PillButton("Read now", { vm.checkKoHighlights() })
+                        PillButton("Change folder", { runCatching { pickFolder.launch(null) } })
+                        PillButton("Remove", { vm.removeKoLocal() }, danger = true)
+                    }
+                }
+            }
+        }
+        VSpace(12)
+        // ---- 2. KOReader elsewhere: a sync plugin's files on Koofr / WebDAV ----
+        CpCard {
+            Column(Modifier.padding(16.dp)) {
+                val k = state.koHl
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("From Koofr / WebDAV", style = CpType.label, color = c.text, modifier = Modifier.weight(1f))
+                    Health.koHl(state)?.let { h -> HealthLight(h) { vm.checkKoHighlights() } }
+                }
+                VSpace(4)
+                if (k == null) {
+                    Quiet("For KOReader on another device (Kindle, Kobo, another phone) with the HighlightSync or AnnotationSync plugin uploading to Koofr or any WebDAV.")
+                    VSpace(10)
+                    PillButton("Connect", onAdd, outlined = false)
+                } else {
+                    Text(k.username, style = CpType.body, color = c.text)
+                    Quiet(k.server.removePrefix("https://").removePrefix("http://") + (state.koHlOkAt.takeIf { it > 0 }?.let { " · checked ${ago(it)}" } ?: ""), maxLines = 1)
+                    VSpace(6)
+                    Quiet(if (state.koHlFolders.isEmpty()) "No highlight files found yet." else "Files in " + state.koHlFolders.joinToString(", ") + ".", color = c.faint)
+                    state.koHlError?.let { VSpace(6); Quiet(it, color = c.faint) }
+                    VSpace(10)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PillButton("Check now", { vm.checkKoHighlights() })
+                        PillButton("Remove", onRemove, danger = true)
+                    }
+                }
+            }
+        }
+        if (state.koHlUnmatched.isNotEmpty()) {
+            VSpace(10)
+            Quiet(
+                "Not matched to a book here yet: " + state.koHlUnmatched.take(5).joinToString(", ") + (if (state.koHlUnmatched.size > 5) " and ${state.koHlUnmatched.size - 5} more" else "") +
+                    ". They come in once the book is in your library (or its KOSync document is linked to it).",
+                Modifier.padding(horizontal = 4.dp), color = c.faint,
+            )
+        }
+        // ---- KOReader's highlights on to a CrossPoint reader ----
+        if (state.account != null && (state.koHl != null || state.koLocal != null)) {
+            VSpace(12)
+            CpCard {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text("Also add them to CrossPoint", style = CpType.label, color = c.text)
+                        Text(
+                            "If you also read on a CrossPoint device (Xteink), KOReader's highlights go on to crosspoint-sync so the device has them too. " +
+                                "When the book's EPUB is in KOReader's books folder on this phone (the same file as on the device), they go on their exact words and the device draws them on the page; otherwise they're listed under their chapter." +
+                                (if (state.koSentCp.isNotEmpty()) " ${state.koSentCp.size} added so far" + (if (state.koPlaced.isNotEmpty()) ", ${state.koPlaced.size} on their exact words." else ".") else ""),
+                            style = CpType.small, color = c.quiet,
+                        )
+                    }
+                    CpToggle(state.koToCrossPoint, { vm.setKoToCrossPoint(it) }, "Also add KOReader highlights to CrossPoint")
+                }
+            }
+        }
+        // ---- CrossPoint's highlights on to KOReader (opt-in) ----
+        if (state.account != null && state.koHl != null) {
+            VSpace(12)
+            CpCard {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("Also give CrossPoint highlights to KOReader", style = CpType.label, color = c.text)
+                            Text(
+                                "Highlights you make on a CrossPoint device are added to the HighlightSync plugin's file on your storage, and KOReader takes them in on its next sync. " +
+                                    "Only for books whose EPUB is in KOReader's books folder on this phone (the same file as on the device), and only when the exact place is sure. " +
+                                    "Each goes once, so one you delete in KOReader stays deleted, and a copy of the file as it was is kept next to it. AnnotationSync's files aren't written to.",
+                                style = CpType.small, color = c.quiet,
+                            )
+                        }
+                        CpToggle(state.cpToKo, { vm.setCpToKo(it) }, "Also give CrossPoint highlights to KOReader")
+                    }
+                    if (state.cpToKo) {
+                        val status = state.cpToKoNote
+                            ?: if (state.koLocal == null) "Pick KOReader's books folder under KOReader on this device first."
+                            else if (state.cpSentKo.isNotEmpty()) "${state.cpSentKo.size} CrossPoint highlight${if (state.cpSentKo.size == 1) "" else "s"} looked at so far" + (state.cpToKoOkAt.takeIf { it > 0 }?.let { " · checked ${ago(it)}." } ?: ".")
+                            else null
+                        status?.let { VSpace(8); Quiet(it, color = c.faint) }
+                    }
+                }
+            }
+        }
+    }
+    if (guide) KoHlGuideSheet { guide = false }
+}
+
+/** A pointer to KOReader highlights from the cards of the servers KOReader syncs its position with. */
+@Composable
+private fun KoHlHint(text: String, onOpen: () -> Unit) {
+    val c = Cp.colors
+    Column(Modifier.padding(16.dp)) {
+        Quiet(text)
+        VSpace(8)
+        PillButton("Set up KOReader highlights", onOpen)
+    }
+}
+
+/** Where your highlights come from, by what you read on: which switches you need, and which you don't. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun KoHlGuideSheet(onClose: () -> Unit) {
+    val c = Cp.colors
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = CpShapes.sheet,
+        containerColor = c.page,
+    ) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            Text("Which do I need?", style = CpType.section, color = c.text)
+            Quiet("It depends on what you read on. Highlights go a different way from your reading position.")
+            VSpace(16)
+            GuidePart("1", "A CrossPoint device (Xteink X3, X4…)", listOf(
+                "Its highlights come through your CrossPoint account already. Nothing to turn on here.",
+                "On the device: Settings › CrossPoint Sync › turn on Sync Clippings.",
+            ))
+            VSpace(10)
+            GuidePart("2", "KOReader on this phone or tablet", listOf(
+                "Using CrossPoint Sync or a KOSync server in KOReader only syncs your position, not highlights.",
+                "Turn on KOReader on this device and pick your books folder. That's all.",
+            ))
+            VSpace(10)
+            GuidePart("3", "KOReader on another device (Kindle, Kobo, a Boox without ${io.github.prithirajn.trackersync.Edition.name})", listOf(
+                "Install the HighlightSync or AnnotationSync plugin in KOReader and point it at Koofr (or any WebDAV).",
+                "Then connect the same storage under From Koofr / WebDAV.",
+            ))
+            VSpace(10)
+            GuidePart("4", "A CrossPoint device and KOReader together", listOf(
+                "Set up 1, and 2 or 3: your CrossPoint highlights come through your account, KOReader's through the folder or Koofr. A passage you highlighted in both comes in once.",
+                "Want KOReader's highlights on the CrossPoint device too? Turn on Also add them to CrossPoint.",
+                "With the book's EPUB in KOReader's books folder on this phone (the same file as on the device), they go on their exact words, so the device draws them on the page.",
+                "The other way (CrossPoint highlights into KOReader) is an opt-in: it needs the HighlightSync plugin on Koofr and that books folder, and only adds highlights whose place is sure.",
+                "Read the same file on both so the book is the same here (or link its KOSync document from the book's ⋯ menu).",
+            ))
+            VSpace(10)
+            GuidePart("5", "KOReader on this device and elsewhere", listOf(
+                "Use both; a highlight found in both places comes in once.",
+            ))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun KoHlSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
+    var server by remember { mutableStateOf(KOOFR_WEBDAV) }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var folder by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val c = Cp.colors
+    ModalBottomSheet(
+        onDismissRequest = onClose,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = CpShapes.sheet,
+        containerColor = c.page,
+    ) {
+        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            Text("Connect KOReader highlights", style = CpType.section, color = c.text)
+            Quiet("The same storage the HighlightSync or AnnotationSync plugin syncs to in KOReader. Koofr's address is filled in.")
+            state.moon?.let { m ->
+                VSpace(10)
+                PillButton("Use my Moon+ Reader Koofr account", { server = m.server; email = m.username; password = m.key })
+            }
+            VSpace(14)
+            CpTextField(server, { server = it }, "WebDAV address", keyboard = KeyboardType.Uri)
+            VSpace(12)
+            CpTextField(email, { email = it }, "Email (your Koofr login)", keyboard = KeyboardType.Email)
+            VSpace(12)
+            CpTextField(password, { password = it }, "App password", password = true)
+            VSpace(12)
+            CpTextField(folder, { folder = it }, "Folder (optional)", placeholder = "The plugin's sync folder, e.g. /KOReader/highlights")
+            error?.let { VSpace(10); Text(it, style = CpType.small, color = c.errorText) }
+            VSpace(16)
+            BigButton(
+                "Connect",
+                onClick = {
+                    busy = true; error = null
+                    vm.addKoHighlights(server, email, password, folder) { e -> busy = false; if (e == null) onClose() else error = e }
+                },
+                busy = busy,
+                enabled = server.isNotBlank() && email.isNotBlank() && password.isNotBlank(),
+            )
+            VSpace(16)
+            Text("Setting up the plugin in KOReader", style = CpType.label, color = c.text)
+            VSpace(6)
+            for (line in listOf(
+                "HighlightSync: Tools \u203A Highlight Sync \u203A Sync Cloud: add WebDAV with the Koofr address, your email and an app password, and pick a folder.",
+                "AnnotationSync: Tools \u203A Cloud storage+ (KOReader 2026.07 or later) to add Koofr, then Tools \u203A Annotation Sync \u203A Settings \u203A Cloud settings to choose it.",
+                "Sync a book once in KOReader so its file appears, then connect here. Leave the folder empty and Readync looks for it; type it if it isn't found.",
+                "Both of the plugin's naming styles work. AnnotationSync's default (KOReader's document ID) matches books exactly; file names are matched by title and author.",
+                "Readync only reads the plugin's files; it never changes anything in KOReader or on Koofr.",
+            )) Text("\u2022 $line", style = CpType.body, color = c.textMid, modifier = Modifier.padding(bottom = 4.dp))
         }
     }
 }

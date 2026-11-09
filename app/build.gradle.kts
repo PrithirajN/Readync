@@ -15,8 +15,8 @@ android {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 168
-        versionName = "1.41.1"
+        versionCode = 177
+        versionName = "1.46.1"
     }
 
     // Each edition has its own signing key, the same for every build of it, on any PC or on GitHub

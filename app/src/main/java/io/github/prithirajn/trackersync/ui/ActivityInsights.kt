@@ -336,7 +336,7 @@ private fun GoalRing(done: Int, goal: Int) {
 private fun LatelyCard(state: Snapshot) {
     val c = Cp.colors
     val today = remember { LocalDate.now() }
-    val events = remember(state.books, state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.clipHidden) {
+    val events = remember(state.books, state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipHidden) {
         Insights.timeline(state, today)
     }
     if (events.isEmpty()) return

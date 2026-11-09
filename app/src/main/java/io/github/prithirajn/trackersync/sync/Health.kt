@@ -69,6 +69,39 @@ object Health {
         }
     }
 
+    fun koHl(s: Snapshot, now: Long = System.currentTimeMillis()): Status? {
+        s.koHl ?: return null
+        val error = s.koHlError
+        return when {
+            error == KOHL_NO_FILES -> Status(Level.WARN, "No KOReader highlight files yet", error)
+            error != null -> Status(Level.BAD, "KOReader highlights had a problem", error)
+            s.koHlOkAt == 0L -> Status(Level.WARN, "KOReader highlights not checked yet", "They're checked on the next sync. Tap to check now.")
+            now - s.koHlOkAt > STALE_MS -> Status(Level.WARN, "KOReader highlights not reached lately", "The last good check was a while ago; the phone may have been offline. Tap to check now.")
+            else -> Status(Level.GOOD, "KOReader highlights are healthy", "New highlights from KOReader come in on every sync.")
+        }
+    }
+
+    fun koLocal(s: Snapshot): Status? {
+        s.koLocal ?: return null
+        val error = s.koLocalError
+        return when {
+            error == KOLOCAL_NO_FILES -> Status(Level.WARN, "No KOReader sidecars in that folder", error)
+            error != null -> Status(Level.BAD, "Couldn't read KOReader's folder", error)
+            s.koLocalOkAt == 0L -> Status(Level.WARN, "KOReader folder not read yet", "It's read on the next sync. Tap to read it now.")
+            else -> Status(Level.GOOD, "KOReader folder is readable", "New highlights from KOReader on this device come in on every sync.")
+        }
+    }
+
+    const val KOLOCAL_NO_FILES = "No KOReader sidecar folders (\u201C.sdr\u201D) found there. Pick the folder your books are in, or koreader/docsettings if KOReader keeps its book settings there. Open a book in KOReader once so it has one."
+
+    const val KOHL_NO_FILES = "Connected, but no KOReader highlight files were found yet. Set HighlightSync or AnnotationSync to sync to this storage, sync a book in KOReader, or type the folder here."
+
+    fun describeKoHl(e: Exception): String = when (e) {
+        is AuthException -> "The WebDAV server rejected the email or app password. Remove KOReader highlights here and add them again with a new app password."
+        is NetworkException -> "Couldn't reach the WebDAV server (${e.message ?: "offline"}). It's retried on the next sync."
+        else -> e.message ?: "Something went wrong reading KOReader's highlight files."
+    }
+
     const val MOON_NO_FILES = "Connected, but no Moon+ Reader sync files were found yet. In Moon+ Reader, turn on sync to WebDAV with the same address and account, then read a page of any book."
 
     fun describeMoon(e: Exception): String = when (e) {

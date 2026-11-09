@@ -40,7 +40,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
 /** Every highlight and note in the library, kept fresh as they change. */
 @Composable
 fun rememberAllHighlights(state: Snapshot): List<Highlights.Item> =
-    remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.clipEdits, state.clipHidden, state.sentClippings, state.resend, state.books) {
+    remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.clipHidden, state.sentClippings, state.resend, state.books) {
         Highlights.all(state)
     }
 

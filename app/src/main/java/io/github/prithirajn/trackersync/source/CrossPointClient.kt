@@ -44,6 +44,9 @@ data class Clipping(
     val percent: Double? = null,
     /** Its print page, filled in when sending, for trackers that take one. */
     val page: Int? = null,
+    /** CrossPoint's exact place in the chapter (visible code points), when the server has it. Not kept. */
+    val start: Int? = null,
+    val end: Int? = null,
 ) {
     /**
      * Its page in a copy of [total] pages: the print page when known, else worked out from its exact
@@ -289,6 +292,39 @@ class CrossPointClient(private val account: Account) {
      * Changes (or with null, deletes) a highlight's note on crosspoint-sync. The server takes a
      * highlight whole, so it's read back first and sent with only the note changed.
      */
+    /**
+     * Adds highlights from elsewhere (KOReader) to a book on crosspoint-sync, so the reader has them
+     * too: placed by chapter (spine), with their text and note. Returns each one's new id there
+     * (by the input's id). The id follows crosspoint-sync's rule, so adding the same one twice is harmless.
+     */
+    /**
+     * Adds (or updates) highlights on a book. With a [places] entry (by our id) a highlight is put
+     * on its exact words, so the Xteink draws it on the page; without one it's listed under its
+     * chapter. A highlight in [keepNote] leaves the note CrossPoint has alone (it's being placed
+     * again, not changed).
+     */
+    fun addClippings(
+        document: String, clips: List<Clipping>,
+        places: Map<String, EpubText.Place> = emptyMap(), keepNote: Set<String> = emptySet(),
+    ): Map<String, String> {
+        val ids = HashMap<String, String>()
+        for (batch in clips.filter { (it.spine != null || places[it.id] != null) && it.text.isNotBlank() }.chunked(50)) {
+            val items = org.json.JSONArray()
+            for (c in batch) {
+                val id = clippingId(c.createdAt, c.text)
+                val place = places[c.id]
+                val item = JSONObject().put("id", id).put("spine", place?.spine ?: c.spine).put("text", c.text.take(4000))
+                    .put("chapter", (c.chapter ?: "").take(64)).put("created_at", c.createdAt)
+                if (place != null) item.put("start_offset", place.start).put("end_offset", place.end)
+                if (c.id !in keepNote) item.put("note", c.note?.takeIf { it.isNotBlank() }?.take(4000) ?: JSONObject.NULL)
+                items.put(item)
+                ids[c.id] = id
+            }
+            send("PUT", "/api/v1/clippings/${doc(document)}", JSONObject().put("items", items))
+        }
+        return ids
+    }
+
     fun setClippingNote(document: String, id: String, note: String?) {
         var cursor = 0L
         var found: JSONObject? = null
@@ -317,12 +353,20 @@ class CrossPointClient(private val account: Account) {
             val id = c.str("id") ?: return@mapNotNull null
             val doc = c.str("document") ?: return@mapNotNull null
             val text = c.str("text") ?: return@mapNotNull null
-            Clipping(id, doc, text, c.str("note"), c.str("chapter"), c.long("created_at") ?: 0L, spine = c.int("spine"))
+            val start = c.int("start_offset")
+            val end = c.int("end_offset")?.takeIf { e -> start != null && e > start }
+            Clipping(id, doc, text, c.str("note"), c.str("chapter"), c.long("created_at") ?: 0L, spine = c.int("spine"),
+                start = start?.takeIf { end != null }, end = end)
         }
     }
 
     companion object {
         const val DEFAULT_SERVER = "https://sync.crosspointreader.com"
+
+        /** crosspoint-sync's id for a highlight: the first 16 hex characters of SHA-256 of its creation time (decimal) and text. */
+        fun clippingId(createdAt: Long, text: String): String =
+            java.security.MessageDigest.getInstance("SHA-256").digest((createdAt.toString() + text).toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }.take(16)
 
         fun md5(password: String): String {
             val digest = MessageDigest.getInstance("MD5").digest(password.toByteArray(Charsets.UTF_8))

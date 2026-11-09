@@ -1,9 +1,13 @@
 package io.github.prithirajn.trackersync.sync
 
 import io.github.prithirajn.trackersync.data.Book
+import io.github.prithirajn.trackersync.data.ImportedQuote
+import io.github.prithirajn.trackersync.data.ReadDay
 import io.github.prithirajn.trackersync.data.ReadStatus
+import io.github.prithirajn.trackersync.source.Clipping
 import io.github.prithirajn.trackersync.data.Snapshot
 import io.github.prithirajn.trackersync.trackers.LibraryBook
+import io.github.prithirajn.trackersync.trackers.Trackers
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
@@ -39,6 +43,10 @@ object HistoryImport {
         val coverUrl: String? = null,
         /** When it last changed there, for the library's order. */
         val updatedAt: Long? = null,
+        /** Day by day, when the history has it ("2024-03-09" -> that day). */
+        val days: Map<String, ReadDay> = emptyMap(),
+        /** Highlights, when the history has them. */
+        val quotes: List<ImportedQuote> = emptyList(),
     )
 
     /** Where a history came from: an id for the books' origin ("history:goodreads") and a name to show. */
@@ -306,6 +314,8 @@ object HistoryImport {
         val readPages: Int?,
         val firstRead: Long?,
         val lastRead: Long?,
+        /** Each day it was read: pages turned and minutes spent ("2024-03-09" -> that day). */
+        val days: Map<String, ReadDay> = emptyMap(),
     )
 
     /**
@@ -331,6 +341,7 @@ object HistoryImport {
             pageCount = k.pages?.takeIf { it > 0 },
             fraction = if (finished) 1.0 else frac,
             updatedAt = k.lastRead,
+            days = k.days,
         )
     }
 
@@ -342,6 +353,7 @@ object HistoryImport {
             rating = b.rating, review = b.review, pageCount = b.pageCount,
             fraction = b.fraction ?: if (b.status == ReadStatus.FINISHED) 1.0 else null,
             coverUrl = b.coverUrl, updatedAt = b.updatedAt.takeIf { it > 0 },
+            days = b.days, quotes = b.quotes,
         )
     }
 
@@ -371,8 +383,30 @@ object HistoryImport {
         return books.firstOrNull { b -> b.title != null && Matcher.sameBook(e.title, e.author, b.title, b.author) }
     }
 
+    /** A highlight's text, for telling whether a book already has it. */
+    private fun quoteKey(t: String) = t.lowercase().filter { it.isLetterOrDigit() }.take(120)
+
+    /** Every highlight a book has here, whatever it came from. */
+    internal fun clipsOf(s: Snapshot, doc: String): List<Clipping> =
+        (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == doc }
+
+    /** [e]'s highlights that [doc] doesn't have yet. */
+    internal fun newQuotes(s: Snapshot, doc: String, e: Entry): List<ImportedQuote> {
+        if (e.quotes.isEmpty()) return emptyList()
+        val have = clipsOf(s, doc).map { quoteKey(it.text) }.toHashSet()
+        return e.quotes.filter { q -> quoteKey(q.text).let { it.isNotEmpty() && have.add(it) } }
+    }
+
+    /** [e]'s reading days that [doc] doesn't have yet (days already here are kept as they are). */
+    internal fun newDays(s: Snapshot, doc: String, e: Entry): Map<String, ReadDay> {
+        val have = s.readingDays[doc] ?: return e.days
+        return e.days.filterKeys { it !in have }
+    }
+
     /** What [e] would add to [b]: only what [b] doesn't have. */
-    internal fun adds(b: Book, e: Entry): List<String> = listOfNotNull(
+    internal fun adds(s: Snapshot, b: Book, e: Entry): List<String> = listOfNotNull(
+        newQuotes(s, b.document, e).size.takeIf { it > 0 }?.let { "highlights" },
+        newDays(s, b.document, e).size.takeIf { it > 0 }?.let { "reading days" },
         "rating".takeIf { b.rating == null && e.rating != null },
         "review".takeIf { b.review.isNullOrBlank() && !e.review.isNullOrBlank() },
         "start day".takeIf { b.startedAt == null && e.startedAt != null },
@@ -398,14 +432,14 @@ object HistoryImport {
                 if (e.status == ReadStatus.TO_READ) want += e else fresh += e
                 continue
             }
-            val a = adds(b, e)
+            val a = adds(s, b, e)
             if (a.isEmpty()) same++ else fills += Fill(b.document, e, a)
         }
         return Plan(source, fresh, fills, same, want)
     }
 
     /** What [apply] did. */
-    data class Result(val snapshot: Snapshot, val added: Int, val filled: Int)
+    data class Result(val snapshot: Snapshot, val added: Int, val filled: Int, val highlights: Int = 0, val days: Int = 0)
 
     /** A stable document id for a book brought in from [source]. */
     internal fun documentFor(source: Source, e: Entry): String {
@@ -420,8 +454,27 @@ object HistoryImport {
     fun apply(s: Snapshot, plan: Plan, withWantToRead: Boolean, now: Long = System.currentTimeMillis()): Result {
         val books = HashMap(s.books)
         val links = HashMap(s.links)
+        val days = HashMap(s.readingDays)
+        val clips = ArrayList(s.historyClips)
+        var sent = s.sentClippings
         var added = 0
+        var newHighlights = 0
+        var newDays = 0
         val nowSec = now / 1000
+        /** [e]'s new highlights and days put on [doc]. Highlights count as already sent everywhere: nothing goes out. */
+        fun extras(doc: String, e: Entry) {
+            val cur = s.copy(readingDays = days, historyClips = clips)
+            val qs = newQuotes(cur, doc, e)
+            for (q in qs) {
+                val id = "hist-${plan.source.id}-" + Integer.toHexString((doc + "|" + quoteKey(q.text)).hashCode())
+                if (clips.any { it.id == id }) continue
+                clips += Clipping(id, doc, q.text.trim(), q.note?.trim()?.ifEmpty { null }, null, q.createdAt ?: e.finishedAt ?: e.updatedAt ?: nowSec, percent = q.percent, page = q.page)
+                sent = sent + Trackers.all.map { "${it.id}|$id" }
+                newHighlights++
+            }
+            val nd = newDays(cur, doc, e)
+            if (nd.isNotEmpty()) { days[doc] = (days[doc] ?: emptyMap()) + nd; newDays += nd.size }
+        }
         for (e in plan.fresh + (if (withWantToRead) plan.wantToRead else emptyList())) {
             val doc = documentFor(plan.source, e)
             if (books.containsKey(doc)) continue
@@ -446,6 +499,7 @@ object HistoryImport {
                 isbn = e.isbn,
             )
             added++
+            extras(doc, e)
         }
         var filled = 0
         for (f in plan.fills) {
@@ -462,7 +516,9 @@ object HistoryImport {
                 isbn = b.isbn ?: e.isbn,
                 reviewAsked = b.reviewAsked || e.rating != null,
             )
-            if (nb == b) continue
+            val before = newHighlights + newDays
+            extras(f.document, e)
+            if (nb == b && newHighlights + newDays == before) continue
             books[f.document] = nb
             filled++
             // Filled in here, not news for the trackers: marked as sent where the book is matched.
@@ -477,7 +533,7 @@ object HistoryImport {
                 )
             }
         }
-        return Result(s.copy(books = books, links = links), added, filled)
+        return Result(s.copy(books = books, links = links, readingDays = days, historyClips = clips, sentClippings = sent), added, filled, newHighlights, newDays)
     }
 
     private fun day(unix: Long?): LocalDate? =
