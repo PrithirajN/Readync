@@ -34,7 +34,9 @@ class Store(private val file: File, private val secrets: Secrets) {
 
     @Synchronized
     fun update(transform: (Snapshot) -> Snapshot): Snapshot {
-        val next = transform(snapshot)
+        val before = snapshot
+        // Changes made while a source runs pass its main-source check (sync.Primary) on the way in.
+        val next = transform(before).let { n -> gate?.invoke(before, n) ?: n }
         snapshot = next
         save(next)
         for (l in listeners) l(next)
@@ -242,10 +244,18 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("seekquelDates", JSONObject().also { r -> s.seekquelDates.forEach { (k, v) -> r.put(k, v) } })
         o.put("progressAsks", JSONObject().also { r ->
             s.progressAsks.forEach { (k, v) ->
-                r.put(k, JSONObject().put("fraction", v.fraction).put("status", v.status?.name ?: JSONObject.NULL).put("updatedAt", v.updatedAt))
+                r.put(k, JSONObject().put("fraction", v.fraction).put("status", v.status?.name ?: JSONObject.NULL).put("updatedAt", v.updatedAt).put("source", v.source))
             }
         })
         o.put("progressDenied", JSONObject().also { r -> s.progressDenied.forEach { (k, v) -> r.put(k, v) } })
+        o.put("primaries", JSONObject().also { r -> s.primaries.forEach { (k, v) -> r.put(k, v) } })
+        o.put("sourceRanks", JSONObject().also { r -> s.sourceRanks.forEach { (k, v) -> r.put(k, JSONArray(v)) } })
+        o.put("sourceStreaks", JSONObject().also { r -> s.sourceStreaks.forEach { (k, v) -> r.put(k, v) } })
+        o.put("moveBack", JSONArray(s.moveBack.toList()))
+        o.put("pinnedPrimary", JSONArray(s.pinnedPrimary.toList()))
+        o.put("trustedSources", JSONArray(s.trustedSources.toList()))
+        o.put("trustedFor", JSONArray(s.trustedFor.toList()))
+        o.put("asksNotified", JSONObject().also { r -> s.asksNotified.forEach { (k, v) -> r.put(k, v) } })
         o.put("aiSuggestions", JSONObject().also { r -> s.aiSuggestions.forEach { (k, v) -> r.put(k, v.toJson()) } })
         o.put("detailsLooked", JSONObject().also { r -> s.detailsLooked.forEach { (k, v) -> r.put(k, v) } })
         o.put("detailsTried", JSONObject().also { r -> s.detailsTried.forEach { (k, v) -> r.put(k, v) } })
@@ -530,10 +540,19 @@ class Store(private val file: File, private val secrets: Secrets) {
                         v.optDouble("fraction").takeIf { !it.isNaN() } ?: return@mapNotNull null,
                         v.str("status")?.let { n -> runCatching { ReadStatus.valueOf(n) }.getOrNull() },
                         v.optLong("updatedAt"),
+                        v.str("source") ?: "seekquel",
                     )
                 }.toMap()
             } ?: emptyMap(),
             progressDenied = o.obj("progressDenied")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) } } ?: emptyMap(),
+            primaries = o.obj("primaries")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            sourceRanks = o.obj("sourceRanks")?.let { r -> r.keys().asSequence().associateWith { k -> r.optJSONArray(k)?.strings() ?: emptyList() } } ?: emptyMap(),
+            sourceStreaks = o.obj("sourceStreaks")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            moveBack = o.optJSONArray("moveBack")?.strings()?.toSet() ?: emptySet(),
+            pinnedPrimary = o.optJSONArray("pinnedPrimary")?.strings()?.toSet() ?: emptySet(),
+            trustedSources = o.optJSONArray("trustedSources")?.strings()?.toSet() ?: emptySet(),
+            trustedFor = o.optJSONArray("trustedFor")?.strings()?.toSet() ?: emptySet(),
+            asksNotified = o.obj("asksNotified")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             aiSuggestions = o.obj("aiSuggestions")?.let { r -> r.keys().asSequence().mapNotNull { k -> r.optJSONObject(k)?.let { k to AiSuggestion.fromJson(it) } }.toMap() } ?: emptyMap(),
             detailsLooked = o.obj("detailsLooked")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             detailsTried = o.obj("detailsTried")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
@@ -554,6 +573,9 @@ class Store(private val file: File, private val secrets: Secrets) {
     }
 
     companion object {
+        /** Looks over each change before it's kept (set by the sync engine; see sync.Primary). */
+        @Volatile var gate: ((Snapshot, Snapshot) -> Snapshot)? = null
+
         const val MAX_LOG = 150
 
         /** The saved form of [s], with secrets sealed by [secrets] (the phone's key, or a backup's). */

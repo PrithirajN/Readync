@@ -1124,8 +1124,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Seekquel's different position for a book: use it, or keep the one here. */
+    /** Picks a book's main source yourself (null: back to automatic). */
+    fun chooseMainSource(document: String, source: String?) =
+        edit(source?.let { "${io.github.prithirajn.trackersync.sync.Primary.name(it)} is this book's main source" } ?: "Main source back to automatic", {}) { io.github.prithirajn.trackersync.sync.Primary.choose(store, document, source) }
+
+    /** "Always use" a source: for one book, or all books when [document] is null. */
+    fun trustSource(document: String?, source: String) =
+        edit("${io.github.prithirajn.trackersync.sync.Primary.name(source)}'s positions are taken without asking" + (if (document == null) "" else " for this book"), {}, syncAfter = true) { io.github.prithirajn.trackersync.sync.Primary.trust(store, document, source) }
+
+    fun untrustSource(document: String?, source: String) =
+        edit("Asking about ${io.github.prithirajn.trackersync.sync.Primary.name(source)}'s positions again", {}) { io.github.prithirajn.trackersync.sync.Primary.untrust(store, document, source) }
+
+    /** Every waiting different-position card answered at once. */
+    fun keepAllPositions() = edit("Kept the positions here", {}) { io.github.prithirajn.trackersync.sync.Primary.keepAll(store) }
+
+    fun updateAllPositions() = edit("Using the new positions; they go to your trackers now", {}, syncAfter = true) { io.github.prithirajn.trackersync.sync.Primary.updateAll(store) }
+
+    /** "Move it back" on a different-position card: that source is set to the position here. */
+    fun moveBackProgress(document: String) {
+        val from = store.snapshot.progressAsks[document]?.source?.let { io.github.prithirajn.trackersync.sync.Primary.name(it) } ?: "It"
+        edit("$from goes back to this position on the next sync", {}, syncAfter = true) {
+            io.github.prithirajn.trackersync.sync.ProgressOverride.moveBack(store, document)
+        }
+    }
+
     fun acceptSeekquelProgress(document: String) =
-        edit("Using Seekquel's position; it goes to your trackers now", {}, syncAfter = true) {
+        edit("Using the new position; it goes to your trackers now", {}, syncAfter = true) {
             io.github.prithirajn.trackersync.sync.ProgressOverride.acceptSeekquel(store, document)
         }
 
@@ -1271,7 +1295,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { getApplication<Application>().contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             io { store.update { it.copy(koLocal = uri.toString(), koLocalOkAt = 0L, koLocalError = null) } }
-            io { runCatching { SyncEngine(store).pullKoHighlights() } }
+            io { runCatching { io.github.prithirajn.trackersync.sync.Primary.within("koreader") { SyncEngine(store).pullKoHighlights() } } }
             Health.koLocal(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
             syncNow(quiet = true)
         }
@@ -1367,7 +1391,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun checkKoHighlights() {
         viewModelScope.launch {
-            io { runCatching { SyncEngine(store).pullKoHighlights() } }
+            io { runCatching { io.github.prithirajn.trackersync.sync.Primary.within("koreader") { SyncEngine(store).pullKoHighlights() } } }
             Health.koHl(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
         }
     }
@@ -1378,7 +1402,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun checkMoon() {
         viewModelScope.launch {
-            io { runCatching { SyncEngine(store).pullMoon() } }
+            io { runCatching { io.github.prithirajn.trackersync.sync.Primary.within("moonreader") { SyncEngine(store).pullMoon() } } }
             Health.moon(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
         }
     }
@@ -1475,7 +1499,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun checkKindle() {
         viewModelScope.launch {
             io {
-                SyncEngine(store).pullKindle(force = true)
+                io.github.prithirajn.trackersync.sync.Primary.within("kindle") { SyncEngine(store).pullKindle(force = true) }
             }
             Health.kindle(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
         }
@@ -1491,7 +1515,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             io { store.update { it.copy(mihon = io.github.prithirajn.trackersync.data.MihonSource(folder = uri.toString()), mihonOkAt = 0L, mihonError = null) } }
             notify("Mihon linked", "Reading its newest backup.")
-            io { SyncEngine(store).pullManga() }
+            io { io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() } }
             syncNow(quiet = true)
         }
     }
@@ -1509,7 +1533,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun checkMihon() {
         viewModelScope.launch {
-            io { SyncEngine(store).pullManga() }
+            io { io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() } }
             Health.mihon(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
         }
     }
@@ -1570,7 +1594,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             notify("Logged", if (page > 0) "${if (comic) "Issue #" else "Chapter "}${io.github.prithirajn.trackersync.sync.ComicIssues.label(at)}, page $page" else "Finished ${if (comic) "issue #" else "chapter "}${io.github.prithirajn.trackersync.sync.ComicIssues.label(at)}")
-            io { SyncEngine(store).pullManga() }
+            io { io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() } }
             syncNow(quiet = true)
         }
     }
@@ -1650,7 +1674,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         ?: io.github.prithirajn.trackersync.data.LoggedSeries(title, comic, number, 0, false, number, System.currentTimeMillis() / 1000)
                     st.copy(logged = st.logged + (key to l.copy(dates = l.dates + (number to (started to finished)))))
                 }
-                SyncEngine(store).pullManga()
+                io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() }
             }
             notify("Days saved", "${if (comic) "Issue #" else "Chapter "}${io.github.prithirajn.trackersync.sync.ComicIssues.label(number)}")
             syncNow(quiet = true)
@@ -2092,7 +2116,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         comicPerVolume = st.comicPerVolume - key,
                     )
                 }
-                SyncEngine(store).pullManga()
+                io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() }
             }
             done(null)
             notify(if (clean == null) "Volumes reset" else "Volumes saved", if (clean == null) "Looked up again on the next sync." else "Your library follows them now.")
@@ -2105,7 +2129,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             io {
                 store.update { st -> st.copy(pagesPer = if (pages == null || pages <= 0) st.pagesPer - key else st.pagesPer + (key to pages.coerceIn(1, 500))) }
-                SyncEngine(store).pullManga()
+                io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() }
             }
         }
     }
@@ -2161,7 +2185,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         comicMissing = st.comicMissing - key,
                     )
                 }
-                SyncEngine(store).pullManga()
+                io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() }
             }
         }
     }
@@ -2190,7 +2214,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 done(null)
                 notify("AniList linked", "Signed in as ${me.name}. Reading your manga list.")
-                io { SyncEngine(store).pullManga() }
+                io { io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() } }
                 syncNow(quiet = true)
             } catch (e: Exception) {
                 done(e.message ?: "Couldn't sign in to AniList")
@@ -2206,7 +2230,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun checkAniList() {
         viewModelScope.launch {
-            io { SyncEngine(store).pullManga() }
+            io { io.github.prithirajn.trackersync.sync.Primary.within("mihon") { SyncEngine(store).pullManga() } }
             Health.anilist(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
         }
     }

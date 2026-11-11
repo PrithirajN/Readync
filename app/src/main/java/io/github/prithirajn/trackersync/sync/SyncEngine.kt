@@ -38,6 +38,11 @@ import java.util.concurrent.locks.ReentrantLock
  */
 class SyncEngine(private val store: Store) {
 
+    init {
+        // Every source's changes pass each book's main-source check on their way into the store.
+        Store.gate = { before, after -> Primary.gate(before, after) }
+    }
+
     /** What a pass did. [finished] lists books that became Finished during it (for the finish flow). */
     data class Result(
         val message: String,
@@ -142,6 +147,7 @@ class SyncEngine(private val store: Store) {
         if (!lock.tryLock()) return Result(if (store.snapshot.running) "A sync is already running" else "Still finishing the last sync's extras; try again in a moment")
         try {
             timings.clear()
+            Primary.startSync()
             val startedAt = System.nanoTime()
             store.update { it.copy(running = true) }
             val finishedBefore = store.snapshot.books.values.filter { it.status == ReadStatus.FINISHED }.map { it.document }.toSet()
@@ -150,7 +156,7 @@ class SyncEngine(private val store: Store) {
                 var sourceNeedsAuth = false
                 if (store.snapshot.account != null) {
                     try {
-                        timed("CrossPoint") { pullChanges() }
+                        timed("CrossPoint") { Primary.within("crosspoint") { pullChanges() } }
                         store.update { it.copy(sourceOkAt = System.currentTimeMillis(), sourceError = null) }
                     } catch (e: AuthException) {
                         val desc = Health.describeSource(e)
@@ -176,16 +182,23 @@ class SyncEngine(private val store: Store) {
                 // come after, since they check what Kindle, Libby and Audible brought in.
                 step("Reading your sources")
                 inParallel(listOfNotNull<Pair<String, () -> Unit>>(
-                    ("Kindle" to { pullKindle() }).takeIf { store.snapshot.kindle != null },
-                    ("Libby" to { pullLibby() }).takeIf { store.snapshot.libby != null },
-                    ("Audible" to { pullAudible() }).takeIf { store.snapshot.audible != null },
-                    "Manga" to { pullManga() },
-                    ("KOSync" to { pullKosync() }).takeIf { store.snapshot.kosync != null },
-                    ("Moon+ Reader" to { runCatching { pullMoon() }; Unit }).takeIf { store.snapshot.moon != null },
-                    ("KOReader highlights" to { runCatching { pullKoHighlights() }; Unit }).takeIf { store.snapshot.koHl != null || store.snapshot.koLocal != null },
+                    ("Kindle" to { Primary.within("kindle") { pullKindle() } }).takeIf { store.snapshot.kindle != null },
+                    ("Libby" to { Primary.within("libby") { pullLibby() } }).takeIf { store.snapshot.libby != null },
+                    ("Audible" to { Primary.within("audible") { pullAudible() } }).takeIf { store.snapshot.audible != null },
+                    "Manga" to { Primary.within("mihon") { pullManga() } },
+                    ("KOSync" to { Primary.within("kosync") { pullKosync() } }).takeIf { store.snapshot.kosync != null },
+                    ("Moon+ Reader" to { Primary.within("moonreader") { runCatching { pullMoon() } }; Unit }).takeIf { store.snapshot.moon != null },
+                    ("KOReader highlights" to { Primary.within("koreader") { runCatching { pullKoHighlights() } }; Unit }).takeIf { store.snapshot.koHl != null || store.snapshot.koLocal != null },
                 )) { (name, pull) -> timed(name) { pull() } }
                 step("Tracker shelves")
-                timed("Tracker shelves") { pullSources() }
+                // Books from trackers (Seekquel's…): each from the tracker it came from.
+                timed("Tracker shelves") { Primary.within(Primary.BY_ORIGIN) { pullSources() } }
+                // Main sources that changed hands, for the log.
+                while (true) { val note = Primary.notes.poll() ?: break; store.log(null, note) }
+                // Positions from sources you said to always use (Seekquel's come by its own path): taken now.
+                store.snapshot.progressAsks.filter { (d, a) -> Primary.trusted(store.snapshot, d, a.source) }.keys.forEach { d ->
+                    runCatching { ProgressOverride.acceptSeekquel(store, d) }
+                }
                 runCatching { Handoff.find(store) }
                 timed("Back to CrossPoint") { runCatching { pushToCrossPoint() }; runCatching { pushKoToCrossPoint() } }
                 if (store.snapshot.cpToKo) timed("To KOReader") { runCatching { pushCrossPointToKo() } }
@@ -269,6 +282,8 @@ class SyncEngine(private val store: Store) {
                 .map { it.document }
             return result.copy(finished = finishedNow)
         } finally {
+            // A read outside a sync (a source's "check now") looks at every source again.
+            Primary.fresh.clear()
             lock.unlock()
         }
     }
@@ -635,13 +650,18 @@ class SyncEngine(private val store: Store) {
                 // ---- position: Seekquel comes after your own entries, before CrossPoint and KOSync ----
                 matched += doc
                 val ask = progressAsk(b, item, links[Link.key(source.id, doc)], pending.containsKey(Link.key(source.id, doc)), denied[doc])
-                if (ask != null) asks[doc] = ask else asks.remove(doc)
+                    // The book's main source reported this sync: Seekquel isn't looked at for it.
+                    ?.takeIf { doc !in Primary.fresh && Primary.of(s, doc) != source.id }
+                val other = asks[doc]?.takeIf { it.source != source.id }
+                // Another source's question stays unless Seekquel ranks above it for this book.
+                if (ask != null && (other == null || Primary.rank(s, doc, source.id) < Primary.rank(s, doc, other.source))) asks[doc] = ask.copy(source = source.id)
+                else if (ask == null && other == null) asks.remove(doc)
                 // A denied position that Seekquel has since moved on from is forgotten.
                 item.fraction?.let { f -> denied[doc]?.let { d -> if (d != Math.round(f * 100).toInt()) denied.remove(doc) } }
                 books[doc] = b
             }
-            // Books Seekquel no longer has: nothing to ask.
-            asks.keys.retainAll(matched)
+            // Books Seekquel no longer has: nothing to ask (questions from other sources stay).
+            asks.entries.removeAll { (d, a) -> a.source == source.id && d !in matched }
             s.copy(
                 books = books, links = links, pending = pending, seekquelRatings = seen, seekquelDates = seenDates,
                 progressAsks = asks, progressDenied = denied,
@@ -951,6 +971,8 @@ class SyncEngine(private val store: Store) {
             for (b in inProgress + turn) {
                 // The book's own ID and any linked by hand: the newest position among them counts.
                 val ids = listOf(b.document) + (store.snapshot.kosyncIds[b.document] ?: emptyList())
+                // Its main source already reported a new position this sync: KOSync isn't asked for this book.
+                if (b.document in Primary.fresh && Primary.of(store.snapshot, b.document) != "kosync") continue
                 val p = ids.mapNotNull { client.progress(it) }.maxByOrNull { it.timestamp }?.copy(document = b.document) ?: continue
                 if (p.device == null || KoreaderDevice.isKoreader(p.device, null)) fromKo += b.document
                 if (p.timestamp > b.timestamp && kotlin.math.abs(p.percentage - b.percentage) > 0.0005) found.add(p)
@@ -2751,7 +2773,10 @@ class SyncEngine(private val store: Store) {
                     val skipProgress = tracker.privacy == PrivacySupport.SKIP_PROGRESS && visibility == Visibility.PRIVATE
                     // After the book got longer, a tracker further along is on the old length: bring it to the new one.
                     val grewSince = (store.snapshot.grewAt[book.document] ?: 0L) * 1000 > link.updatedAt
-                    val behind = tracker.readsProgress && remote.percent != null && percent < remote.percent && !grewSince && !rereading
+                    // "Move it back" chosen for this book: sent even though the tracker is further along.
+                    val forcedBack = "${tracker.id}|${book.document}" in store.snapshot.moveBack
+                    if (forcedBack) store.update { s -> s.copy(moveBack = s.moveBack - "${tracker.id}|${book.document}") }
+                    val behind = tracker.readsProgress && remote.percent != null && percent < remote.percent && !grewSince && !rereading && !forcedBack
                     when {
                         skipProgress -> Unit
                         behind -> note = "${tracker.name} is further along (${remote.percent}%)"

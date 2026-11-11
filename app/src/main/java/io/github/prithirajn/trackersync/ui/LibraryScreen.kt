@@ -271,6 +271,8 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
                     onKeep = { vm.denySeekquelProgress(b.document) },
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
                     kosyncOn = state.kosync != null,
+                    onMoveBack = { vm.moveBackProgress(b.document) },
+                    onAlways = { all -> vm.trustSource(if (all) null else b.document, ask.source) },
                 )
             }
         }
@@ -284,9 +286,20 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
                 )
             }
         }
+        // Several waiting: answer them all at once.
+        if (asks.size >= 2) {
+            item(key = "ask-all") {
+                Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp).animateItem(), verticalAlignment = Alignment.CenterVertically) {
+                    Quiet("${asks.size} books with a different position:", Modifier.weight(1f), color = Cp.colors.faint)
+                    PillButton("Keep all", { vm.keepAllPositions() })
+                    HSpace(8)
+                    PillButton("Update all", { vm.updateAllPositions() }, outlined = false)
+                }
+            }
+        }
         if (asks.size > 3) {
             item(key = "ask-more") {
-                Quiet("${asks.size - 3} more books have a different position on Seekquel; it's shown on each book.",
+                Quiet("${asks.size - 3} more books have a different position elsewhere; it's shown on each book.",
                     Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp).animateItem(), color = Cp.colors.faint)
             }
         }
@@ -838,7 +851,13 @@ private fun BookSheet(
             }
             state.progressAsks[book.document]?.let { ask ->
                 VSpace(16)
-                SeekquelProgressCard(book, ask, onUse = { vm.acceptSeekquelProgress(book.document) }, onKeep = { vm.denySeekquelProgress(book.document) }, showBook = false, kosyncOn = state.kosync != null)
+                SeekquelProgressCard(book, ask, onUse = { vm.acceptSeekquelProgress(book.document) }, onKeep = { vm.denySeekquelProgress(book.document) }, showBook = false, kosyncOn = state.kosync != null,
+                    onMoveBack = { vm.moveBackProgress(book.document) }, onAlways = { all -> vm.trustSource(if (all) null else book.document, ask.source) })
+            }
+            // Where this book's position is trusted from, and the others by rank.
+            if (!ManualBooks.isManual(book)) {
+                VSpace(16)
+                MainSourceCard(vm, state, book)
             }
             if (ManualBooks.isManual(book)) {
                 VSpace(16)

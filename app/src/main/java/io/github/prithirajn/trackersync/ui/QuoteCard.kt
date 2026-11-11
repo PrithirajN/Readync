@@ -36,12 +36,25 @@ import java.io.File
  * - Spine: the cover runs down the left like a book's spine with its title along it; the passage
  *   is on the page beside it, under a bookmark ribbon showing how far in it was.
  * - Book photo: the passage printed in a real-looking book on a desk, in its light (see [BookShot]).
+ * - Editorial: a magazine pull-quote: a huge quote mark, the passage large, your note as a reader's aside.
+ * - Typewriter: typed on paper, with your note in red pen in the margin.
+ * - Index card: a ruled card taped to a desk, your note handwritten under the passage.
+ * - Wordprint: the passage's own fingerprint. Every word is a ray around a ring, as long as the
+ *   word, in the order you read them, so no two passages make the same shape; an arc around it
+ *   shows how far into the book you were. The passage sits under its print.
  *
- * Every layout takes its colour from the book's own cover.
+ * Every layout takes its colour from the book's own cover. The newer ones come in three sizes
+ * ([Size]): a feed post, a square, and a story.
  */
 object QuoteCard {
 
-    enum class Look(val label: String) { SPOTLIGHT("Spotlight"), HIGHLIGHTER("Highlighter"), SPINE("Spine"), PAGE("Book photo") }
+    enum class Look(val label: String, val sized: Boolean = false) {
+        SPOTLIGHT("Spotlight"), HIGHLIGHTER("Highlighter"), SPINE("Spine"), PAGE("Book photo"),
+        EDITORIAL("Editorial", true), TYPEWRITER("Typewriter", true), INDEX_CARD("Index card", true), WORDPRINT("Wordprint", true),
+    }
+
+    /** The picture's shape, for where it's going: a feed post (4:5), a square, or a story (9:16). */
+    enum class Size(val label: String, val height: Int) { POST("Post", 1350), SQUARE("Square", 1080), STORY("Story", 1920) }
 
     data class Content(
         val text: String,
@@ -54,18 +67,25 @@ object QuoteCard {
         val percent: Double? = null,
         /** Its page in the book, when known. */
         val page: Int? = null,
+        /** A note on its own, with no passage (a note on a bookmark): [text] is the note, shown in your hand, without quote marks. */
+        val standalone: Boolean = false,
     )
 
     private const val W = 1080
     private const val DEFAULT_SEED = 0xFF4A7A62.toInt()
 
-    private class Fonts(val lora: Typeface, val loraItalic: Typeface, val loraBold: Typeface, val inter: Typeface, val caveat: Typeface)
+    private class Fonts(
+        val lora: Typeface, val loraItalic: Typeface, val loraBold: Typeface, val inter: Typeface, val caveat: Typeface,
+        val mono: Typeface = Typeface.MONOSPACE, val interBold: Typeface = Typeface.create(inter, Typeface.BOLD),
+    )
 
     private fun fonts(context: Context?): Fonts {
         val lora = context?.let { runCatching { ResourcesCompat.getFont(it, R.font.lora) }.getOrNull() } ?: Typeface.SERIF
         val inter = context?.let { runCatching { ResourcesCompat.getFont(it, R.font.inter) }.getOrNull() } ?: Typeface.SANS_SERIF
         val caveat = context?.let { runCatching { ResourcesCompat.getFont(it, R.font.caveat) }.getOrNull() } ?: Typeface.SERIF
-        return Fonts(lora, Typeface.create(lora, Typeface.ITALIC), Typeface.create(lora, Typeface.BOLD), inter, caveat)
+        val mono = context?.let { runCatching { ResourcesCompat.getFont(it, R.font.book_plexmono) }.getOrNull() } ?: Typeface.MONOSPACE
+        val loraItalic = context?.let { runCatching { ResourcesCompat.getFont(it, R.font.book_lora_italic) }.getOrNull() } ?: Typeface.create(lora, Typeface.ITALIC)
+        return Fonts(lora, loraItalic, Typeface.create(lora, Typeface.BOLD), inter, caveat, mono, Typeface.create(inter, Typeface.BOLD))
     }
 
     // ---- colour helpers ----
@@ -174,16 +194,27 @@ object QuoteCard {
     }
 
     /** Draws the card. Blocking; call off the main thread. */
-    fun render(context: Context?, content: Content, look: Look, cover: Bitmap?, coverSeed: Int?, mark: Boolean = true): Bitmap {
-        val f = fonts(context)
+    fun render(context: Context?, content0: Content, look: Look, cover: Bitmap?, coverSeed: Int?, mark: Boolean = true, size: Size = Size.POST): Bitmap {
+        val base = fonts(context)
+        // Nothing to draw is drawn as an empty quote rather than failing.
+        val content = content0.copy(text = content0.text.ifBlank { content0.note ?: "…" }, note = content0.note?.trim()?.takeIf { it.isNotEmpty() && !content0.standalone })
+            .let { c -> if (c.standalone) c.copy(where = listOfNotNull("My note", c.where).joinToString(" · ")) else c }
+        // A note on its own is in your hand where a passage would be set in type.
+        val f = if (content.standalone) Fonts(base.caveat, base.caveat, base.loraBold, base.inter, base.caveat, base.mono, base.interBold) else base
         val seed = coverSeed ?: DEFAULT_SEED
+        val h = size.height
         return when (look) {
+            Look.EDITORIAL -> editorial(content, seed, f, mark, h)
+            Look.TYPEWRITER -> typewriter(content, f, mark, h)
+            Look.INDEX_CARD -> indexCard(content, seed, f, mark, h)
+            Look.WORDPRINT -> wordprint(content, seed, f, mark, h)
+
             Look.SPOTLIGHT -> spotlight(content, cover, seed, f, mark)
             Look.HIGHLIGHTER -> highlighter(content, cover, seed, f, mark)
             Look.SPINE -> spine(content, cover, seed, f, mark)
             Look.PAGE -> BookShot.render(
                 context,
-                BookShot.Content(content.text, content.author, content.title, content.where?.takeIf { !it.contains('%') }, content.page, note = content.note, coverColor = coverSeed),
+                BookShot.Content(content0.text.ifBlank { content.text }, content.author, content.title, content0.where?.takeIf { !it.contains('%') }, content.page, note = content.note, coverColor = coverSeed, standalone = content.standalone),
                 context?.let { BookShot.saved(it) } ?: BookShot.Options(),
                 mark = mark,
             )
@@ -208,7 +239,7 @@ object QuoteCard {
         val q = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.loraItalic; color = 0xFFFFFFFF.toInt(); setShadowLayer(12f, 0f, 2f, 0x66000000) }
         val textW = W - 2 * 120
         val noteH = if (c.note != null) 140 else 0
-        val ql = fit(io.github.prithirajn.trackersync.trackers.quoted(c.text), q, textW, 640 - noteH, 66f, 34f, 1.25f, Layout.Alignment.ALIGN_CENTER)
+        val ql = fit(if (c.standalone) c.text.trim() else io.github.prithirajn.trackersync.trackers.quoted(c.text), q, textW, 640 - noteH, 66f, 34f, 1.25f, Layout.Alignment.ALIGN_CENTER)
         val qTop = 200f + (700 - noteH - ql.height) / 2f
         cv.save(); cv.translate(120f, qTop); ql.draw(cv); cv.restore()
         var y = qTop + ql.height + 36f
@@ -382,7 +413,7 @@ object QuoteCard {
 
         // A big opening mark, then the passage on the page.
         val mark = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.loraBold; textSize = 240f; color = alpha(deep, 70) }
-        cv.drawText("“", left - 30f, 330f, mark)
+        if (!c.standalone) cv.drawText("“", left - 30f, 330f, mark)
         val q = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.lora; color = ink }
         val noteH = if (c.note != null) 170 else 0
         val ql = fit(c.text.trim(), q, textW, 760 - noteH, 56f, 32f, 1.32f)
@@ -403,6 +434,259 @@ object QuoteCard {
         val who = listOfNotNull(c.author, c.where).joinToString("  ·  ")
         if (who.isNotEmpty()) cv.drawText(TextUtils.ellipsize(who, ap, textW.toFloat(), TextUtils.TruncateAt.END).toString(), left, foot + 60f, ap)
         if (showMark) brand(cv, f, W - 90f, H - 60f, alpha(ink, 150), lighten(seed, 0.5f), rightAligned = true)
+        return bmp
+    }
+
+    // ---- shared bits for the newer looks ----
+
+    private fun lum(c: Int) = 0.299f * r(c) + 0.587f * g(c) + 0.114f * b(c)
+
+    /** The cover's colour dark enough to be ink on a light page. */
+    private fun ink(seed: Int): Int {
+        var c = seed
+        repeat(14) { if (lum(c) > 90f) c = shade(c, 0.85f) }
+        return c
+    }
+
+    /** Where a block of [blockH] starts so it sits a little above the middle of [h] (it reads better). */
+    private fun top(h: Int, blockH: Float, minTop: Float = 0f) = maxOf(minTop, (h - blockH) * 0.44f)
+
+    private fun text(cv: Canvas, l: StaticLayout, x: Float, y: Float) { cv.save(); cv.translate(x, y); l.draw(cv); cv.restore() }
+
+    private fun shadowed(color: Int, blur: Float = 30f, dy: Float = 12f, a: Int = 0x55) =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; setShadowLayer(blur, 0f, dy, alpha(0, a)) }
+
+    // ---- Editorial: a magazine pull-quote ----
+
+    private fun editorial(c: Content, seed: Int, f: Fonts, showMark: Boolean, h: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(W, h, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp)
+        val paper = 0xFFF8F4EC.toInt()
+        val dark = 0xFF1E1B18.toInt()
+        val accent = ink(seed)
+        cv.drawColor(paper)
+        val left = 110f
+        val textW = W - 2 * left.toInt()
+        // Kicker: where it's from, in spaced capitals, over a thin rule.
+        val kp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.interBold; textSize = 25f; color = accent; letterSpacing = 0.22f }
+        cv.drawText(TextUtils.ellipsize("FROM " + c.title.uppercase(), kp, textW.toFloat(), TextUtils.TruncateAt.END).toString(), left, 130f, kp)
+        cv.drawRect(left, 160f, W - left, 162f, Paint().apply { color = alpha(dark, 60) })
+        // The passage, large, under a huge quote mark in the cover's colour.
+        val markP = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.loraBold; textSize = 300f; color = alpha(accent, 210) }
+        val notePad = c.note?.let { 70 } ?: 0
+        val np = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.loraItalic; textSize = 34f; color = alpha(dark, 200) }
+        val nl = c.note?.let { layout(it, np, textW - 36, 1.3f, maxLines = if (h > 1500) 6 else 4) }
+        val bottomRoom = 150f + (nl?.let { it.height + notePad + 50f } ?: 0f)
+        val qp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.lora; color = dark }
+        val ql = fit(c.text.trim(), qp, textW, (h - 200f - 140f - bottomRoom - 120).toInt(), if (h > 1500) 76f else 66f, 34f, 1.22f)
+        val block = 140f + ql.height + 120f + (nl?.let { it.height + notePad.toFloat() } ?: 0f)
+        var y = top(h, block, 200f)
+        // The mark above the passage, then the passage.
+        if (!c.standalone) cv.drawText("“", left - 14f, y + 210f, markP)
+        text(cv, ql, left, y + 140f)
+        y += 140f + ql.height + 70f
+        // The byline: a dash and the author, in italics.
+        val bp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.loraItalic; textSize = 36f; color = dark }
+        cv.drawText(TextUtils.ellipsize("— " + (c.author ?: c.title), bp, textW.toFloat(), TextUtils.TruncateAt.END).toString(), left, y, bp)
+        y += 50f
+        // Your note: a reader's aside, set off by a bar in the cover's colour.
+        nl?.let {
+            y += notePad - 30f
+            val lp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.interBold; textSize = 22f; color = accent; letterSpacing = 0.2f }
+            cv.drawText("READER’S NOTE", left + 36f, y, lp)
+            cv.drawRect(left, y - 22f, left + 6f, y + 18f + it.height, Paint().apply { color = accent })
+            text(cv, it, left + 36f, y + 18f)
+        }
+        // The foot: where it was, and the mark.
+        cv.drawRect(left, h - 140f, W - left, h - 138f, Paint().apply { color = alpha(dark, 40) })
+        whereLine(c)?.let { w ->
+            val wp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.inter; textSize = 24f; color = alpha(dark, 170); letterSpacing = 0.14f }
+            cv.drawText(TextUtils.ellipsize(w.uppercase(), wp, textW - 240f, TextUtils.TruncateAt.END).toString(), left, h - 92f, wp)
+        }
+        if (showMark) brand(cv, f, W - left, h - 92f, alpha(dark, 170), lighten(accent, 0.5f), rightAligned = true)
+        return bmp
+    }
+
+    // ---- Typewriter: typed on paper, a red-pen note in the margin ----
+
+    private fun typewriter(c: Content, f: Fonts, showMark: Boolean, h: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(W, h, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp)
+        val paper = 0xFFF3EEE2.toInt()
+        val ink = 0xFF2A2724.toInt()
+        val pen = 0xFFB3261E.toInt()
+        cv.drawColor(paper)
+        // Darker towards the edges, like an old sheet.
+        cv.drawRect(0f, 0f, W.toFloat(), h.toFloat(), Paint().apply {
+            shader = android.graphics.RadialGradient(W / 2f, h / 2f, maxOf(W, h) * 0.75f, intArrayOf(0x00000000, 0x00000000, 0x22503C1E), floatArrayOf(0f, 0.6f, 1f), Shader.TileMode.CLAMP)
+        })
+        val left = 120f
+        val textW = W - 2 * left.toInt()
+        // The header typed across the top: the book, and the page.
+        val hp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.mono; textSize = 26f; color = alpha(ink, 200); letterSpacing = 0.04f }
+        val pageTag = c.page?.let { "p. $it" } ?: c.percent?.let { "${Math.round(it * 100)}%" } ?: ""
+        cv.drawText(TextUtils.ellipsize(c.title.uppercase(), hp, textW - hp.measureText(pageTag) - 40f, TextUtils.TruncateAt.END).toString(), left, 120f, hp)
+        cv.drawText(pageTag, W - left - hp.measureText(pageTag), 120f, hp)
+        cv.drawRect(left, 140f, W - left, 142f, Paint().apply { color = alpha(ink, 70) })
+        // The passage, typed: each line struck twice a hair apart, like a real ribbon.
+        val np = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.caveat; textSize = 54f; color = pen }
+        val nl = c.note?.let { layout(it, np, textW - 80, 1.02f, maxLines = if (h > 1500) 5 else 3) }
+        val qp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.mono; color = ink }
+        val ql = fit(c.text.trim(), qp, textW, (h - 260 - 190 - (nl?.let { it.height + 90 } ?: 0)).toInt(), if (h > 1500) 48f else 42f, 26f, 1.45f)
+        val block = ql.height + (nl?.let { it.height + 90f } ?: 0f) + 70f
+        var y = top(h, block, 220f)
+        val ghost = TextPaint(qp).apply { color = alpha(ink, 70) }
+        text(cv, layout(c.text.trim(), ghost, textW, 1.45f, maxLines = ql.lineCount), left + 1.6f, y + 1.2f)
+        text(cv, ql, left, y)
+        y += ql.height + 30f
+        val sig = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.mono; textSize = 28f; color = alpha(ink, 220) }
+        cv.drawText(TextUtils.ellipsize("— " + (c.author ?: c.title), sig, textW.toFloat(), TextUtils.TruncateAt.END).toString(), left, y + 30f, sig)
+        y += 70f
+        // Your note, in red pen, a little askew, with a curl pointing at the passage.
+        nl?.let {
+            y += 40f
+            cv.save(); cv.rotate(-2.5f, left + 40f, y)
+            val curl = Path().apply { moveTo(left + 10f, y + 30f); quadTo(left - 30f, y - 30f, left + 30f, y - 70f) }
+            cv.drawPath(curl, Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = pen; strokeCap = Paint.Cap.ROUND })
+            text(cv, it, left + 60f, y)
+            cv.restore()
+        }
+        if (showMark) brand(cv, f, W - left, h - 90f, alpha(ink, 160), 0xFFE9C46A.toInt(), rightAligned = true)
+        return bmp
+    }
+
+    // ---- Index card: taped to the desk, your note under the passage ----
+
+    private fun indexCard(c: Content, seed: Int, f: Fonts, showMark: Boolean, h: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(W, h, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp)
+        // The desk: the cover's colour, soft and a little lighter in the middle.
+        val desk = shade(lighten(seed, 0.15f), 0.82f)
+        cv.drawColor(desk)
+        cv.drawRect(0f, 0f, W.toFloat(), h.toFloat(), Paint().apply {
+            shader = android.graphics.RadialGradient(W / 2f, h * 0.45f, maxOf(W, h) * 0.7f, alpha(lighten(desk, 0.25f), 255), alpha(shade(desk, 0.8f), 255), Shader.TileMode.CLAMP)
+        })
+        val cw = 900f
+        val cx = (W - cw) / 2f
+        val pad = 60f
+        val inner = (cw - 2 * pad).toInt()
+        val inkBlue = 0xFF2B4A8C.toInt()
+        val np = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.caveat; textSize = 52f; color = inkBlue }
+        val nl = c.note?.let { layout("→ $it", np, inner, 1.02f, maxLines = if (h > 1500) 6 else 4) }
+        val qp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.lora; color = 0xFF23211E.toInt() }
+        val headH = 150f
+        val foot = 110f
+        val maxCard = h - 200f
+        val ql = fit(c.text.trim(), qp, inner, (maxCard - headH - foot - (nl?.let { it.height + 50 } ?: 0)).toInt(), if (h > 1500) 52f else 46f, 28f, 1.38f)
+        val ch = headH + ql.height + (nl?.let { it.height + 50f } ?: 0f) + foot
+        val cy = top(h, ch, 100f)
+        cv.save(); cv.rotate(-2f, W / 2f, cy + ch / 2)
+        val card = RectF(cx, cy, cx + cw, cy + ch)
+        cv.drawRect(card, shadowed(0xFFFFFDF6.toInt(), 30f, 14f, 0x50))
+        // Blue rules in step with the lines, under a red one for the heading.
+        val lineH = ql.height.toFloat() / ql.lineCount.coerceAtLeast(1)
+        var ly = cy + headH + lineH - 6f
+        val rule = Paint().apply { color = 0xFFC9D8EA.toInt(); strokeWidth = 2f }
+        while (ly < card.bottom - 30f) { cv.drawLine(cx, ly, card.right, ly, rule); ly += lineH }
+        cv.drawLine(cx, cy + headH - 30f, card.right, cy + headH - 30f, Paint().apply { color = 0xFFE29A9A.toInt(); strokeWidth = 3f })
+        val hp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.interBold; textSize = 24f; color = 0xFF6B6359.toInt(); letterSpacing = 0.14f }
+        val tag = c.page?.let { "P. $it" } ?: c.percent?.let { "${Math.round(it * 100)}%" } ?: ""
+        cv.drawText(TextUtils.ellipsize(c.title.uppercase(), hp, inner - hp.measureText(tag) - 30f, TextUtils.TruncateAt.END).toString(), cx + pad, cy + 80f, hp)
+        cv.drawText(tag, card.right - pad - hp.measureText(tag), cy + 80f, hp)
+        text(cv, ql, cx + pad, cy + headH)
+        nl?.let { text(cv, it, cx + pad, cy + headH + ql.height + 40f) }
+        c.author?.let { a ->
+            val ap = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.loraItalic; textSize = 28f; color = 0xFF6B6359.toInt() }
+            cv.drawText(TextUtils.ellipsize("— $a", ap, inner.toFloat(), TextUtils.TruncateAt.END).toString(), cx + pad, card.bottom - 46f, ap)
+        }
+        // A strip of tape holding it down.
+        cv.save(); cv.rotate(3f, W / 2f, cy)
+        cv.drawRect(W / 2f - 90f, cy - 26f, W / 2f + 90f, cy + 26f, Paint().apply { color = 0x99F1E7C4.toInt() })
+        cv.restore()
+        cv.restore()
+        if (showMark) brand(cv, f, W - 80f, h - 70f, 0xCCFFFFFF.toInt(), lighten(desk, 0.4f), rightAligned = true)
+        return bmp
+    }
+
+    // ---- Wordprint: the passage's own fingerprint ----
+
+    private fun wordprint(c: Content, seed: Int, f: Fonts, showMark: Boolean, h: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(W, h, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp)
+        // Night paper in the cover's colour; the print glows in a light tint of it.
+        var bg = seed
+        repeat(16) { if (lum(bg) > 38f) bg = shade(bg, 0.84f) }
+        cv.drawColor(bg)
+        val glow = lighten(seed, 0.55f)
+        // One ray per word, as long as the word. A short passage (under 24 words) has too few for a
+        // shape, so it goes by letter instead, each as long as its place in the alphabet.
+        val byWord = c.text.trim().split(Regex("\\s+")).map { w -> w.count { it.isLetterOrDigit() } }.filter { it > 0 }
+        val words = if (byWord.size >= 24) byWord.take(160)
+            else c.text.filter { it.isLetterOrDigit() }.take(120).map { ch -> if (ch.isDigit()) (ch - '0') + 8 else (ch.lowercaseChar() - 'a').coerceIn(0, 25) + 1 }
+        // The ring: bigger on a story, smaller on a square.
+        val ringR = if (h > 1500) 190f else if (h < 1200) 120f else 150f
+        val maxRay = if (h > 1500) 170f else if (h < 1200) 110f else 135f
+        val cx = W / 2f
+        // The text first, so the print and the passage can sit together in the middle.
+        val left = 110f
+        val textW = W - 2 * left.toInt()
+        val foot = 160f
+        val np = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.caveat; textSize = 48f; color = glow }
+        val nl = c.note?.let { layout(it, np, textW, 1.04f, maxLines = if (h > 1500) 4 else 2, align = Layout.Alignment.ALIGN_CENTER) }
+        val qp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.lora; color = 0xFFFFFFFF.toInt() }
+        val printH = 2 * (ringR + maxRay) + 70f
+        val minTop = if (h > 1500) 120f else 60f
+        val room = (h - minTop - printH - foot - (nl?.let { it.height + 40f } ?: 0f)).toInt()
+        val ql = fit(c.text.trim(), qp, textW, room.coerceAtLeast(150), if (h > 1500) 48f else 40f, 24f, 1.3f, Layout.Alignment.ALIGN_CENTER)
+        val block = ql.height + (nl?.let { it.height + 40f } ?: 0f)
+        val start = minTop + maxOf(0f, (h - foot - minTop - printH - block) * 0.45f)
+        val cy = start + maxRay + ringR
+        val n = words.size.coerceAtLeast(1)
+        val step = 360f / n
+        val longest = (words.maxOrNull() ?: 1).coerceAtLeast(1)
+        val ray = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeCap = Paint.Cap.ROUND; style = Paint.Style.STROKE }
+        val thick = (2 * Math.PI * ringR / n * 0.55).toFloat().coerceIn(3f, 16f)
+        for ((i, len) in words.withIndex()) {
+            val a = Math.toRadians((i * step - 90f).toDouble())
+            val l = 10f + maxRay * (len.toFloat() / longest).coerceIn(0f, 1f)
+            val x0 = cx + ringR * Math.cos(a).toFloat(); val y0 = cy + ringR * Math.sin(a).toFloat()
+            val x1 = cx + (ringR + l) * Math.cos(a).toFloat(); val y1 = cy + (ringR + l) * Math.sin(a).toFloat()
+            // Long words brighter, short ones softer: the shape reads like the sentence's rhythm.
+            ray.color = alpha(glow, (90 + 165 * len / longest).coerceIn(90, 255))
+            ray.strokeWidth = thick
+            cv.drawLine(x0, y0, x1, y1, ray)
+        }
+        // The inner circle, and how far into the book: an arc from the top, a dot where the passage is.
+        val inner = RectF(cx - ringR + 26f, cy - ringR + 26f, cx + ringR - 26f, cy + ringR - 26f)
+        cv.drawOval(inner, Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = alpha(glow, 60) })
+        val pct = c.percent?.toFloat()?.coerceIn(0f, 1f)
+        val pctLabel: String
+        if (pct != null) {
+            val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 6f; strokeCap = Paint.Cap.ROUND; color = 0xFFFFFFFF.toInt() }
+            val pathArc = Path().apply { addArc(inner, -90f, 360f * pct) }
+            cv.drawPath(pathArc, arc)
+            val ea = Math.toRadians((360f * pct - 90f).toDouble())
+            val rr = inner.width() / 2f
+            cv.drawCircle(cx + rr * Math.cos(ea).toFloat(), cy + rr * Math.sin(ea).toFloat(), 11f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() })
+            pctLabel = "${Math.round(pct * 100)}%"
+        } else pctLabel = c.page?.let { "p.$it" } ?: if (c.standalone) "✎" else "\u201C"
+        val cp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.loraBold; textSize = if (h < 1200) 50f else 62f; color = 0xFFFFFFFF.toInt() }
+        cv.drawText(pctLabel, cx - cp.measureText(pctLabel) / 2f, cy + cp.textSize * 0.34f, cp)
+        if (pct != null) {
+            val ip = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.interBold; textSize = 20f; color = alpha(glow, 200); letterSpacing = 0.24f }
+            val t = "INTO THE BOOK"
+            // Only where it fits inside the ring.
+            if (ip.measureText(t) < inner.width() * 0.78f) cv.drawText(t, cx - ip.measureText(t) / 2f, cy + cp.textSize * 0.34f + 38f, ip)
+        }
+        // The passage under its print, centred; your note in hand under it; the book at the foot.
+        var y = cy + ringR + maxRay + 70f
+        text(cv, ql, left, y)
+        y += ql.height + 40f
+        nl?.let { text(cv, it, left, y) }
+        val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.interBold; textSize = 25f; color = alpha(glow, 230); letterSpacing = 0.16f }
+        val title = TextUtils.ellipsize((c.title + (c.author?.let { " \u00B7 $it" } ?: "")).uppercase(), tp, textW.toFloat(), TextUtils.TruncateAt.END).toString()
+        cv.drawText(title, cx - tp.measureText(title) / 2f, h - 100f, tp)
+        if (showMark) brand(cv, f, W - left, h - 50f, alpha(glow, 170), alpha(seed, 255), rightAligned = true)
         return bmp
     }
 

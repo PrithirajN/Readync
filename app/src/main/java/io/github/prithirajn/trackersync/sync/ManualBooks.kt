@@ -344,17 +344,21 @@ object ProgressOverride {
     }
 
 
-    /** Seekquel's position for the book, from its prompt: used here and sent to your trackers. */
+    /**
+     * The other source's position for the book, from its card ("Update"): used here, sent to your
+     * trackers and back to CrossPoint and KOSync; that source moves up the book's ranking.
+     */
     fun acceptSeekquel(store: Store, document: String, now: Long = System.currentTimeMillis()) {
         val ask = store.snapshot.progressAsks[document] ?: throw ServiceException("Nothing to update")
         val status = ask.status?.takeIf { it == ReadStatus.FINISHED || it == ReadStatus.PAUSED || it == ReadStatus.DNF }
         set(store, document, status = status, now = now, exact = ask.fraction, writeBack = true)
+        store.update { Primary.promoted(it, document, ask.source) }
     }
 
-    /** Keep the position here; Seekquel's isn't offered again until it changes. */
-    fun denySeekquel(store: Store, document: String) = store.update { s ->
-        val ask = s.progressAsks[document] ?: return@update s
-        s.copy(progressAsks = s.progressAsks - document, progressDenied = s.progressDenied + (document to ask.percent))
-    }
+    /** "Keep": the position here stays; that source's isn't offered again until it changes. */
+    fun denySeekquel(store: Store, document: String) = Primary.keep(store, document)
+
+    /** "Move it back": that source is set to the position here, where it can be written to. */
+    fun moveBack(store: Store, document: String) = Primary.moveBack(store, document)
 
 }

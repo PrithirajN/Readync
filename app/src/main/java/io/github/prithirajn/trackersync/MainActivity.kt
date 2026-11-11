@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
     private fun handle(intent: Intent?) {
         val action = when (intent?.action) {
             ACTION_RATE -> intent.getStringExtra(EXTRA_DOCUMENT)?.let { AppAction.Rate(it) }
+            ACTION_OPEN_BOOK -> intent.getStringExtra(EXTRA_DOCUMENT)?.let { AppAction.OpenBook(it) }
             ACTION_SERVICES -> AppAction.Services
             ACTION_ADD_BOOK -> AppAction.AddBook
             ACTION_SNAP -> AppAction.Snap
@@ -61,6 +62,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_RATE = "io.github.prithirajn.trackersync.RATE"
+        const val ACTION_OPEN_BOOK = "io.github.prithirajn.trackersync.OPEN_BOOK"
         const val ACTION_SERVICES = "io.github.prithirajn.trackersync.SERVICES"
         const val ACTION_ADD_BOOK = "io.github.prithirajn.trackersync.ADD_BOOK"
         const val ACTION_SNAP = "io.github.prithirajn.trackersync.SNAP_PAGE"

@@ -830,6 +830,24 @@ private fun SyncSettingsCard(vm: AppViewModel, state: Snapshot) {
             CpToggle(s.notifyFinished, { on -> vm.updateSettings { it.copy(notifyFinished = on) } }, "Notify on finished books")
         }
         RowDivider()
+        SettingLine("Tell me about a different position", "When another source is further along than a book's main source. That book's trackers wait until you choose.") {
+            CpToggle(s.notifyPositions, { on -> vm.updateSettings { it.copy(notifyPositions = on) } }, "Notify on different positions")
+        }
+        // Sources you said to always use, for every book: stop any of them here.
+        if (state.trustedSources.isNotEmpty()) {
+            RowDivider()
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text("Used without asking", style = CpType.label, color = c.text)
+                Quiet("Their positions are taken for every book, even ahead of its main source.", color = c.faint)
+                for (src in state.trustedSources.sorted()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(io.github.prithirajn.trackersync.sync.Primary.name(src), style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+                        PillButton("Ask again", { vm.untrustSource(null, src) })
+                    }
+                }
+            }
+        }
+        RowDivider()
         SettingLine("Auto-sync new books", "When off, new books start paused so you can pick which trackers to sync.") {
             CpToggle(s.autoEnableNewBooks, { on -> vm.updateSettings { it.copy(autoEnableNewBooks = on) } }, "Auto-sync new books")
         }

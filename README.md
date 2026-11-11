@@ -44,7 +44,7 @@ You read, and your trackers keep up. You don't have to update page numbers by ha
 ### ✍️ Highlights, ratings and reviews
 - **Highlights and notes** are sent too: to Hardcover, StoryGraph and Seekquel by default, and to Goodreads, Pagebound and Fable if you turn them on.
 - **Rate once, everywhere.** Star ratings in tenths, plus a review written in Markdown (spoiler tags included), sent to every tracker that accepts them.
-- **Share a highlight as a picture**: quote cards in several looks, or a **Book photo** of the passage on a real-looking book page, with the actual text of that page around it.
+- **Share a highlight as a picture**, with your note on it: eight looks (Spotlight, Highlighter, Spine, Editorial, Typewriter, Index card, **Wordprint** — a mark drawn from the passage itself, one ray per word around a ring showing how far into the book — and a **Book photo** of the passage on a real-looking book page with the actual text of that page around it), coloured from the book's cover, as a feed post, a square or a story. Your note can go on the picture as it is or reworded just for it, and a note on its own (a KOReader note on a bookmark) is shared as a note, in handwriting, without quote marks.
 - **Snap a page** from a paper book or your e-reader's screen (or a screenshot): a highlighted passage is picked out for you, saved as a highlight and, if you like, turned into a book photo.
 
 ### 📖 Any way you read

@@ -40,6 +40,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
@@ -546,7 +548,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
             val known = already
             if (known != null) {
                 if (pageText != null) vm.setClipPage(known.id, pageText)
-                studioPage = pageText; studio = shot(known.text, null)
+                studioPage = pageText; studio = shot(known.text, known.note)
             } else {
                 busy = true
                 vm.addPaperHighlight(book.document, t, note.ifBlank { null }, pageText) { err ->
@@ -568,7 +570,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
         VSpace(8)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
             PillButton("Just the photo, don't save", {
-                if (t.isNotEmpty()) { studioPage = pageText; studio = shot(t, null) }
+                if (t.isNotEmpty()) { studioPage = pageText; studio = shot(t, note.ifBlank { null }) }
             })
         }
         said?.let { VSpace(8); Quiet(it, color = c.faint) }
@@ -901,6 +903,7 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
  * Seekquel has a different position for this book than CrossPoint or KOSync: use Seekquel's
  * (it goes to your trackers), or keep the one here (not asked again until Seekquel's changes).
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SeekquelProgressCard(
     book: Book,
@@ -910,8 +913,11 @@ fun SeekquelProgressCard(
     modifier: Modifier = Modifier,
     showBook: Boolean = true,
     kosyncOn: Boolean = false,
+    onMoveBack: (() -> Unit)? = null,
+    onAlways: ((allBooks: Boolean) -> Unit)? = null,
 ) {
     val c = Cp.colors
+    val from = io.github.prithirajn.trackersync.sync.Primary.name(ask.source)
     CpCard(modifier) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -920,17 +926,77 @@ fun SeekquelProgressCard(
                     HSpace(12)
                 }
                 Column(Modifier.weight(1f)) {
-                    Eyebrow("Seekquel has a different position")
+                    Eyebrow("$from has a different position")
                     if (showBook) Text(book.displayTitle, style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val theirs = "${ask.percent}%" + (ask.status?.takeIf { it != book.status }?.let { " · ${it.label}" } ?: "")
-                    Quiet("Seekquel $theirs · here ${book.percent}%", maxLines = 1)
-                    if (book.origin == null) Quiet("Using it also updates CrossPoint" + (if (kosyncOn) " and KOSync" else "") + ".", color = c.faint, maxLines = 1)
+                    Quiet("$from $theirs · here ${book.percent}%", maxLines = 1)
+                    Quiet("Nothing goes to your trackers for this book until you choose." +
+                        (if (book.origin == null && ask.source != "crosspoint") " Updating also updates CrossPoint" + (if (kosyncOn && ask.source != "kosync") " and KOSync" else "") + "." else ""),
+                        color = c.faint)
                 }
             }
             VSpace(10)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                PillButton("Use Seekquel's ${ask.percent}%", onUse, outlined = false)
+            // Wraps on narrow phones: keep, take the new one, or set that source back to this one.
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillButton("Keep ${book.percent}%", onKeep)
+                PillButton("Update to ${ask.percent}%", onUse, outlined = false)
+                if (onMoveBack != null && io.github.prithirajn.trackersync.sync.Primary.canMoveBack(ask.source)) PillButton("Move $from back to ${book.percent}%", onMoveBack)
+            }
+            // A source you trust: its positions taken from now on, no card.
+            if (onAlways != null) {
+                VSpace(10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Quiet("Always use $from:", color = c.faint)
+                    HSpace(6)
+                    Text("this book", style = CpType.small, color = c.accent, modifier = Modifier.clip(CpShapes.control).clickable { onAlways(false) }.padding(4.dp))
+                    Quiet("·", color = c.faint)
+                    Text("all books", style = CpType.small, color = c.accent, modifier = Modifier.clip(CpShapes.control).clickable { onAlways(true) }.padding(4.dp))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A book's main source and the others by rank, on its page: change it yourself (it then stays),
+ * or leave it automatic. Sources used without asking for this book can be stopped here.
+ */
+@Composable
+fun MainSourceCard(vm: AppViewModel, state: Snapshot, book: Book) {
+    val c = Cp.colors
+    val P = io.github.prithirajn.trackersync.sync.Primary
+    val doc = book.document
+    val main = P.of(state, doc) ?: return
+    val rest = P.ranking(state, doc).drop(1)
+    val pinned = doc in state.pinnedPrimary
+    val auto = "Automatic"
+    CpCard {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Eyebrow("Main source")
+                    Text(P.name(main) + if (pinned) " · chosen by you" else "", style = CpType.bodyStrong, color = c.text)
+                    Quiet(
+                        if (rest.isEmpty()) "Positions from other sources are asked about first."
+                        else "Then " + rest.joinToString(", ") { P.name(it) } + ". Others' positions are asked about first.",
+                        color = c.faint,
+                    )
+                }
+                val options = listOf(auto) + P.candidates(state, doc)
+                CpSelect(if (pinned) main else auto, options, { if (it == auto) "Automatic" else P.name(it) }, onChange = { v ->
+                    vm.chooseMainSource(doc, v.takeIf { it != auto })
+                })
+            }
+            val trustedHere = state.trustedFor.filter { it.startsWith("$doc|") }.map { it.substringAfter('|') } + state.trustedSources.toList()
+            if (trustedHere.isNotEmpty()) {
+                VSpace(8)
+                for (src in trustedHere.distinct()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Quiet("${P.name(src)}: used without asking" + if (src in state.trustedSources) " (all books)" else "", Modifier.weight(1f), color = c.faint)
+                        Text("Stop", style = CpType.small, color = c.accent, modifier = Modifier.clip(CpShapes.control)
+                            .clickable { vm.untrustSource(if (src in state.trustedSources) null else doc, src) }.padding(6.dp))
+                    }
+                }
             }
         }
     }

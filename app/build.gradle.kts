@@ -15,8 +15,17 @@ android {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 185
-        versionName = "1.54.0"
+        versionCode = 193
+        versionName = "1.59.1"
+        // Only the processors phones and e-readers use (64-bit and older 32-bit ARM). The on-device
+        // AI, text recognition and barcode libraries are native code, one copy per processor type, so
+        // leaving out x86 (emulators, a few old tablets) takes away about half the APK.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+    }
+
+    // Native libraries stored compressed in the APK (a smaller download); Android unpacks them on install.
+    packaging {
+        jniLibs { useLegacyPackaging = true }
     }
 
     // Each edition has its own signing key, the same for every build of it, on any PC or on GitHub

@@ -96,7 +96,9 @@ private fun NeedsCard(state: Snapshot) {
                     )
                     is Insights.Need.Positions -> Quad(
                         R.drawable.lucide_scale,
-                        "Seekquel has a different position",
+                        n.documents.mapNotNull { state.progressAsks[it]?.source }.distinct().let { srcs ->
+                            if (srcs.size == 1) io.github.prithirajn.trackersync.sync.Primary.name(srcs[0]) + " has a different position" else "Different positions from your sources"
+                        },
                         "For ${n.documents.size} book${if (n.documents.size == 1) "" else "s"}: pick which to keep",
                         false,
                     )

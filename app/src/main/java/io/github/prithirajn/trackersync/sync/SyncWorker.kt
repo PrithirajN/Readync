@@ -118,6 +118,7 @@ object Notices {
     private const val PROBLEMS = "problems"
     private const val FINISHED = "finished"
     private const val RELEASES = "releases"
+    private const val POSITIONS = "positions"
 
     /** Opens the app; with [action] (and [document]) it goes straight to that thing. */
     fun openApp(context: Context, action: String? = null, document: String? = null, code: Int = 0): PendingIntent {
@@ -267,6 +268,29 @@ object Notices {
         }
         sffNews(context, store)
         probeBack(context, store)
+        // Another source has a different position: that book's trackers wait for your choice, so say so (once per position).
+        val asks = store.snapshot.progressAsks
+        if (settings.notifyPositions) {
+            val fresh = asks.filter { (d, a) -> store.snapshot.asksNotified[d] != "${a.source}|${a.percent}" && store.snapshot.books.containsKey(d) }
+            if (fresh.isNotEmpty()) {
+                channel(context, POSITIONS, "Different positions")
+                for ((i, e) in fresh.entries.take(3).withIndex()) {
+                    val (doc, a) = e
+                    val b = store.snapshot.books[doc] ?: continue
+                    nm.notify(
+                        300 + (doc.hashCode() and 0xFFFF),
+                        NotificationCompat.Builder(context, POSITIONS)
+                            .setSmallIcon(R.drawable.lucide_book_open)
+                            .setContentTitle("${Primary.name(a.source)} has a different position")
+                            .setContentText("${b.displayTitle}: ${a.percent}% there, ${b.percent}% here. Its trackers wait until you choose.")
+                            .setContentIntent(openApp(context, MainActivity.ACTION_OPEN_BOOK, doc, code = 30 + i))
+                            .setAutoCancel(true)
+                            .build(),
+                    )
+                }
+            }
+        }
+        store.update { st -> st.copy(asksNotified = st.progressAsks.mapValues { (_, a) -> "${a.source}|${a.percent}" }) }
         if (settings.notifyFinished && result.finished.isNotEmpty()) {
             channel(context, FINISHED, "Finished books")
             for ((i, doc) in result.finished.take(3).withIndex()) {

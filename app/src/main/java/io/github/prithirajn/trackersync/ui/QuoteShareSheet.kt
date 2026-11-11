@@ -20,6 +20,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -42,11 +44,15 @@ import io.github.prithirajn.trackersync.ui.theme.Cp
 import io.github.prithirajn.trackersync.ui.theme.CpShapes
 import io.github.prithirajn.trackersync.ui.theme.CpType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
- * Share a highlight as a picture: a live preview, three looks (paper, night, the cover's own
- * colour), your note on or off, then share, copy or save it. Plain text is a tap away too.
+ * Share a highlight as a picture: a live preview, the looks, your note on or off (and reworded for
+ * the picture if you like), then share, copy or save it. Plain text is a tap away too.
+ *
+ * A note on its own (a note on a bookmark, with no passage) is shared as a note: in your hand,
+ * without quote marks.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,7 +75,18 @@ fun QuoteShareSheet(
     val context = LocalContext.current
     val tick = rememberTick()
     var look by remember { mutableStateOf(QuoteCard.Look.SPOTLIGHT) }
-    var withNote by remember { mutableStateOf(false) }
+    // The newer looks come in three shapes: a feed post, a square, a story.
+    var size by remember { mutableStateOf(QuoteCard.Size.POST) }
+    // A note with no passage of its own: the note is what's shared.
+    val standalone = remember(clip.id, text, note) {
+        io.github.prithirajn.trackersync.sync.KoHighlightSync.isNote(clip.id) || (text.isBlank() && !note.isNullOrBlank())
+    }
+    // Your note goes on the card by default (most looks give it its own place); one tap takes it off.
+    var withNote by remember { mutableStateOf(!note.isNullOrBlank()) }
+    // The note as it goes on the picture: yours to reword here (the highlight keeps its own).
+    var noteDraft by remember(clip.id) { mutableStateOf(if (standalone) (note?.takeIf { it.isNotBlank() } ?: text) else note.orEmpty()) }
+    var editingNote by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
     var bmp by remember { mutableStateOf<Bitmap?>(null) }
     var said by remember { mutableStateOf<String?>(null) }
     var showMark by remember { mutableStateOf(BookShot.markOn(context)) }
@@ -79,41 +96,55 @@ fun QuoteShareSheet(
         clip.chapter?.takeIf { it.isNotBlank() } ?: io.github.prithirajn.trackersync.sync.HighlightPosition.label(clip)
     }
     val content = QuoteCard.Content(
-        text = text,
-        note = note?.takeIf { withNote && it.isNotBlank() },
+        text = if (standalone) noteDraft.trim().ifEmpty { note ?: text } else text,
+        note = if (standalone) null else noteDraft.trim().takeIf { withNote && it.isNotEmpty() },
         title = book?.displayTitle ?: "A book",
         author = book?.author,
         where = where,
         percent = clip.percent,
         page = clip.pageIn(book?.pageCount),
+        standalone = standalone,
     )
     var seed by remember { mutableStateOf<Int?>(null) }
     // The book photo: the scene as you last left it in the studio.
     val shotContent = BookShot.Content(
         text = content.text, author = content.author, title = content.title,
         chapter = clip.chapter?.takeIf { it.isNotBlank() }, page = content.page,
-        others = others, note = content.note, coverColor = seed, sectors = sectors,
+        others = others, note = content.note, coverColor = seed, sectors = sectors, standalone = standalone,
     ).let { sc ->
-        val found = page?.let { io.github.prithirajn.trackersync.sync.PageContext.find(it, text) }
+        val found = if (standalone) null else page?.let { io.github.prithirajn.trackersync.sync.PageContext.find(it, text) }
         if (found != null) sc.copy(before = found.before, after = found.after) else sc
     }
-    LaunchedEffect(content, look, showMark, studio, page) {
+    LaunchedEffect(content, look, size, showMark, studio, page) {
         if (studio) return@LaunchedEffect
         BookShot.setMark(context, showMark)
-        bmp = withContext(Dispatchers.IO) {
-            val cover = book?.coverUrl?.let { runCatching { CoverCache.load(context, it, 1400) }.getOrNull() }
-            seed = book?.coverUrl?.let { runCatching { CoverAccent.of(context, it) }.getOrNull() }
-            withContext(Dispatchers.Default) {
-                if (look == QuoteCard.Look.PAGE) BookShot.render(context, shotContent.copy(coverColor = seed), BookShot.saved(context), mark = showMark)
-                else QuoteCard.render(context, content, look, cover, seed, mark = showMark)
+        // A moment's pause, so typing a note or flicking through looks draws only the one you stop on.
+        if (bmp != null) delay(220)
+        val drawn = runCatching {
+            withContext(Dispatchers.IO) {
+                val cover = book?.coverUrl?.let { runCatching { CoverCache.load(context, it, 1400) }.getOrNull() }
+                seed = book?.coverUrl?.let { runCatching { CoverAccent.of(context, it) }.getOrNull() }
+                withContext(Dispatchers.Default) {
+                    if (look == QuoteCard.Look.PAGE) BookShot.render(context, shotContent.copy(coverColor = seed), BookShot.saved(context), mark = showMark)
+                    else QuoteCard.render(context, content, look, cover, seed, mark = showMark, size = size)
+                }
             }
         }
+        // A look that can't be drawn (out of memory, say) keeps the last picture and says so, instead of closing.
+        drawn.onSuccess { bmp = it; failed = false }
+        drawn.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; failed = true }
     }
     val plain = buildString {
-        append(io.github.prithirajn.trackersync.trackers.quoted(text))
-        append("\n\n— ${book?.displayTitle ?: "A book"}")
-        book?.author?.let { append(", $it") }
-        content.note?.let { append("\n\nMy note: $it") }
+        if (standalone) {
+            append(content.text.trim())
+            append("\n\n— my note on ${book?.displayTitle ?: "a book"}")
+            book?.author?.let { append(", $it") }
+        } else {
+            append(io.github.prithirajn.trackersync.trackers.quoted(text))
+            append("\n\n— ${book?.displayTitle ?: "A book"}")
+            book?.author?.let { append(", $it") }
+            content.note?.let { append("\n\nMy note: $it") }
+        }
     }
 
     ModalBottomSheet(
@@ -128,14 +159,16 @@ fun QuoteShareSheet(
                 .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
         ) {
-            Text("Share this passage", style = CpType.section, color = c.text)
+            Text(if (standalone) "Share this note" else "Share this passage", style = CpType.section, color = c.text)
             VSpace(14)
             Box(
                 Modifier.fillMaxWidth().heightIn(min = 280.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Crossfade(bmp, animationSpec = Motion.medium(), label = "quote") { b ->
-                    if (b == null) {
+                    if (b == null && failed) {
+                        Quiet("Couldn't draw this one. Try another look or shape.", color = c.faint)
+                    } else if (b == null) {
                         Box(Modifier.fillMaxWidth(0.8f).aspectRatio(0.8f), contentAlignment = Alignment.Center) {
                             CircularProgressIndicator(Modifier.size(24.dp), color = c.faint)
                         }
@@ -145,7 +178,7 @@ fun QuoteShareSheet(
                             contentDescription = "The passage as a picture",
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
-                                .fillMaxWidth(if (look == QuoteCard.Look.PAGE && b.height > b.width * 1.5f) 0.62f else 0.82f)
+                                .fillMaxWidth(if (b.height > b.width * 1.5f) 0.58f else 0.82f)
                                 .aspectRatio(b.width.toFloat() / b.height)
                                 .clip(CpShapes.card)
                                 .border(1.dp, c.divider, CpShapes.card)
@@ -154,8 +187,9 @@ fun QuoteShareSheet(
                     }
                 }
             }
+            if (failed && bmp != null) { VSpace(6); AnimatedQuiet("Couldn't draw that one; this is the last picture. Try another look or shape.", color = c.faint) }
             VSpace(14)
-            // The three looks, as a little segmented row.
+            // The looks, as a row of chips (scrolls sideways).
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                 for (l in QuoteCard.Look.entries) {
                     val on = l == look
@@ -166,6 +200,21 @@ fun QuoteShareSheet(
                             .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, role = Role.RadioButton, onClickLabel = l.label) { look = l; tick() }
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     ) { Text(l.label, style = CpType.label, color = if (on) c.accentText else c.textMid) }
+                }
+            }
+            if (look.sized) {
+                VSpace(10)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+                    for (z in QuoteCard.Size.entries) {
+                        val on = z == size
+                        Box(
+                            Modifier
+                                .clip(CpShapes.pill)
+                                .border(1.dp, if (on) c.accent else c.divider, CpShapes.pill)
+                                .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, role = Role.RadioButton, onClickLabel = z.label) { size = z; tick() }
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                        ) { Text(z.label, style = CpType.small, color = if (on) c.accentText else c.textMid) }
+                    }
                 }
             }
             if (look == QuoteCard.Look.PAGE) {
@@ -186,19 +235,42 @@ fun QuoteShareSheet(
                 Text("${io.github.prithirajn.trackersync.Edition.name} mark", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
                 CpToggle(showMark, { showMark = it }, "${io.github.prithirajn.trackersync.Edition.name} mark")
             }
-            if (!note.isNullOrBlank()) {
-                VSpace(4)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Include my note", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
-                    CpToggle(withNote, { withNote = it }, "Include my note")
+            // Your note: on or off, and reworded for the picture if you like (the highlight keeps its own).
+            VSpace(4)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(if (standalone) "Your note" else if (note.isNullOrBlank()) "Add a note" else "Include my note", style = CpType.body, color = c.text)
+                    if (withNote || standalone) {
+                        val shown = noteDraft.trim()
+                        Text(
+                            if (shown.isEmpty()) "Nothing written yet" else shown,
+                            style = CpType.small, color = c.faint, maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                if (withNote || standalone) PillButton(if (editingNote) "Done" else "Edit", { editingNote = !editingNote })
+                if (!standalone) CpToggle(withNote, { withNote = it; if (it && noteDraft.isBlank()) editingNote = true }, "Include a note")
+            }
+            if (editingNote && (withNote || standalone)) {
+                VSpace(8)
+                OutlinedTextField(
+                    value = noteDraft, onValueChange = { noteDraft = it.take(600) },
+                    label = { Text(if (standalone) "Your note" else "Note on the picture") },
+                    modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 6,
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.accent, unfocusedBorderColor = c.divider, focusedTextColor = c.text, unfocusedTextColor = c.text),
+                )
+                Quiet("Only for this picture: your highlight keeps its note as it is.", color = c.faint)
+                if (!standalone && noteDraft.trim() != note.orEmpty().trim() && !note.isNullOrBlank()) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { PillButton("Back to my note", { noteDraft = note.orEmpty() }) }
                 }
             }
             VSpace(16)
-            BigButton("Share", { bmp?.let { QuoteCard.share(context, it, plain) } }, enabled = bmp != null)
+            BigButton("Share", { bmp?.let { b -> runCatching { QuoteCard.share(context, b, plain) }.onFailure { said = "Couldn't open sharing; try Save image instead." } } }, enabled = bmp != null)
             VSpace(8)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 BigButton("Copy image", {
-                    bmp?.let { runCatching { QuoteCard.copy(context, it) }.onSuccess { tick(); said = "Copied. Paste it into any app that takes pictures." } }
+                    bmp?.let { runCatching { QuoteCard.copy(context, it) }.onSuccess { tick(); said = "Copied. Paste it into any app that takes pictures." }.onFailure { said = "Couldn't copy it; use Share instead." } }
                 }, Modifier.weight(1f), filled = false, enabled = bmp != null)
                 BigButton("Save image", {
                     bmp?.let {
@@ -216,7 +288,7 @@ fun QuoteShareSheet(
                         type = "text/plain"
                         putExtra(android.content.Intent.EXTRA_TEXT, plain)
                     }
-                    context.startActivity(android.content.Intent.createChooser(send, "Share quote"))
+                    runCatching { context.startActivity(android.content.Intent.createChooser(send, if (standalone) "Share note" else "Share quote")) }
                 })
             }
         }
@@ -228,6 +300,7 @@ fun QuoteShareSheet(
             onPageText = { page = it; onPageText(it) },
             plain = plain,
             onClose = { studio = false },
+            fullNote = noteDraft.ifBlank { note },
         )
     }
 }

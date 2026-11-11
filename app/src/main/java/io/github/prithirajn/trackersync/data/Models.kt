@@ -1008,7 +1008,7 @@ data class AiSuggestion(val id: String, val title: String, val author: String?, 
     }
 }
 
-data class ProgressAsk(val fraction: Double, val status: ReadStatus?, val updatedAt: Long) {
+data class ProgressAsk(val fraction: Double, val status: ReadStatus?, val updatedAt: Long, val source: String = "seekquel") {
     val percent: Int get() = Math.round(fraction * 100).toInt().coerceIn(0, 100)
 }
 
@@ -1071,6 +1071,8 @@ data class SyncSettings(
     val quietTo: Int = -1,
     val notifyFailures: Boolean = true,
     val notifyFinished: Boolean = true,
+    /** A notification when another source has a different position for a book (its trackers wait until you choose). */
+    val notifyPositions: Boolean = true,
     val autoEnableNewBooks: Boolean = false,
     /** Let the on-device model judge matches the rules aren't sure of (shown as suggestions to accept). */
     val aiMatching: Boolean = true,
@@ -1092,7 +1094,7 @@ data class SyncSettings(
     fun toJson(): JSONObject = JSONObject()
         .put("wifiOnly", wifiOnly).put("intervalMinutes", intervalMinutes)
         .put("quietFrom", quietFrom).put("quietTo", quietTo)
-        .put("notifyFailures", notifyFailures).put("notifyFinished", notifyFinished).put("autoEnableNewBooks", autoEnableNewBooks).put("aiMatching", aiMatching)
+        .put("notifyFailures", notifyFailures).put("notifyFinished", notifyFinished).put("notifyPositions", notifyPositions).put("autoEnableNewBooks", autoEnableNewBooks).put("aiMatching", aiMatching)
         .put("githubToken", githubToken ?: JSONObject.NULL).put("githubRepo", githubRepo ?: JSONObject.NULL)
         .put("yearGoal", yearGoal)
         .put("iconFollowsBook", iconFollowsBook)
@@ -1106,6 +1108,7 @@ data class SyncSettings(
             quietTo = o.int("quietTo") ?: -1,
             notifyFailures = o.bool("notifyFailures", true),
             notifyFinished = o.bool("notifyFinished", true),
+            notifyPositions = o.bool("notifyPositions", true),
             autoEnableNewBooks = o.bool("autoEnableNewBooks", false),
             aiMatching = o.bool("aiMatching", true),
             githubToken = o.optString("githubToken").takeIf { it.isNotBlank() && it != "null" },
@@ -1463,6 +1466,25 @@ data class Snapshot(
     val progressAsks: Map<String, ProgressAsk> = emptyMap(),
     /** Seekquel positions you chose not to use (document -> percent), so they aren't asked again. */
     val progressDenied: Map<String, Int> = emptyMap(),
+    /**
+     * Each book's main source (see Primary): the one it first came from unless another took over;
+     * its other sources by rank (secondary, tertiary…); each other source's run of days reading
+     * further ("doc|source" -> "day:count"); and sources to set back to the position here even
+     * though they're further along ("service|doc").
+     */
+    val primaries: Map<String, String> = emptyMap(),
+    val sourceRanks: Map<String, List<String>> = emptyMap(),
+    val sourceStreaks: Map<String, String> = emptyMap(),
+    val moveBack: Set<String> = emptySet(),
+    /**
+     * Main sources you picked yourself (no automatic takeover for these books); sources whose
+     * positions are taken without asking, for every book or one ("doc|source"); and the
+     * different-position cards already notified ("doc" -> "source|percent").
+     */
+    val pinnedPrimary: Set<String> = emptySet(),
+    val trustedSources: Set<String> = emptySet(),
+    val trustedFor: Set<String> = emptySet(),
+    val asksNotified: Map<String, String> = emptyMap(),
     /** Physical books now also on CrossPoint (physical document -> CrossPoint document), offered to continue there. */
     val handoffs: Map<String, String> = emptyMap(),
     /** The library's pages-read total as last counted, and today's starting point, for "today". */

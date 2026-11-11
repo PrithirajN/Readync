@@ -178,6 +178,8 @@ object BookShot {
         val after: String? = null,
         /** The book's corners of speculative fiction (ORBIT, CITADEL, SPIRE, VOID, CHRONOS), for suggested moods. */
         val sectors: Set<String> = emptySet(),
+        /** A note on its own, with no passage: [text] is the note. */
+        val standalone: Boolean = false,
     ) {
         val hasPage: Boolean get() = !before.isNullOrBlank() || !after.isNullOrBlank()
     }
