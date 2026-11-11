@@ -391,6 +391,71 @@ object Assistant {
         return nums.filter { it in 1..spans.size }.distinct().sorted().map { it - 1 }
     }
 
+    // ---- Threads: what a post should be marked, tagged and say ----
+
+    /**
+     * Whether any of [passages] from [title] gives the story away (a death, the ending, a twist, a
+     * secret, who did it). True or false; null when the answer can't be read.
+     */
+    fun givesAway(m: TextModel, title: String, passages: List<String>): Boolean? {
+        if (passages.isEmpty()) return false
+        val prompt = buildString {
+            appendLine("These passages are from the book \"$title\". A reader is about to share them publicly.")
+            appendLine("Does any of them give the story away? A spoiler reveals what happens: the ending, a death, a twist, a secret, who did it, or how a relationship turns out.")
+            appendLine("Beautiful lines, opinions, jokes, descriptions and the opening situation are not spoilers.")
+            appendLine()
+            passages.take(10).forEachIndexed { i, p -> appendLine("${i + 1}. ${p.trim().take(400)}") }
+            appendLine()
+            append("Reply with only YES or NO.")
+        }
+        val reply = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null).trim().uppercase()
+        return when {
+            reply.startsWith("YES") -> true
+            reply.startsWith("NO") -> false
+            else -> null
+        }
+    }
+
+    /** The topics a book's post can be tagged with. */
+    val TOPICS = listOf(
+        "Fantasy", "Science Fiction", "LitRPG", "Horror", "Romance", "Romantasy", "Thriller", "Mystery", "Literary Fiction",
+        "Historical Fiction", "Young Adult", "Nonfiction", "Memoir", "Self Help", "Poetry", "Manga", "Comics", "Classics", "Books",
+    )
+
+    /** One of [TOPICS] for [book], from its title, author and description; null when the answer isn't one of them. */
+    fun pickTopic(m: TextModel, book: Book): String? {
+        val prompt = buildString {
+            appendLine("Book: \"${book.title ?: "?"}\"" + (book.author?.let { " by $it" } ?: ""))
+            book.description?.takeIf { it.isNotBlank() }?.let { appendLine("About it: " + it.take(800)) }
+            appendLine()
+            appendLine("Which one of these fits it best? " + TOPICS.joinToString(", "))
+            append("Reply with only that one, exactly as written.")
+        }
+        val reply = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null).trim().trim('.', '"', '\'')
+        return TOPICS.firstOrNull { it.equals(reply, ignoreCase = true) } ?: TOPICS.firstOrNull { reply.contains(it, ignoreCase = true) }
+    }
+
+    /**
+     * A short opening line for sharing [passages] from [title] (one or several from one sitting), in
+     * a reader's own voice: under 120 characters, no hashtags, no quoting the passages, nothing about
+     * what happens. Null when what comes back doesn't keep to that.
+     */
+    fun postCaption(m: TextModel, title: String, author: String?, passages: List<String>): String? {
+        val prompt = buildString {
+            appendLine("I'm reading \"$title\"" + (author?.let { " by $it" } ?: "") + " and sharing " + (if (passages.size == 1) "this passage" else "these ${passages.size} passages") + " on Threads:")
+            passages.take(10).forEach { appendLine("- " + it.trim().take(300)) }
+            appendLine()
+            appendLine("Write the one-line caption I'd put above it: casual, warm, in my own voice, under 120 characters.")
+            appendLine("No hashtags. Don't quote the passages. Don't reveal anything about the plot. You may name the book.")
+            append("Reply with only the caption.")
+        }
+        val reply = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null).lines().firstOrNull { it.isNotBlank() }?.trim()?.trim('"', '\u201C', '\u201D') ?: return null
+        // Held to what was asked: short, no hashtags, no lines lifted from the passages.
+        if (reply.length !in 8..140 || reply.contains('#')) return null
+        val lifted = passages.any { p -> p.length > 30 && reply.lowercase().contains(p.trim().lowercase().take(30)) }
+        return reply.takeIf { !lifted }
+    }
+
     /** [text] with the sentences at [indexes] hidden as spoilers (||…||), skipping ones already hidden. */
     fun hideSpoilers(text: String, indexes: List<Int>): String {
         val spans = sentences(text)

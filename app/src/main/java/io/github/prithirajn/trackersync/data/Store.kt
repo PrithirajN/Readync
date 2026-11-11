@@ -123,6 +123,32 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("koSentCp", JSONObject().also { j -> s.koSentCp.forEach { (k, v) -> j.put(k, v) } })
         o.put("koBooks", JSONObject().also { j -> s.koBooks.forEach { (k, v) -> j.put(k, v) } })
         o.put("koTitles", JSONObject().also { j -> s.koTitles.forEach { (k, v) -> j.put(k, v) } })
+        o.put("koUnnamed", JSONObject().also { j -> s.koUnnamed.forEach { (k, v) -> j.put(k, v) } })
+        o.put("koStoryLinks", JSONObject().also { j -> s.koStoryLinks.forEach { (k, v) -> j.put(k, v) } })
+        o.put("koSameAs", JSONObject().also { j -> s.koSameAs.forEach { (k, v) -> j.put(k, v) } })
+        o.put("threadsToken", s.threadsToken ?: JSONObject.NULL).put("threadsUser", s.threadsUser ?: JSONObject.NULL)
+            .put("threadsUserId", s.threadsUserId ?: JSONObject.NULL).put("threadsTokenAt", s.threadsTokenAt)
+            .put("threadsAuto", s.threadsAuto).put("threadsPerDay", s.threadsPerDay).put("threadsNotes", s.threadsNotes).put("threadsWithNote", s.threadsWithNote)
+            .put("threadsSeen", JSONArray().also { a -> s.threadsSeen.forEach { a.put(it) } })
+            .put("threadsPosted", JSONObject().also { j -> s.threadsPosted.forEach { (k, v) -> j.put(k, v) } })
+            .put("threadsFails", JSONObject().also { j -> s.threadsFails.forEach { (k, v) -> j.put(k, v) } })
+            .put("threadsError", s.threadsError ?: JSONObject.NULL).put("threadsLastLook", s.threadsLastLook ?: JSONObject.NULL).put("threadsAnyLook", s.threadsAnyLook)
+            .put("threadsBooks", JSONArray().also { a -> s.threadsBooks.forEach { a.put(it) } })
+            .put("threadsReviewed", JSONObject().also { j -> s.threadsReviewed.forEach { (k, v) -> j.put(k, v) } })
+            .put("threadsPerSession", s.threadsPerSession).put("threadsTopic", s.threadsTopic)
+            .put("threadsArrived", JSONObject().also { j -> s.threadsArrived.forEach { (k, v) -> j.put(k, v) } })
+            .put("threadsPostLog", JSONArray().also { a -> s.threadsPostLog.forEach { a.put(it) } })
+            .put("threadsAi", s.threadsAi).put("threadsAiCaptions", s.threadsAiCaptions)
+            .put("threadsTopics", JSONObject().also { j -> s.threadsTopics.forEach { (k, v) -> j.put(k, v) } })
+            .put("serverLinked", JSONArray().also { a -> s.serverLinked.forEach { a.put(it) } }).put("serverLinkedAt", s.serverLinkedAt)
+            .put("readwiseToken", s.readwiseToken ?: JSONObject.NULL).put("readwiseDone", JSONArray().also { a -> s.readwiseDone.forEach { a.put(it) } })
+            .put("notionToken", s.notionToken ?: JSONObject.NULL).put("notionParent", s.notionParent ?: JSONObject.NULL)
+            .put("notionPages", JSONObject().also { j -> s.notionPages.forEach { (k, v) -> j.put(k, v) } })
+            .put("notionDone", JSONArray().also { a -> s.notionDone.forEach { a.put(it) } })
+            .put("obsidianFolder", s.obsidianFolder ?: JSONObject.NULL)
+            .put("obsidianHashes", JSONObject().also { j -> s.obsidianHashes.forEach { (k, v) -> j.put(k, v) } })
+            .put("exportErrors", JSONObject().also { j -> s.exportErrors.forEach { (k, v) -> j.put(k, v) } })
+            .put("exportOkAt", JSONObject().also { j -> s.exportOkAt.forEach { (k, v) -> j.put(k, v) } })
         o.put("koPages", JSONObject().also { j -> s.koPages.forEach { (k, v) -> j.put(k, v) } })
         o.put("koDavBooks", s.koDavBooks ?: JSONObject.NULL)
         o.put("koPlaced", org.json.JSONArray(s.koPlaced.toList()))
@@ -335,6 +361,32 @@ class Store(private val file: File, private val secrets: Secrets) {
             koSentCp = o.obj("koSentCp")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             koBooks = o.obj("koBooks")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             koTitles = o.obj("koTitles")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            koUnnamed = o.obj("koUnnamed")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            koStoryLinks = o.obj("koStoryLinks")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            koSameAs = o.obj("koSameAs")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            threadsToken = o.str("threadsToken"), threadsUser = o.str("threadsUser"), threadsUserId = o.str("threadsUserId"),
+            threadsTokenAt = o.long("threadsTokenAt") ?: 0L, threadsAuto = o.optBoolean("threadsAuto", false),
+            threadsPerDay = o.int("threadsPerDay") ?: 5, threadsNotes = o.optBoolean("threadsNotes", true), threadsWithNote = o.optBoolean("threadsWithNote", true),
+            threadsSeen = o.optJSONArray("threadsSeen")?.strings()?.toSet() ?: emptySet(),
+            threadsPosted = o.obj("threadsPosted")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
+            threadsFails = o.obj("threadsFails")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) } } ?: emptyMap(),
+            threadsError = o.str("threadsError"), threadsLastLook = o.str("threadsLastLook"), threadsAnyLook = o.optBoolean("threadsAnyLook", false),
+            threadsBooks = o.optJSONArray("threadsBooks")?.strings()?.toSet() ?: emptySet(),
+            threadsReviewed = o.obj("threadsReviewed")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
+            threadsPerSession = o.optBoolean("threadsPerSession", true), threadsTopic = if (o.has("threadsTopic")) o.optString("threadsTopic") else "genre",
+            threadsArrived = o.obj("threadsArrived")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
+            threadsPostLog = o.optJSONArray("threadsPostLog")?.let { a -> (0 until a.length()).map { a.optLong(it) } } ?: emptyList(),
+            threadsAi = o.optBoolean("threadsAi", true), threadsAiCaptions = o.optBoolean("threadsAiCaptions", false),
+            threadsTopics = o.obj("threadsTopics")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            serverLinked = o.optJSONArray("serverLinked")?.strings()?.toSet() ?: emptySet(), serverLinkedAt = o.optLong("serverLinkedAt", 0L),
+            readwiseToken = o.str("readwiseToken"), readwiseDone = o.optJSONArray("readwiseDone")?.strings()?.toSet() ?: emptySet(),
+            notionToken = o.str("notionToken"), notionParent = o.str("notionParent"),
+            notionPages = o.obj("notionPages")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            notionDone = o.optJSONArray("notionDone")?.strings()?.toSet() ?: emptySet(),
+            obsidianFolder = o.str("obsidianFolder"),
+            obsidianHashes = o.obj("obsidianHashes")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            exportErrors = o.obj("exportErrors")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            exportOkAt = o.obj("exportOkAt")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
             koDavBooks = o.str("koDavBooks"),
             koPages = o.obj("koPages")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) }.filterValues { it > 0 } } ?: emptyMap(),
             koPlaced = o.optJSONArray("koPlaced")?.strings()?.toSet() ?: emptySet(),

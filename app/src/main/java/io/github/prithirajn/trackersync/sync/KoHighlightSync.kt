@@ -32,14 +32,37 @@ object KoHighlightSync {
     internal fun idsOf(f: KoFile): List<String> =
         listOfNotNull(f.documentId, f.fileName?.let { KoPlacement.fileId(it) }).distinct()
 
+    /** The book here that KOReader document [id] is: the book itself, a copy of it, or its KOSync document. Null when none. */
+    fun bookFor(s: Snapshot, id: String): Book? {
+        s.books[id]?.let { return it }
+        s.books.values.firstOrNull { id in it.aliases }?.let { return it }
+        s.koSameAs[id]?.let { d -> s.books[d]?.let { return it } }
+        s.kosyncIds.entries.firstOrNull { id in it.value }?.let { e -> s.books[e.key]?.let { return it } }
+        s.koHlDocs.entries.firstOrNull { it.key.contains(id) }?.let { e -> s.books[e.value]?.let { return it } }
+        return null
+    }
+
+    /**
+     * The book whose story a web novel's EPUB links to (the same story downloaded again, with new
+     * chapters, is a new file to KOReader: a new ID, the same book).
+     */
+    internal fun byStory(s: Snapshot, ids: List<String>): Book? {
+        val link = ids.firstNotNullOfOrNull { s.koStoryLinks[it]?.substringBefore('\t')?.takeIf { l -> l.isNotBlank() } } ?: return null
+        val want = io.github.prithirajn.trackersync.source.WebNovels.canonical(link) ?: return null
+        val doc = s.webNovels.entries.firstOrNull { io.github.prithirajn.trackersync.source.WebNovels.canonical(it.value.url) == want }?.key ?: return null
+        return s.books[doc]
+    }
+
     /** The book a file is for, or null. */
     internal fun match(s: Snapshot, f: KoFile): Book? {
         s.koHlDocs[f.path]?.let { d -> s.books[d]?.let { return it } }
         for (id in idsOf(f)) {
             s.books[id]?.let { return it }
             s.books.values.firstOrNull { id in it.aliases }?.let { return it }
+            s.koSameAs[id]?.let { d -> s.books[d]?.let { return it } }
             s.kosyncIds.entries.firstOrNull { id in it.value }?.let { e -> s.books[e.key]?.let { return it } }
         }
+        byStory(s, idsOf(f))?.let { return it }
         val name = f.bookName ?: idsOf(f).firstNotNullOfOrNull { titleOf(s, it) }?.let { (t, a) -> if (a != null) "$t - $a" else t } ?: return null
         s.books[ORIGIN + ":" + Integer.toHexString(name.lowercase().hashCode())]?.let { return it }
         val books = s.books.values.filter { it.title != null }
@@ -91,6 +114,7 @@ object KoHighlightSync {
         var moved = 0
         var added = 0
         val unmatched = ArrayList<String>()
+        val sameAs = HashMap(s.koSameAs)
         /** KOReader's page count for the book, from where it is (page 592 at 98.2% -> 603). */
         fun learnPages(doc: String, p: KoPosition) {
             val page = p.page ?: return
@@ -115,14 +139,23 @@ object KoHighlightSync {
             val asFile = KoFile(p.path, p.documentId, p.bookName, emptyList(), fileName = p.fileName)
             val b = match(s.copy(books = books), asFile)
             if (b != null) learnPages(b.document, p)
+            if (b != null) for (id in idsOf(asFile)) if (id != b.document && id !in b.aliases && hex32.matches(id)) sameAs[id] = b.document
             if (b != null) {
                 val ahead = kotlin.math.abs(p.percentage - b.percentage) > 0.0005 && p.timestamp > b.timestamp
                 if (!ahead) continue
                 val done = p.percentage >= 0.995
                 val nowFinished = done && b.status != ReadStatus.FINISHED
+                // A web novel downloaded again with new chapters: further on, yet a lower percentage of a longer
+                // book. Its page count grows to match, so the pages you've read never fall.
+                // (A new ID for a book KOReader already had under another one, not a first look at it.)
+                val hadCopy = hex32.matches(b.document) || b.document in s.koSameAs.values
+                val newCopy = hadCopy && idsOf(asFile).any { it != b.document && it !in b.aliases && it !in s.koSameAs }
+                val longer = newCopy && s.webNovels.containsKey(b.document) && p.percentage < b.percentage - 0.01 && p.percentage > 0.01
                 books[b.document] = b.copy(
                     percentage = p.percentage, timestamp = p.timestamp, currentPage = null,
+                    pageCount = if (longer && b.pageCount != null) Math.round(b.pageCount * b.percentage / p.percentage).toInt() else b.pageCount,
                     status = when {
+                        longer && b.status == ReadStatus.FINISHED -> ReadStatus.READING
                         nowFinished -> ReadStatus.FINISHED
                         b.status == null || b.status == ReadStatus.TO_READ || b.status == ReadStatus.PAUSED -> ReadStatus.READING
                         else -> b.status
@@ -162,7 +195,7 @@ object KoHighlightSync {
                 if (links[key] == null) links[key] = Link(t.id, doc, null, source = LinkSource.NONE, note = "Not synced")
             }
         }
-        return Moved(s.copy(books = books, pending = pending, links = links, koPages = pagesOf), moved, added, unmatched)
+        return Moved(s.copy(books = books, pending = pending, links = links, koPages = pagesOf, koSameAs = sameAs), moved, added, unmatched)
     }
 
     /** A note KOReader keeps on a bookmark (no passage): kept here, not sent to trackers as a quote. */
@@ -183,6 +216,9 @@ object KoHighlightSync {
         val pagesOf = HashMap(s.koPages)
         val unmatched = ArrayList<String>()
         val unmatchedPaths = ArrayList<String>()
+        // Books known only by their ID: a few of their highlights, to show them and guess the book from.
+        val unnamed = HashMap<String, String>()
+        val sameAs = HashMap(s.koSameAs)
         var added = 0
         val touched = HashSet<String>()
         val books = HashMap(s.books)
@@ -211,10 +247,19 @@ object KoHighlightSync {
             }
             if (b == null) {
                 if (f.annotations.isNotEmpty()) unmatched += (f.bookName ?: f.documentId ?: f.path.substringAfterLast('/'))
+                val id = f.bookName ?: f.documentId
+                if (id != null && hex32.matches(id) && titleOf(s, id) == null) {
+                    val texts = f.annotations.filter { !it.bookmark }.map { it.text.trim().replace(Regex("\\s+"), " ") }.filter { it.length >= 25 }
+                    val picks = (texts.filter { it.length in 60..400 }.ifEmpty { texts }).sortedByDescending { it.length.coerceAtMost(220) }.take(6)
+                    val n = f.annotations.count { !it.bookmark } + (unnamed[id]?.substringBefore('\u001F')?.toIntOrNull() ?: 0)
+                    unnamed[id] = (listOf(n.toString()) + picks).joinToString("\u001F")
+                }
                 unmatchedPaths += f.path
                 continue
             }
             docs[f.path] = b.document
+            // Another copy of a book here (a web novel downloaded again): its ID remembered, so its position finds the book too.
+            for (id in idsOf(f)) if (id != b.document && id !in b.aliases && hex32.matches(id)) sameAs[id] = b.document
             f.pages?.let { pagesOf[b.document] = it }
             val pages = pagesOf[b.document]
             val prefix = "ko:" + Integer.toHexString(f.path.lowercase().hashCode()) + ":"
@@ -238,6 +283,6 @@ object KoHighlightSync {
             }
             touched += b.document
         }
-        return Result(s.copy(books = books, koClips = clips, koHlDocs = docs, koHlUnmatched = unmatched.distinct(), koPages = pagesOf), added, touched.size, unmatched.distinct(), unmatchedPaths, created)
+        return Result(s.copy(books = books, koClips = clips, koHlDocs = docs, koHlUnmatched = unmatched.distinct(), koPages = pagesOf, koUnnamed = unnamed, koSameAs = sameAs), added, touched.size, unmatched.distinct(), unmatchedPaths, created)
     }
 }

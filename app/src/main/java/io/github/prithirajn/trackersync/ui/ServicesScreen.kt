@@ -142,12 +142,12 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 }
             }
             if (more.isNotEmpty()) {
-                SectionTitle(if (linked.isEmpty()) "Link a tracker" else "More trackers")
+                SectionTitle(if (linked.isEmpty()) "Link a tracker or reading app" else "More trackers and reading apps")
                 VSpace(12)
                 CpCard {
                     more.forEachIndexed { i, t ->
                         if (i > 0) RowDivider()
-                        AvailableRow(t, onLink = { signingIn = t })
+                        AvailableRow(t, onServer = t.id in state.serverLinked, onLink = { signingIn = t })
                     }
                 }
             }
@@ -243,6 +243,22 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 RowDivider()
                 NavRow(R.drawable.lucide_download, "Backup & import", "Backups, reading data, history from other apps") { page = "backup" }
                 RowDivider()
+                NavRow(
+                    R.drawable.lucide_upload, "Threads",
+                    when {
+                        state.threadsToken == null -> "Post new highlights there by themselves"
+                        state.threadsBooks.isNotEmpty() -> "@${state.threadsUser ?: "you"} · ${state.threadsBooks.size} book${if (state.threadsBooks.size == 1) "" else "s"} posting"
+                        else -> "@${state.threadsUser ?: "you"} · posting off"
+                    },
+                ) { page = "threads" }
+                RowDivider()
+                val outs = listOfNotNull("Readwise".takeIf { state.readwiseToken != null }, "Notion".takeIf { state.notionToken != null }, "Obsidian".takeIf { state.obsidianFolder != null })
+                NavRow(
+                    R.drawable.lucide_highlighter, "Export highlights",
+                    if (outs.isEmpty()) "To Readwise, Notion or Obsidian" else outs.joinToString(" · ") + (if (state.exportErrors.isNotEmpty()) " · needs a look" else ""),
+                    summaryWarn = state.exportErrors.isNotEmpty(),
+                ) { page = "exports" }
+                RowDivider()
                 NavRow(R.drawable.lucide_refresh_cw, "App update", if (appVersion.isNotEmpty()) "Version $appVersion" else null) { page = "update" }
             }
             VSpace(24)
@@ -263,7 +279,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
         SettingsSheet(
             when (p) {
                 "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"; "kohl" -> "KOReader highlights"
-                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; else -> "App update"
+                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "exports" -> "Export highlights"; else -> "App update"
             },
             onClose = { page = null },
         ) {
@@ -297,6 +313,8 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     }
                 }
                 "kohl" -> KoHlCard(vm, state, onAdd = { addingKoHl = true }, onRemove = { page = null; removingKoHl = true })
+                "threads" -> ThreadsCard(vm, state)
+                "exports" -> ExportsCard(vm, state)
                 "moon" -> MoonCard(vm, state, onAdd = { addingMoon = true }, onGuide = { moonGuide = true }, onRemove = { page = null; removingMoon = true })
                 "sync" -> SyncSettingsCard(vm, state)
                 "ai" -> OnDeviceAiCard(vm, state)
@@ -316,6 +334,8 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
             SignInKind.WEBVIEW -> WebSignIn(vm, t) { signingIn = null }
             SignInKind.TOKEN -> TokenSheet(vm, t) { signingIn = null }
             SignInKind.DEVICE_CODE -> PairSheet(vm, t) { signingIn = null }
+            SignInKind.SERVER -> ServerSignInSheet(vm, t) { signingIn = null }
+            SignInKind.OAUTH -> OAuthSignInSheet(vm, t) { signingIn = null }
         }
     }
     unlinking?.let { t ->
@@ -453,7 +473,7 @@ private fun SettingsSheet(title: String, onClose: () -> Unit, content: @Composab
     }
 }
 
-private fun isBeta(t: Tracker) = t.signInKind == SignInKind.WEBVIEW || t.signInKind == SignInKind.DEVICE_CODE
+private fun isBeta(t: Tracker) = t.beta
 
 /** One line on how a linked tracker is doing, and whether it's bad news. */
 private fun summary(state: Snapshot, t: Tracker): Pair<String, Boolean> {
@@ -514,13 +534,13 @@ private fun LinkedRow(vm: AppViewModel, state: Snapshot, t: Tracker, onOpen: () 
 }
 
 @Composable
-private fun AvailableRow(t: Tracker, onLink: () -> Unit) {
+private fun AvailableRow(t: Tracker, onServer: Boolean = false, onLink: () -> Unit) {
     Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         ServiceTile(t.name)
         HSpace(12)
         Column(Modifier.weight(1f)) {
             TrackerName(t)
-            Quiet(hints[t.id] ?: "", maxLines = 1)
+            Quiet(if (onServer) "On your CrossPoint server; link here for your other books" else t.hint ?: hints[t.id] ?: "", maxLines = 1)
         }
         PillButton("Link", onLink)
     }
@@ -559,6 +579,7 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
 
             // What's happening, only when there's something to say.
             val status = listOfNotNull(
+                if (t.id in state.serverLinked) "Also linked on your CrossPoint server: it sends your CrossPoint books to ${t.name}, and Readync sends the rest (Kindle, Libby, Audible, KOReader, physical books), so nothing goes twice." else null,
                 if (waiting > 0) "$waiting book${if (waiting == 1) "" else "s"} waiting to sync" + (if (failed > 0) ", $failed retrying" else "") else null,
                 if (review > 0) "$review need a match: tap the book in Library to pick one" else null,
             )
@@ -577,11 +598,11 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
 
             VSpace(16)
             CpCard {
-                Option("Sync to ${t.name}", null) {
+                Option(if (t.writes) "Sync to ${t.name}" else "Read my place from ${t.name}", if (t.writes) null else t.privacyNote) {
                     CpToggle(svc.enabled, { vm.setEnabled(t, it) }, "Sync to ${t.name}")
                 }
-                RowDivider()
-                Option("Who can see updates", t.privacyNote) {
+                if (t.writes) RowDivider()
+                if (t.writes) Option("Who can see updates", t.privacyNote) {
                     if (t.privacy == PrivacySupport.PRIVATE_ONLY) {
                         // The tracker gives apps no say in who sees updates, so there's nothing to pick.
                         Text("Set in ${t.name}", style = CpType.body, color = c.quiet)
@@ -628,7 +649,7 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
             if (isBeta(t)) {
                 VSpace(12)
                 Quiet(
-                    if (t.signInKind == SignInKind.WEBVIEW) "Beta: ${t.name} has no public API, so the app works it like its website. It may break when the site changes."
+                    t.betaNote ?: if (t.signInKind == SignInKind.WEBVIEW) "Beta: ${t.name} has no public API, so the app works it like its website. It may break when the site changes."
                     else "Beta: uses ${t.name}'s new reading-app connection.",
                     Modifier.padding(horizontal = 4.dp),
                     color = c.faint,
@@ -2693,6 +2714,16 @@ private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRem
                 }
                 VSpace(4)
                 Quiet(namesMsg ?: "A list of KOReader document IDs with names, or with Calibre book numbers plus Calibre's CSV catalog. Pick several files at once if they go together.", Modifier.padding(horizontal = 4.dp), color = c.faint)
+                // One by one: each with a few of its highlights, a guess from their words, or typed.
+                val waiting = state.koHlUnmatched.filter { it in state.koUnnamed }
+                if (waiting.isNotEmpty()) {
+                    VSpace(12)
+                    Text("Name them one by one", style = CpType.label, color = c.text, modifier = Modifier.padding(horizontal = 4.dp))
+                    Quiet("Each with a few of its highlights. Guess looks their words up in Google Books (it searches inside books); pick the right one, or type the name.", Modifier.padding(horizontal = 4.dp), color = c.faint)
+                    VSpace(8)
+                    for (id in waiting.take(12)) UnnamedKoBook(vm, id, state.koUnnamed[id].orEmpty())
+                    if (waiting.size > 12) Quiet("${waiting.size - 12} more after these.", Modifier.padding(horizontal = 4.dp), color = c.faint)
+                }
             }
         }
         // ---- KOReader's highlights on to a CrossPoint reader ----
@@ -3064,11 +3095,13 @@ private fun TokenSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
             Text("Link ${t.name}", style = CpType.section, color = c.text)
             Quiet(t.tokenHelp)
             VSpace(12)
-            BigButton("Open hardcover.app/account/api", {
-                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://hardcover.app/account/api")))
-            }, filled = false)
+            t.tokenUrl?.let { url ->
+                BigButton("Open ${url.removePrefix("https://").removePrefix("www.")}", {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                }, filled = false)
+            }
             VSpace(12)
-            CpTextField(token, { token = it }, "API token", "Bearer eyJ…", mono = true)
+            CpTextField(token, { token = it }, t.tokenLabel, t.tokenPlaceholder, mono = true)
             error?.let { VSpace(10); Text(it, style = CpType.small, color = c.errorText) }
             VSpace(16)
             BigButton(
@@ -3084,7 +3117,7 @@ private fun TokenSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
                 enabled = token.isNotBlank(),
             )
             VSpace(12)
-            Quiet("The token is stored encrypted on this phone. You can revoke it on hardcover.app any time.")
+            Quiet(t.tokenNote)
         }
     }
 }
@@ -3236,6 +3269,236 @@ fun ConfirmSheet(title: String, body: String, action: String, onConfirm: () -> U
             BigButton(action, { onConfirm(); onClose() }, filled = false, danger = true)
             VSpace(8)
             BigButton("Cancel", onClose, filled = false)
+        }
+    }
+}
+
+
+/** A KOReader book known only by its ID: how many highlights, two of them, and ways to name it. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun UnnamedKoBook(vm: AppViewModel, id: String, value: String) {
+    val c = Cp.colors
+    val parts = remember(value) { value.split('\u001F') }
+    val count = parts.firstOrNull()?.toIntOrNull() ?: 0
+    val texts = parts.drop(1)
+    var guessing by remember(id) { mutableStateOf(false) }
+    var guesses by remember(id) { mutableStateOf<List<io.github.prithirajn.trackersync.sync.BookGuess.Candidate>?>(null) }
+    var failed by remember(id) { mutableStateOf(false) }
+    var typing by remember(id) { mutableStateOf(false) }
+    var title by remember(id) { mutableStateOf("") }
+    var author by remember(id) { mutableStateOf("") }
+    CpCard(Modifier.padding(bottom = 8.dp)) {
+        Column(Modifier.padding(14.dp)) {
+            Text("$count highlight${if (count == 1) "" else "s"} · ${id.take(8)}…", style = CpType.small, color = c.faint)
+            for (t in texts.take(2)) {
+                VSpace(6)
+                Text("\u201C" + (if (t.length > 160) t.take(157).trimEnd() + "…" else t) + "\u201D", style = CpType.body, color = c.textMid, maxLines = 4)
+            }
+            VSpace(10)
+            val g = guesses
+            if (g != null) {
+                if (g.isEmpty()) Quiet(if (typing) "Nothing found by that name. Save it as you typed it." else "Google Books didn't find these words (it rarely has web novels). Type the name, then Look it up.", color = c.faint)
+                else {
+                    Text("Is it one of these?", style = CpType.label, color = c.text)
+                    for (cand in g) {
+                        VSpace(6)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(cand.title, style = CpType.bodyStrong, color = c.text, maxLines = 2)
+                                Text(
+                                    listOfNotNull(cand.author, cand.year, cand.source).joinToString(" · ") +
+                                        (if (cand.asked > 1) " · found ${cand.hits} of ${cand.asked} passages" else ""),
+                                    style = CpType.small, color = c.faint, maxLines = 1,
+                                )
+                            }
+                            PillButton("This one", { vm.nameKoBook(id, cand.title, cand.author) }, outlined = false)
+                        }
+                    }
+                }
+                VSpace(10)
+            }
+            if (failed) { Quiet("Couldn't look it up. Check the connection and try again.", color = c.faint); VSpace(8) }
+            if (typing) {
+                CpTextField(title, { title = it }, "Title")
+                VSpace(6)
+                CpTextField(author, { author = it }, "Author (optional)")
+                VSpace(8)
+            }
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (typing) {
+                    PillButton("Save", { vm.nameKoBook(id, title, author.ifBlank { null }) }, outlined = false)
+                    // The name as the catalogues have it (Hardcover knows most self-published series), to pick instead of typing it all.
+                    PillButton(if (guessing) "Looking…" else "Look it up", {
+                        if (!guessing && title.isNotBlank()) { guessing = true; failed = false; vm.lookUpBookName(title + (if (author.isNotBlank()) " $author" else "")) { r -> guessing = false; if (r == null) failed = true else guesses = r } }
+                    })
+                    PillButton("Cancel", { typing = false })
+                } else {
+                    if (texts.isNotEmpty()) PillButton(if (guessing) "Looking…" else if (guesses == null) "Guess" else "Guess again", {
+                        if (!guessing) { guessing = true; failed = false; vm.guessKoBook(id) { r -> guessing = false; if (r == null) failed = true else guesses = r } }
+                    }, outlined = guesses != null)
+                    PillButton("Type the name", { typing = true })
+                }
+            }
+        }
+    }
+}
+
+
+/**
+ * Threads: your account (a token from your own Meta app), and new highlights posted there by
+ * themselves, each as a picture in a look picked at random.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
+    val c = Cp.colors
+    var token by remember { mutableStateOf("") }
+    var secret by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var showHow by remember { mutableStateOf(state.threadsToken == null) }
+    CpCard {
+        Column(Modifier.padding(16.dp)) {
+            if (state.threadsToken == null) {
+                Text("Connect your Threads", style = CpType.bodyStrong, color = c.text)
+                Quiet("Threads lets an app post for you through Meta's Threads API, with a token from a Meta app of your own (free, a few minutes to set up). Only your posts go through it; nothing else is read.")
+            } else {
+                Text("@${state.threadsUser ?: "you"}", style = CpType.bodyStrong, color = c.text)
+                Quiet("Connected" + (state.threadsTokenAt.takeIf { it > 0 }?.let { " · token renewed ${ago(it * 1000)}, renewed again by itself each month" } ?: ""), color = c.faint)
+            }
+            if (showHow) {
+                VSpace(10)
+                Text("Getting a token", style = CpType.label, color = c.text)
+                Quiet(
+                    "1. On developers.facebook.com, create an app and pick the \u201CAccess the Threads API\u201D use case.\n" +
+                        "2. In the app, under App roles \u203A Roles, add your Threads account as a Threads Tester. Accept the invitation in Threads: Settings \u203A Account \u203A Website permissions \u203A Invites.\n" +
+                        "3. In the use case, add the threads_basic and threads_content_publish permissions. Then on its Settings tab, scroll to the bottom and tap Generate access token (it starts with TH).\n" +
+                        "4. Paste the token here. If it lasts only an hour, paste the app's Threads secret too and it's made into one that lasts 60 days.",
+                    color = c.faint,
+                )
+            }
+            if (state.threadsToken == null || showHow) {
+                VSpace(10)
+                CpTextField(token, { token = it; msg = null }, "Access token", password = true)
+                VSpace(6)
+                CpTextField(secret, { secret = it; msg = null }, "Threads app secret (optional)", password = true)
+                VSpace(8)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton(if (busy) "Checking…" else "Connect", {
+                        if (!busy && token.isNotBlank()) { busy = true; vm.connectThreads(token, secret.ifBlank { null }) { e -> busy = false; msg = e; if (e == null) { token = ""; secret = ""; showHow = false } } }
+                    }, outlined = false)
+                    if (state.threadsToken != null) PillButton("Cancel", { showHow = false })
+                }
+            }
+            if (state.threadsToken != null && !showHow) {
+                VSpace(12)
+                RowDivider()
+                VSpace(12)
+                Text("Which books", style = CpType.body, color = c.text)
+                Quiet(
+                    (if (state.threadsBooks.isEmpty()) "None yet. " else "${state.threadsBooks.count { it in state.books }} book${if (state.threadsBooks.size == 1) "" else "s"} on. ") +
+                        "Turn it on for a book on its page (Post to Threads): each new highlight, quote and note from it then goes up after a sync, as a Book card in one of its 15 layouts. Only ones that come in after you turn it on. " +
+                        "When you finish a book (or don't), you're offered to post your rating and review.",
+                    color = c.faint,
+                )
+                VSpace(10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("At most ${state.threadsPerDay} a day", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+                    PillButton("\u2212", { vm.setThreadsOptions(perDay = state.threadsPerDay - 1) })
+                    HSpace(6)
+                    PillButton("+", { vm.setThreadsOptions(perDay = state.threadsPerDay + 1) })
+                }
+                Quiet("Posts, not highlights: a reading session is one post. More than that waits for the next day, and nothing goes up in your quiet hours (Sync settings).", color = c.faint)
+                VSpace(8)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text("One post per reading session", style = CpType.body, color = c.text)
+                        Quiet(
+                            if (state.threadsPerSession) "Highlights from one sitting (less than two hours apart) go up together half an hour after the last: a card each to swipe through, your notes on their cards. One alone is a single card with your note as its words."
+                            else "Each highlight is its own post, a few minutes after it comes in.",
+                            color = c.faint,
+                        )
+                    }
+                    CpToggle(state.threadsPerSession, { vm.setThreadsOptions(perSession = it) }, "One post per reading session")
+                }
+                VSpace(10)
+                Text("Topic tag", style = CpType.body, color = c.text)
+                Quiet("Threads shows one topic with each post, so people following it find yours.", color = c.faint)
+                VSpace(6)
+                var customTopic by remember { mutableStateOf(state.threadsTopic.takeIf { it != "genre" }.orEmpty()) }
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for ((label, value) in listOf("By the book's genre" to "genre", "Books" to "Books", "BookThreads" to "BookThreads", "None" to "")) {
+                        val on = state.threadsTopic == value
+                        PillButton(label, { vm.setThreadsOptions(topic = value) }, outlined = !on)
+                    }
+                }
+                VSpace(6)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { CpTextField(customTopic, { customTopic = it.take(50) }, "Your own topic", placeholder = "e.g. Dungeon Crawler Carl") }
+                    HSpace(8)
+                    PillButton("Use", { if (customTopic.isNotBlank()) vm.setThreadsOptions(topic = customTopic.trim()) }, outlined = state.threadsTopic != customTopic.trim() || customTopic.isBlank())
+                }
+                Quiet(
+                    when (state.threadsTopic) {
+                        "genre" -> "LitRPG, Fantasy, Science Fiction, Horror or Web Novels from what the book is; Books otherwise. Reviews get it too."
+                        "" -> "No topic."
+                        else -> "Every post: ${state.threadsTopic}."
+                    },
+                    color = c.faint,
+                )
+                // The on-device model's help, when one is set up.
+                val aiOn = remember { vm.aiReady() }
+                VSpace(14)
+                Text("On-device AI", style = CpType.body, color = c.text)
+                if (!aiOn) Quiet("Add a model (Services \u203A On-device AI) and it can keep spoilers hidden, pick topics, and write opening lines. It runs on your phone; nothing is sent anywhere.", color = c.faint)
+                else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("Hide spoilers, pick topics", style = CpType.body, color = c.text)
+                            Quiet("Highlights or a review that give the story away go up behind Threads' tap-to-reveal. Books outside the genres above get a fitting topic (Romance, Thriller, Memoir…).", color = c.faint)
+                        }
+                        CpToggle(state.threadsAi, { vm.setThreadsOptions(ai = it) }, "Hide spoilers and pick topics with on-device AI")
+                    }
+                    VSpace(6)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("Write the opening line", style = CpType.body, color = c.text)
+                            Quiet("A short line in your voice above a session's cards, or a highlight without a note (your own notes are never replaced). Checked: no hashtags, no quoting, nothing about the plot; else the usual wording.", color = c.faint)
+                        }
+                        CpToggle(state.threadsAiCaptions, { vm.setThreadsOptions(aiCaptions = it) }, "Write opening lines with on-device AI")
+                    }
+                }
+                VSpace(8)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Notes on their own too", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+                    CpToggle(state.threadsNotes, { vm.setThreadsOptions(notes = it) }, "Post notes on their own")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Your note with its passage", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+                    CpToggle(state.threadsWithNote, { vm.setThreadsOptions(withNote = it) }, "Your note with its passage")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text("Any look, not just the Book card", style = CpType.body, color = c.text)
+                        Quiet("The Book card (the book's cover with the passage) comes in 15 layouts, picked at random. Turn this on to mix in the other looks too.", color = c.faint)
+                    }
+                    CpToggle(state.threadsAnyLook, { vm.setThreadsOptions(anyLook = it) }, "Any look")
+                }
+                val waiting = remember(state) { ThreadsAuto.waiting(state).size }
+                val today = state.threadsPostLog.count { it > System.currentTimeMillis() / 1000 - 86_400 }
+                VSpace(8)
+                Quiet("${state.threadsPosted.size} highlights posted so far · $today post${if (today == 1) "" else "s"} today" + (if (waiting > 0) " · $waiting waiting" else ""), color = c.faint)
+                state.threadsError?.let { VSpace(4); Text(it, style = CpType.small, color = c.errorText) }
+                msg?.let { VSpace(4); Quiet(it, color = c.faint) }
+                VSpace(10)
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton(if (busy) "Posting\u2026" else "Post my newest now", { if (!busy) { busy = true; msg = null; vm.postNewestToThreads { m -> busy = false; msg = m } } })
+                    PillButton("New token", { showHow = true })
+                    PillButton("Disconnect", { vm.disconnectThreads() }, danger = true)
+                }
+                Quiet("Pictures go up for a day on Litterbox (catbox.moe), for Threads to copy; Threads only takes pictures from a web address.", color = c.faint)
+            } else msg?.let { VSpace(6); Text(it, style = CpType.small, color = c.errorText) }
         }
     }
 }

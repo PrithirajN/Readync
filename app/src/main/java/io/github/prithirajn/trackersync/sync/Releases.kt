@@ -133,13 +133,27 @@ object Releases {
     }
 
     /** New chapters of a web novel you follow, seen when its page was looked at again. */
-    fun webNovelGrew(store: Store, document: String, title: String, from: Int, to: Int, url: String, site: String) {
+    fun webNovelGrew(store: Store, document: String, title: String, from: Int, to: Int, url: String, site: String, latest: String? = null) {
         if (!store.snapshot.releaseSettings.let { it.enabled && it.webNovels } || to <= from) return
         val now = System.currentTimeMillis() / 1000
         keep(store, Release(
             key = "${Matcher.baseTitle(title)}|web$to", kind = "webnovel", series = title,
             title = "${to - from} new chapter${if (to - from == 1) "" else "s"} of $title", number = "Chapter $to", date = now,
-            source = site, url = url, seenAt = now,
+            // The newest chapter's name, shown under it (and in the alert).
+            source = site, url = url, seenAt = now, author = latest?.let { "Latest: $it" },
+        ))
+    }
+
+    /**
+     * The next published book of a web novel you follow (a Royal Road story out as books): news under
+     * New & upcoming like the next book of any series, kept under the same key so it isn't listed twice.
+     */
+    fun publishedNext(store: Store, series: String, title: String, number: String?, date: Long?, url: String?, cover: String?, author: String?) {
+        if (!store.snapshot.releaseSettings.let { it.enabled && it.novels }) return
+        val now = System.currentTimeMillis() / 1000
+        keep(store, Release(
+            key = "${Matcher.baseTitle(series)}|${number ?: title}", kind = "book", series = series, title = title, number = number, date = date,
+            source = "Hardcover", coverUrl = cover, url = url, author = author, seenAt = now,
         ))
     }
 

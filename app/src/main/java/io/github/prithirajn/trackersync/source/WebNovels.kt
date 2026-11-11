@@ -112,6 +112,43 @@ object WebNovels {
         return null
     }
 
+    /** A chapter in a story's news feed: its title, link and when it came out. */
+    data class FeedItem(val title: String, val link: String, val at: Long?)
+
+    /**
+     * The story's news feed (RSS), where its site has one: Royal Road and Scribble Hub. Much
+     * lighter than its page, so it can be looked at every few hours for new chapters.
+     */
+    fun feedUrl(url: String): String? {
+        Regex("royalroad\\.com/fiction/(\\d+)").find(url)?.let { return "$royalRoad/fiction/syndication/${it.groupValues[1]}" }
+        Regex("scribblehub\\.com/series/(\\d+)").find(url)?.let { return "$scribbleHub/rssfeed.php?type=series&sid=${it.groupValues[1]}" }
+        return null
+    }
+
+    /** The newest chapters in the story's feed, newest first; null when it couldn't be read (or the site has none). */
+    fun feed(url: String): List<FeedItem>? {
+        val f = feedUrl(url) ?: return null
+        val body = get(f) ?: return null
+        return parseFeed(body).takeIf { it.isNotEmpty() || body.contains("<rss", true) || body.contains("<feed", true) }
+    }
+
+    internal fun parseFeed(xml: String): List<FeedItem> {
+        fun clean(v: String?) = v?.replace(Regex("<!\\[CDATA\\[([\\s\\S]*?)]]>"), "$1")?.let { Html.text(it) }?.trim()?.takeIf { it.isNotEmpty() }
+        fun tag(block: String, name: String) = Regex("<$name\\b[^>]*>([\\s\\S]*?)</$name>", RegexOption.IGNORE_CASE).find(block)?.groupValues?.get(1)
+        val items = Regex("<item\\b[\\s\\S]*?</item>|<entry\\b[\\s\\S]*?</entry>", RegexOption.IGNORE_CASE).findAll(xml).mapNotNull { m ->
+            val b = m.value
+            val title = clean(tag(b, "title")) ?: return@mapNotNull null
+            val link = clean(tag(b, "link")) ?: Regex("<link[^>]*href=\"([^\"]+)\"").find(b)?.groupValues?.get(1) ?: clean(tag(b, "guid")) ?: return@mapNotNull null
+            val date = (clean(tag(b, "pubDate")) ?: clean(tag(b, "updated")) ?: clean(tag(b, "published")))?.let { d ->
+                runCatching { java.time.ZonedDateTime.parse(d, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toEpochSecond() }.getOrNull()
+                    ?: runCatching { java.time.OffsetDateTime.parse(d).toEpochSecond() }.getOrNull()
+            }
+            FeedItem(title, link.trim(), date)
+        }.toList()
+        // Newest first, whichever order the feed is in.
+        return if (items.all { it.at != null }) items.sortedByDescending { it.at } else items
+    }
+
     /** The story at [url], read from its page; null when it can't be read. */
     fun fetch(url: String): BookDetails? {
         val link = canonical(url) ?: return null

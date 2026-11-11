@@ -794,6 +794,7 @@ private fun BookSheet(
     val linked = if (book.held) emptyList() else allLinked.filter { it.id != book.origin }
     var searching by remember { mutableStateOf<Tracker?>(null) }
     var bookAction by remember { mutableStateOf<BookAction?>(null) }
+    var postingReview by remember { mutableStateOf(false) }
     LaunchedEffect(book.document) { vm.loadDetails(book.document) }
     LaunchedEffect(Unit) { vm.loadHighlights() }
     val c = Cp.colors
@@ -879,6 +880,8 @@ private fun BookSheet(
                 if (state.webNovels[book.document] == null && !storyLink && looksLikeWebNovel(book)) add(BookActionItem(R.drawable.lucide_globe, "Web novel", { storyLink = true }))
             })
             if (!book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
+            ThreadsBookCard(vm, state, book) { postingReview = true }
+            AudiobookCard(vm, state, book)
             // What the book is about, before your highlights and the trackers (it was at the bottom).
             Description(
                 book, state.detailsLooked[book.document],
@@ -1012,7 +1015,15 @@ private fun BookSheet(
     if (tidying) AiDescriptionSheet(vm, book) { tidying = false }
     if (updating) UpdateProgressSheet(vm, book) { updating = false }
     addingTo?.let { first -> AddToTrackerSheet(vm, book, first) { addingTo = null } }
-    bookAction?.let { a -> BookActionSheet(vm, state, book, a, onClose = { bookAction = null }, onRemoved = { bookAction = null; onClose() }) }
+    bookAction?.let { a ->
+        if (a == BookAction.DNF) DnfSheet(vm, state, book, onClose = { bookAction = null }, onMarked = {
+            bookAction = null
+            // Stopped: with Threads connected, offered to post the verdict.
+            if (state.threadsToken != null) postingReview = true
+        })
+        else BookActionSheet(vm, state, book, a, onClose = { bookAction = null }, onRemoved = { bookAction = null; onClose() })
+    }
+    if (postingReview) state.books[book.document]?.let { b -> ReviewPostSheet(vm, state, b) { postingReview = false } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

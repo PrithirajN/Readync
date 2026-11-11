@@ -41,6 +41,19 @@ class SyncEngine(private val store: Store) {
     init {
         // Every source's changes pass each book's main-source check on their way into the store.
         Store.gate = { before, after -> Primary.gate(before, after) }
+        // The exact place in a CrossPoint book, from crosspoint-sync's KOSync side (for Readest and
+        // other KOSync servers, which need KOReader's own place string, not just a percentage).
+        io.github.prithirajn.trackersync.trackers.ExactPositions.lookup = lookup@{ document ->
+            val s = store.snapshot
+            val b = s.books[document] ?: return@lookup null
+            if (b.origin != null) return@lookup null
+            val account = s.account ?: return@lookup null
+            val p = KosyncClient(account).progress(document) ?: return@lookup null
+            val place = p.progress?.takeIf { it.startsWith("/body") } ?: return@lookup null
+            // Only while it's still where the book is here (not an older place).
+            if (kotlin.math.abs(p.percentage - b.percentage) > 0.02) return@lookup null
+            place to p.percentage
+        }
     }
 
     /** What a pass did. [finished] lists books that became Finished during it (for the finish flow). */
@@ -157,6 +170,11 @@ class SyncEngine(private val store: Store) {
                 if (store.snapshot.account != null) {
                     try {
                         timed("CrossPoint") { Primary.within("crosspoint") { pullChanges() } }
+                        // What the server itself sends where (every few hours): those CrossPoint books aren't sent again from here.
+                        if (System.currentTimeMillis() - store.snapshot.serverLinkedAt > 3 * 3_600_000L) runCatching {
+                            val linked = CrossPointClient(store.snapshot.account!!).linkedConnectors()
+                            store.update { it.copy(serverLinked = linked, serverLinkedAt = System.currentTimeMillis()) }
+                        }
                         store.update { it.copy(sourceOkAt = System.currentTimeMillis(), sourceError = null) }
                     } catch (e: AuthException) {
                         val desc = Health.describeSource(e)
@@ -193,6 +211,8 @@ class SyncEngine(private val store: Store) {
                 step("Tracker shelves")
                 // Books from trackers (Seekquel's…): each from the tracker it came from.
                 timed("Tracker shelves") { Primary.within(Primary.BY_ORIGIN) { pullSources() } }
+                // Further along where you also read or listen (Audiobookshelf, Jellyfin, Spotify…).
+                timed("Reading apps") { runCatching { pullPositions() } }
                 // Main sources that changed hands, for the log.
                 while (true) { val note = Primary.notes.poll() ?: break; store.log(null, note) }
                 // Positions from sources you said to always use (Seekquel's come by its own path): taken now.
@@ -247,7 +267,11 @@ class SyncEngine(private val store: Store) {
                 // site never holds up the trackers; anything they queue goes out at the end.
                 timed("Extras") {
                     runCatching { pullRatings() }
+                    // Highlights out to Readwise, Notion and Obsidian, where set up.
+                    runCatching { Exports.run(store) }
+                    runCatching { storiesFromEpubs() }
                     runCatching { refreshSerials() }
+                    runCatching { publishedSerials() }
                     runCatching { findWebNovels() }
                     runCatching { Releases.check(store) }
                     runCatching { SffRadar.refresh(store, force = false) }
@@ -386,19 +410,129 @@ class SyncEngine(private val store: Store) {
      * Ongoing web novels you've caught up with are checked on their site once a day: when the
      * story is complete, the book is sent again so trackers get Finished.
      */
+    /**
+     * Books whose EPUB carries its story's link (a web novel saved by FanFicFare, WebToEpub, a
+     * CrossPoint plugin…) linked to that story, a few per sync; a copy downloaded again sets which
+     * chapters you have.
+     */
+    private fun storiesFromEpubs() {
+        val now = System.currentTimeMillis() / 1000
+        var fetched = 0
+        for ((id, v) in store.snapshot.koStoryLinks) {
+            if (v.isBlank()) continue
+            val url = v.substringBefore('\t')
+            val copy = v.substringAfter('\t', "").toIntOrNull()
+            val s = store.snapshot
+            val book = KoHighlightSync.bookFor(s, id) ?: continue
+            val had = s.webNovels[book.document]
+            if (had != null) {
+                // Yours already: this copy's chapters, when it's a newer copy than the one counted.
+                val same = io.github.prithirajn.trackersync.source.WebNovels.canonical(had.url) == io.github.prithirajn.trackersync.source.WebNovels.canonical(url)
+                if (same && copy != null && copy > (had.copyChapters ?: 0)) store.update { st ->
+                    st.webNovels[book.document]?.let { w -> st.copy(webNovels = st.webNovels + (book.document to w.copy(copyChapters = copy, copyAt = now))) } ?: st
+                }
+                // A link found by searching gives way to the one in the book itself.
+                if (!had.found || same || fetched >= 3) continue
+            }
+            if (fetched >= 3) continue
+            fetched++
+            val web = runCatching { io.github.prithirajn.trackersync.source.WebNovels.fetch(url) }.getOrNull()?.web
+                ?: io.github.prithirajn.trackersync.source.WebNovels.site(url)?.let { site -> io.github.prithirajn.trackersync.data.WebNovel(url = url, site = site, checkedAt = 0) }
+                ?: continue
+            store.update { st -> st.copy(webNovels = st.webNovels + (book.document to web.copy(found = false, copyChapters = copy ?: web.chapters, copyAt = now))) }
+            store.log(null, "Linked \u201C${book.displayTitle}\u201D to its story on ${web.site}, from the EPUB")
+        }
+    }
+
+    /**
+     * The web novels you're reading (or have caught up with) looked at for new chapters: through
+     * the story's feed every few hours where the site has one (Royal Road, Scribble Hub), and its
+     * page once a day. New chapters are news under New & upcoming, with an alert; a story that's
+     * complete is sent again so trackers get Finished.
+     */
+    /**
+     * Web novels also published as books (Royal Road stories often are): how many are out and the
+     * next one, from Hardcover's series list (when you've linked Hardcover), a few a sync, weekly.
+     * The next one is news under New & upcoming.
+     */
+    private fun publishedSerials() {
+        val s0 = store.snapshot
+        val hc = s0.service("hardcover").takeIf { it.linked && !it.needsReauth }?.let { Session(it.credential) } ?: return
+        val now = System.currentTimeMillis() / 1000
+        var looked = 0
+        fun names(a: String?) = a?.lowercase()?.split(Regex("[^\\p{L}]+"))?.filter { it.length > 2 }?.toSet().orEmpty()
+        for ((doc, w) in s0.webNovels) {
+            if (looked >= PUBLISHED_PER_SYNC) break
+            if (w.fanfic || now - w.pubCheckedAt < 7 * DAY) continue
+            val book = s0.books[doc] ?: continue
+            if (book.held || book.status == ReadStatus.DNF) continue
+            val name = book.title ?: continue
+            looked++
+            val list = runCatching { io.github.prithirajn.trackersync.trackers.HardcoverTracker.seriesBooks(hc, name) }.getOrNull().orEmpty()
+            // By the same author (a series can share a story's name).
+            val mine = list.filter { sb -> book.author == null || sb.author == null || names(sb.author).intersect(names(book.author)).isNotEmpty() }
+            val whole = mine.filter { it.position >= 1 && it.position == Math.floor(it.position) }
+            val out = whole.filter { it.releaseDate == null || it.releaseDate <= now }
+            val next = whole.firstOrNull { it.releaseDate != null && it.releaseDate > now }
+            val label = next?.let { ComicIssues.label(it.position) }
+            val link = (next ?: out.lastOrNull())?.let { "https://hardcover.app/books/${it.id}" }
+            store.update { s ->
+                s.webNovels[doc]?.let { cur ->
+                    s.copy(webNovels = s.webNovels + (doc to cur.copy(
+                        published = out.size.takeIf { it > 0 }, pubSeries = name.takeIf { out.isNotEmpty() },
+                        pubNext = next?.title, pubNextNo = label, pubNextAt = next?.releaseDate, pubUrl = link, pubCheckedAt = now,
+                    )))
+                } ?: s
+            }
+            if (next != null) Releases.publishedNext(store, name, next.title, label, next.releaseDate, link, next.coverUrl, next.author ?: book.author)
+        }
+    }
+
     private fun refreshSerials() {
         val now = System.currentTimeMillis() / 1000
-        for ((doc, w) in store.snapshot.webNovels) {
+        val wn = io.github.prithirajn.trackersync.source.WebNovels
+        var feeds = 0
+        var pages = 0
+        for ((doc, w0) in store.snapshot.webNovels) {
             val book = store.snapshot.books[doc] ?: continue
-            if (!w.ongoing || book.percent < 95 || now - w.checkedAt < DAY) continue
-            val fresh = io.github.prithirajn.trackersync.source.WebNovels.fetch(w.url)?.web
-            store.update { s -> s.copy(webNovels = s.webNovels + (doc to (fresh ?: w.copy(checkedAt = now)))) }
-            // New chapters since you caught up: news for New & upcoming.
-            val was = w.chapters
-            val nowCh = fresh?.chapters
-            if (fresh != null && was != null && nowCh != null && nowCh > was) Releases.webNovelGrew(store, doc, book.displayTitle, was, nowCh, fresh.url, fresh.site)
-            if (fresh != null && fresh.complete == true) {
-                store.log(null, "${book.displayTitle} is complete on ${fresh.site}")
+            if (book.held || w0.complete == true) continue
+            val following = book.status == ReadStatus.READING || book.percent >= 95
+            if (!following) continue
+            var w = w0
+            // Downloaded again (the book got longer on your reader): your copy now has the chapters out then.
+            store.snapshot.grewAt[doc]?.let { grew -> if (grew > w.copyAt && w.chapters != null) w = w.copy(copyChapters = w.chapters, copyAt = grew) }
+            val feedDue = wn.feedUrl(w.url) != null && now - w.feedAt >= FEED_EVERY_S && feeds < FEEDS_PER_SYNC
+            val pageDue = now - w.checkedAt >= DAY && pages < SERIAL_PAGES_PER_SYNC
+            var next = w
+            if (feedDue) {
+                feeds++
+                val items = runCatching { wn.feed(w.url) }.getOrNull()
+                next = if (items.isNullOrEmpty()) next.copy(feedAt = now) else {
+                    val newest = items.first()
+                    // New since the feed was last read (the first read only notes where things are).
+                    val since = w.feedSeen?.let { seen -> items.indexOfFirst { it.link == seen }.let { i -> if (i < 0) items.size else i } } ?: 0
+                    val name = book.title?.let { t -> newest.title.removePrefix("$t - ").removePrefix("$t: ").takeIf { it.isNotBlank() } } ?: newest.title
+                    next.copy(
+                        feedAt = now, feedSeen = newest.link, latestTitle = name, latestUrl = newest.link, latestAt = newest.at ?: now,
+                        chapters = w.chapters?.let { if (since > 0) it + since else it },
+                    )
+                }
+            }
+            if (pageDue) {
+                pages++
+                val fresh = runCatching { wn.fetch(w.url) }.getOrNull()?.web
+                next = if (fresh != null) next.refreshedFrom(fresh).let { r ->
+                    // The feed may know of a chapter the page doesn't show yet: the larger count stands.
+                    r.copy(chapters = listOfNotNull(r.chapters, next.chapters).maxOrNull())
+                } else next.copy(checkedAt = now)
+            }
+            if (next == w0) continue
+            store.update { s -> s.copy(webNovels = s.webNovels + (doc to next)) }
+            val was = w0.chapters
+            val nowCh = next.chapters
+            if (was != null && nowCh != null && nowCh > was) Releases.webNovelGrew(store, doc, book.displayTitle, was, nowCh, next.latestUrl ?: next.url, next.site, next.latestTitle)
+            if (next.complete == true) {
+                store.log(null, "${book.displayTitle} is complete on ${next.site}")
                 for (t in Trackers.all) if (store.snapshot.service(t.id).let { sv -> sv.linked && sv.enabled }) queue(store, t.id, listOf(doc))
             }
         }
@@ -706,6 +840,76 @@ class SyncEngine(private val store: Store) {
                     Matcher.score(item.title, item.author, RemoteBook(b.document, b.title, b.author)) >= SAME_BOOK)
         }
         return same.singleOrNull()?.document
+    }
+
+    /**
+     * Linked books' positions from the services that can say where you are (Audiobookshelf,
+     * Jellyfin, BookFusion, BookOrbit, Readest, Readwise Reader, Spotify): one further along, and
+     * newer than the book's own, moves it, as that service. Each service's moves pass the book's
+     * main-source check, so they're asked about unless you said to always use that service.
+     */
+    private fun pullPositions() {
+        for (t in Trackers.all) {
+            if (!t.bringsPositions) continue
+            val svc = store.snapshot.service(t.id)
+            if (!svc.linked || !svc.enabled || svc.needsReauth) continue
+            val session = Session(svc.credential)
+            val s0 = store.snapshot
+            // Books being read, newest first: listening ahead happens in the one you're on.
+            val todo = s0.links.values
+                .filter { it.service == t.id && it.externalId != null && it.confirmed && it.source != LinkSource.NONE }
+                .mapNotNull { l -> s0.books[l.document]?.takeIf { b -> !b.held && b.origin != t.id && b.status != ReadStatus.FINISHED && b.status != ReadStatus.DNF && !serverSends(t.id, b) }?.let { l to it } }
+                .sortedByDescending { it.second.timestamp }
+                .take(POSITIONS_PER_SYNC)
+            if (todo.isEmpty()) continue
+            var moved = 0
+            try {
+                Primary.within(t.id) {
+                    for ((link, book) in todo) {
+                        // Its main source already reported a new position this sync: not asked here.
+                        if (book.document in Primary.fresh && Primary.of(store.snapshot, book.document) != t.id) continue
+                        val p = t.position(session, link) ?: continue
+                        val now = store.snapshot.books[book.document] ?: continue
+                        val done = p.finished || p.fraction >= 0.98
+                        if (p.updatedAt <= now.timestamp) continue
+                        if (p.fraction <= now.percentage + 0.005 && !(done && now.status != ReadStatus.FINISHED)) continue
+                        val at = System.currentTimeMillis()
+                        store.update { s ->
+                            val b = s.books[book.document] ?: return@update s
+                            val pending = HashMap(s.pending)
+                            for (other in Trackers.all) {
+                                if (other.id == t.id) continue
+                                val o = s.service(other.id)
+                                if (!o.linked || !o.enabled) continue
+                                val key = Link.key(other.id, book.document)
+                                if (s.links[key]?.source == LinkSource.NONE) continue
+                                pending[key] = pending[key]?.copy(tries = 0) ?: Pending(other.id, book.document, at)
+                            }
+                            s.copy(
+                                books = s.books + (book.document to b.copy(
+                                    percentage = if (done) 1.0 else p.fraction.coerceIn(0.0, 1.0),
+                                    status = if (done) ReadStatus.FINISHED else b.status ?: ReadStatus.READING,
+                                    timestamp = p.updatedAt,
+                                    currentPage = null,
+                                    finishedAt = if (done) b.finishedAt ?: p.updatedAt else b.finishedAt,
+                                )),
+                                pending = pending,
+                            )
+                        }
+                        moved++
+                    }
+                }
+                if (session.changed) store.updateService(t.id) { it.copy(credential = session.encode()) }
+                if (moved > 0) store.log(t.id, "$moved book${if (moved == 1) "" else "s"} further along in ${t.name}")
+            } catch (e: AuthException) {
+                store.updateService(t.id) { it.copy(needsReauth = true, lastError = e.message) }
+                store.log(t.id, e.message ?: "Sign in again", error = true)
+            } catch (e: NetworkException) {
+                netFail(t.id, "Couldn't reach ${t.name} for your positions; will retry", e)
+            } catch (e: Exception) {
+                store.log(t.id, "Couldn't read your places in ${t.name} (${e.message})", error = true)
+            }
+        }
     }
 
     private fun pullSources() {
@@ -1194,16 +1398,21 @@ class SyncEngine(private val store: Store) {
                         val key = "dav:" + e.path
                         val stamp = (e.modified ?: "") + "|0"
                         val prev = old[key]
-                        if (prev != null && prev.substringBeforeLast('|') == stamp) { books[key] = prev; continue }
+                        // Read before story links were looked for: read once more for that.
+                        if (prev != null && prev.substringBeforeLast('|') == stamp && store.snapshot.koStoryLinks.containsKey(prev.substringAfterLast('|'))) { books[key] = prev; continue }
                         if (downloads >= DAV_BOOKS_PER_SYNC) continue // the rest next time
                         val bytes = runCatching { client.bytes(e.path) }.getOrNull() ?: continue
                         downloads++
                         val id = io.github.prithirajn.trackersync.source.EpubText.partialMd5(bytes.size.toLong()) { o, n -> bytes.copyOfRange(o.toInt(), o.toInt() + n) }
                         books[key] = "$stamp|$id"
-                        // Its title now, while it's here.
-                        val (t, a) = io.github.prithirajn.trackersync.source.EpubText.metadata(bytes)
-                        val value = (t ?: e.path.substringAfterLast('/').substringBeforeLast('.')) + "\t" + (a ?: "")
-                        store.update { it.copy(koTitles = it.koTitles + mapOf(id to value, KoPlacement.fileId(e.path) to value)) }
+                        // Its title now, while it's here, and a web novel's story link.
+                        val info = io.github.prithirajn.trackersync.source.EpubText.info(bytes)
+                        val value = (info.title ?: e.path.substringAfterLast('/').substringBeforeLast('.')) + "\t" + (info.creator ?: "")
+                        val story = info.storyLink?.let { it + "\t" + (info.chapters ?: "") } ?: ""
+                        store.update { it.copy(
+                            koTitles = it.koTitles + mapOf(id to value, KoPlacement.fileId(e.path) to value),
+                            koStoryLinks = it.koStoryLinks + mapOf(id to story, KoPlacement.fileId(e.path) to story),
+                        ) }
                     }
                     if (books != old) store.update { it.copy(koBooks = books) }
                 }
@@ -1248,6 +1457,21 @@ class SyncEngine(private val store: Store) {
                     titles[byName] = value
                 }
                 if (titles != store.snapshot.koTitles) store.update { it.copy(koTitles = titles) }
+                // Web novels among them: each EPUB looked inside once for its story's link (a few per sync).
+                if (bytesOf != null) {
+                    val links = HashMap(store.snapshot.koStoryLinks)
+                    var looked = 0
+                    for ((path, v) in store.snapshot.koBooks.filterKeys { it.startsWith("local:") }) {
+                        val id = v.substringAfterLast('|')
+                        if (links.containsKey(id) || looked >= STORY_LOOKS_PER_SYNC) continue
+                        looked++
+                        val info = runCatching { bytesOf(tree, path)?.let { io.github.prithirajn.trackersync.source.EpubText.info(it) } }.getOrNull() ?: continue
+                        val story = info.storyLink?.let { it + "\t" + (info.chapters ?: "") } ?: ""
+                        links[id] = story
+                        links[KoPlacement.fileId(path)] = story
+                    }
+                    if (links != store.snapshot.koStoryLinks) store.update { it.copy(koStoryLinks = links) }
+                }
                 val any = stamps.keys.any { it.startsWith("local:") }
                 store.update { it.copy(koLocalOkAt = System.currentTimeMillis(), koLocalError = if (any) null else Health.KOLOCAL_NO_FILES) }
             } catch (e: Exception) {
@@ -2339,7 +2563,7 @@ class SyncEngine(private val store: Store) {
             val now = System.currentTimeMillis() / 1000
             val d = runCatching { io.github.prithirajn.trackersync.source.WebNovels.search(b.title!!, b.author) }.getOrNull()
             store.update { s ->
-                val web = d?.web?.copy(found = true)
+                val web = d?.web?.let { w -> w.copy(found = true, copyChapters = w.chapters, copyAt = now) }
                 s.copy(
                     webSearched = if (web != null || webSearchComplete()) s.webSearched + (b.document to now) else s.webSearched,
                     webNovels = if (web != null && b.document !in s.webNovels) s.webNovels + (b.document to web) else s.webNovels,
@@ -2492,7 +2716,9 @@ class SyncEngine(private val store: Store) {
             val b = store.snapshot.books[doc]
             if (b == null) { store.update { s -> s.copy(toKosync = s.toKosync - doc) }; continue }
             try {
-                for (id in listOf(doc) + (store.snapshot.kosyncIds[doc] ?: emptyList())) client.putProgress(id, b.percentage, DEVICE_ID)
+                // The exact place, where crosspoint-sync has it for this very book and position.
+                val exact = if (b.status != ReadStatus.FINISHED) io.github.prithirajn.trackersync.trackers.ExactPositions.of(doc) else null
+                for (id in listOf(doc) + (store.snapshot.kosyncIds[doc] ?: emptyList())) client.putProgress(id, exact?.second ?: b.percentage, DEVICE_ID, exact?.first)
                 store.update { s -> s.copy(toKosync = s.toKosync - doc) }
                 store.log(null, "${b.displayTitle}: ${b.percent}% sent to KOSync")
             } catch (e: NetworkException) {
@@ -2582,9 +2808,11 @@ class SyncEngine(private val store: Store) {
         inParallel(active) { t ->
             val svc = store.snapshot.service(t.id)
             val on = highlightsOn(t, store.snapshot)
+            // CrossPoint's own highlights go from the server where it's linked there too (it has them; KOReader's and paper ones it doesn't).
+            val cpIds = if (t.id in store.snapshot.serverLinked) store.snapshot.cpClips.map { it.id }.toSet() else emptySet()
             val fresh = clips.filter {
                 val key = "${t.id}|${it.id}"
-                key in store.snapshot.resend || (on && it.createdAt >= svc.highlightsSince && key !in store.snapshot.sentClippings)
+                it.id !in cpIds && (key in store.snapshot.resend || (on && it.createdAt >= svc.highlightsSince && key !in store.snapshot.sentClippings))
             }
             if (fresh.isEmpty()) return@inParallel
             val session = Session(svc.credential).also { it.visibility = svc.visibility }
@@ -2722,6 +2950,10 @@ class SyncEngine(private val store: Store) {
         if (link.source == LinkSource.NONE || link.externalId == null) return null
         // A first match waits for you to confirm it; the pending update is kept for then.
         if (!link.confirmed) throw AwaitingConfirm()
+        // Only matched, to read its position from (Spotify): nothing goes there.
+        if (!tracker.writes) return null
+        // Your CrossPoint server sends this book there itself: sending it from here too would double it.
+        if (serverSends(tracker.id, book)) return null
 
         val remote = tracker.state(session, link)
         val percent = book.percent
@@ -2770,7 +3002,7 @@ class SyncEngine(private val store: Store) {
                     }
                 }
                 if (note == null) {
-                    val skipProgress = tracker.privacy == PrivacySupport.SKIP_PROGRESS && visibility == Visibility.PRIVATE
+                    val skipProgress = (tracker.privacy == PrivacySupport.SKIP_PROGRESS && visibility == Visibility.PRIVATE) || !tracker.takesProgress
                     // After the book got longer, a tracker further along is on the old length: bring it to the new one.
                     val grewSince = (store.snapshot.grewAt[book.document] ?: 0L) * 1000 > link.updatedAt
                     // "Move it back" chosen for this book: sent even though the tracker is further along.
@@ -2872,6 +3104,10 @@ class SyncEngine(private val store: Store) {
         }
         return did
     }
+
+    /** Whether the crosspoint-sync server sends [book] to [trackerId] itself (linked there too, and a CrossPoint book). */
+    private fun serverSends(trackerId: String, book: Book?): Boolean =
+        book != null && book.origin == null && trackerId in store.snapshot.serverLinked
 
     /** A unix time as the local calendar day. */
     private fun day(unix: Long?): java.time.LocalDate? =
@@ -3207,8 +3443,15 @@ class SyncEngine(private val store: Store) {
         const val DEVICE_ID = "tracker-sync-android"
         /** EPUBs read from a WebDAV books folder per sync (each once; the rest follow on later syncs). */
         const val DAV_BOOKS_PER_SYNC = 15
+        /** EPUBs in KOReader's folder on this phone looked inside for a web novel's story link, per sync. */
+        const val STORY_LOOKS_PER_SYNC = 10
         private const val SENT_KEEP = 15
         const val DAY = 86_400L
+        /** How often a web novel's chapter feed is read, and how many feeds and story pages per sync. */
+        const val FEED_EVERY_S = 3 * 3600L
+        const val FEEDS_PER_SYNC = 20
+        const val SERIAL_PAGES_PER_SYNC = 8
+        const val PUBLISHED_PER_SYNC = 3
         /** Unsure matches the on-device model is asked about per sync. */
         const val AI_MATCHES_PER_RUN = 5
         /** A description search that found nothing is tried again after this many days. */
@@ -3230,6 +3473,9 @@ class SyncEngine(private val store: Store) {
         @Volatile internal var BY_HAND_JITTER_MS = 5_000L
 
         private const val KEY_LOOKUPS_PER_RUN = 25
+
+        /** Books whose place is asked of each reading app per sync (Readwise allows 20 requests a minute). */
+        private const val POSITIONS_PER_SYNC = 12
 
         /** A highlight with your edit applied, if you made one. */
         fun edited(c: io.github.prithirajn.trackersync.source.Clipping, edits: Map<String, io.github.prithirajn.trackersync.data.ClipEdit>) =

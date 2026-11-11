@@ -47,6 +47,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         }
         val result = SyncEngine(app.store).run()
         Notices.after(applicationContext, app.store.snapshot.settings, result, app.store)
+        // New highlights out to Threads, when you've turned that on.
+        runCatching { io.github.prithirajn.trackersync.ui.ThreadsAuto.run(applicationContext, app.store) }
         Result.success()
     }
 

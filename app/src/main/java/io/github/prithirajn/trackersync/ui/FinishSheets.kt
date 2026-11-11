@@ -172,6 +172,12 @@ fun RateSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit
     var checking by remember { mutableStateOf(false) }
     var spoilers by remember { mutableStateOf<List<Int>?>(null) }
     var spoilersFor by remember { mutableStateOf("") }
+    // Saved, for a book finished or stopped, with Threads connected: offered to post it there.
+    var offerThreads by remember { mutableStateOf(false) }
+    if (offerThreads) {
+        ReviewPostSheet(vm, state, state.books[book.document] ?: book) { onClose() }
+        return
+    }
     val takers = Trackers.all.filter { t ->
         val svc = state.service(t.id)
         val link = state.link(t.id, book.document)
@@ -274,7 +280,10 @@ fun RateSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit
         VSpace(16)
         BigButton("Save", {
             busy = true
-            vm.saveReview(book.document, rating, review) { err -> busy = false; if (err == null) onClose() }
+            vm.saveReview(book.document, rating, review) { err ->
+                busy = false
+                if (err == null) { if (state.threadsToken != null && ThreadsAuto.canReview(book)) offerThreads = true else onClose() }
+            }
         }, busy = busy, enabled = rating != null || review.isNotBlank())
         VSpace(8)
         BigButton("Not now", {

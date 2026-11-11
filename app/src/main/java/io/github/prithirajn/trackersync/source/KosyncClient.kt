@@ -11,7 +11,11 @@ import io.github.prithirajn.trackersync.util.str
 import org.json.JSONObject
 
 /** The newest position a KOSync server holds for one book. */
-data class KosyncProgress(val document: String, val percentage: Double, val timestamp: Long, val device: String?)
+data class KosyncProgress(
+    val document: String, val percentage: Double, val timestamp: Long, val device: String?,
+    /** The reader's own place string (KOReader's XPointer for an EPUB), when it sent one. */
+    val progress: String? = null,
+)
 
 /**
  * A plain KOSync server (KOReader's sync.koreader.rocks, a self-hosted koreader-sync-server,
@@ -45,7 +49,7 @@ class KosyncClient(private val account: Account) {
         val o = runCatching { JSONObject(r.body) }.getOrNull() ?: return null
         val pct = o.num("percentage") ?: return null
         val ts = o.long("timestamp") ?: return null
-        return KosyncProgress(document, pct.coerceIn(0.0, 1.0), ts, o.str("device"))
+        return KosyncProgress(document, pct.coerceIn(0.0, 1.0), ts, o.str("device"), o.str("progress"))
     }
 
     /**
@@ -53,11 +57,12 @@ class KosyncClient(private val account: Account) {
      * is a placeholder like crosspoint-sync's own imports use; readers that place by percentage
      * follow it, KOReader may stay where it is.
      */
-    fun putProgress(document: String, percentage: Double, deviceId: String) {
+    fun putProgress(document: String, percentage: Double, deviceId: String, place: String? = null) {
         val p = percentage.coerceIn(0.0, 1.0)
         val body = JSONObject()
             .put("document", document)
-            .put("progress", "tracker-sync:" + Math.round(p * 1_000_000))
+            // KOReader's own place when known (a CrossPoint book's, from crosspoint-sync), so KOReader opens right there.
+            .put("progress", place ?: ("tracker-sync:" + Math.round(p * 1_000_000)))
             .put("percentage", p)
             .put("device", "Tracker Sync")
             .put("device_id", deviceId)

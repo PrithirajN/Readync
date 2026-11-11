@@ -56,7 +56,8 @@ object Primary {
     }
 
     /** Sources a position can be written back to (for "move it back"). */
-    fun canMoveBack(id: String): Boolean = id == "crosspoint" || id == "kosync" || id == "seekquel"
+    fun canMoveBack(id: String): Boolean = id == "crosspoint" || id == "kosync" || id == "seekquel" ||
+        Trackers.byId(id)?.let { it.writes && it.bringsPositions } == true
 
     private val current = ThreadLocal<String?>()
 
@@ -248,6 +249,8 @@ object Primary {
             add("mihon")
             if (s.moon != null) add("moonreader")
             if (s.audible != null) add("audible")
+            // Reading apps that say where you are (Audiobookshelf, Jellyfin…), once linked.
+            for (t in Trackers.all) if (t.bringsPositions && s.service(t.id).linked) add(t.id)
         }
         val origin = s.books[doc]?.origin
         // Mihon only for manga and comics.
@@ -316,6 +319,11 @@ object Primary {
             "seekquel" -> {
                 store.update { it.copy(moveBack = it.moveBack + "seekquel|$document") }
                 SyncEngine.queue(store, "seekquel", listOf(document))
+            }
+            // A reading app (Audiobookshelf, Jellyfin…): your place here is sent to it.
+            else -> if (canMoveBack(ask.source)) {
+                store.update { it.copy(moveBack = it.moveBack + "${ask.source}|$document") }
+                SyncEngine.queue(store, ask.source, listOf(document))
             }
         }
     }

@@ -967,7 +967,50 @@ data class WebNovel(
     val checkedAt: Long = 0,
     /** Found by searching the sites (not a link you gave), so the book page offers to change it. */
     val found: Boolean = false,
+    /** Chapters in the copy you're reading (when it was downloaded), to tell which chapter you're on. */
+    val copyChapters: Int? = null,
+    /** When [copyChapters] was last set (you downloaded it again: the copy grew). */
+    val copyAt: Long = 0,
+    /** The newest chapter, from the story's feed: its title, link and when it came out. */
+    val latestTitle: String? = null,
+    val latestUrl: String? = null,
+    val latestAt: Long? = null,
+    /** The newest chapter's link when the feed was last read, and when that was. */
+    val feedSeen: String? = null,
+    val feedAt: Long = 0,
+    /** The story published as books (Royal Road stories often are): how many are out, and the next one. */
+    val published: Int? = null,
+    val pubSeries: String? = null,
+    val pubNext: String? = null,
+    val pubNextNo: String? = null,
+    val pubNextAt: Long? = null,
+    val pubUrl: String? = null,
+    val pubCheckedAt: Long = 0,
 ) {
+    /**
+     * The chapter you're about on, from how far through your copy you are: [copyChapters] when
+     * known, else the story's chapters. Null when neither is known.
+     */
+    fun chapterAt(percent: Double): Int? {
+        val n = copyChapters ?: chapters ?: return null
+        if (n <= 0) return null
+        return Math.round(percent.coerceIn(0.0, 1.0) * n).toInt().coerceIn(if (percent > 0) 1 else 0, n)
+    }
+
+    /** How many chapters the story has past the one you're on (0 when caught up), or null. */
+    fun behind(percent: Double): Int? {
+        val at = chapterAt(percent) ?: return null
+        val total = chapters ?: return null
+        return (total - at).coerceAtLeast(0)
+    }
+
+    /** A fresh read of the story's page, keeping what only this app knows about it (your copy, the feed, its books). */
+    fun refreshedFrom(f: WebNovel): WebNovel = f.copy(
+        found = found, copyChapters = copyChapters, copyAt = copyAt,
+        latestTitle = latestTitle, latestUrl = latestUrl, latestAt = latestAt, feedSeen = feedSeen, feedAt = feedAt,
+        published = published, pubSeries = pubSeries, pubNext = pubNext, pubNextNo = pubNextNo, pubNextAt = pubNextAt, pubUrl = pubUrl, pubCheckedAt = pubCheckedAt,
+    )
+
     /** True or false when the site says; null when it doesn't. */
     val complete: Boolean? get() = when {
         status == null -> null
@@ -987,6 +1030,12 @@ data class WebNovel(
         .put("chapters", chapters ?: JSONObject.NULL).put("plannedChapters", plannedChapters ?: JSONObject.NULL)
         .put("words", words ?: JSONObject.NULL).put("fanfic", fanfic).put("tags", jsonArrayOf(tags)).put("checkedAt", checkedAt)
         .put("found", found)
+        .put("copyChapters", copyChapters ?: JSONObject.NULL).put("copyAt", copyAt)
+        .put("latestTitle", latestTitle ?: JSONObject.NULL).put("latestUrl", latestUrl ?: JSONObject.NULL).put("latestAt", latestAt ?: JSONObject.NULL)
+        .put("feedSeen", feedSeen ?: JSONObject.NULL).put("feedAt", feedAt)
+        .put("published", published ?: JSONObject.NULL).put("pubSeries", pubSeries ?: JSONObject.NULL).put("pubNext", pubNext ?: JSONObject.NULL)
+        .put("pubNextNo", pubNextNo ?: JSONObject.NULL).put("pubNextAt", pubNextAt ?: JSONObject.NULL).put("pubUrl", pubUrl ?: JSONObject.NULL)
+        .put("pubCheckedAt", pubCheckedAt)
 
     companion object {
         fun fromJson(o: JSONObject) = WebNovel(
@@ -994,6 +1043,11 @@ data class WebNovel(
             chapters = o.int("chapters"), plannedChapters = o.int("plannedChapters"), words = o.int("words"),
             fanfic = o.bool("fanfic"), tags = o.arr("tags")?.strings() ?: emptyList(), checkedAt = o.long("checkedAt") ?: 0L,
             found = o.bool("found"),
+            copyChapters = o.int("copyChapters"), copyAt = o.long("copyAt") ?: 0L,
+            latestTitle = o.str("latestTitle"), latestUrl = o.str("latestUrl"), latestAt = o.long("latestAt"),
+            feedSeen = o.str("feedSeen"), feedAt = o.long("feedAt") ?: 0L,
+            published = o.int("published"), pubSeries = o.str("pubSeries"), pubNext = o.str("pubNext"), pubNextNo = o.str("pubNextNo"),
+            pubNextAt = o.long("pubNextAt"), pubUrl = o.str("pubUrl"), pubCheckedAt = o.long("pubCheckedAt") ?: 0L,
         )
     }
 }
@@ -1331,6 +1385,85 @@ data class Snapshot(
     val koBooks: Map<String, String> = emptyMap(),
     /** Titles and authors of KOReader's books (document ID -> "title<TAB>author"), from the EPUBs and sidecars in that folder. */
     val koTitles: Map<String, String> = emptyMap(),
+    /**
+     * KOReader books known only by their document ID: how many highlights each has and a few of
+     * them ("count\u001Ftext\u001Ftext…"), to show them and to guess the book from its words.
+     */
+    val koUnnamed: Map<String, String> = emptyMap(),
+    /**
+     * Web novel EPUBs: the story's link found inside each (by KOReader document ID -> "link<TAB>chapters
+     * in that copy"; empty when the EPUB has none), so the book links to its story and a downloaded-again
+     * copy (a new ID) stays the same book.
+     */
+    val koStoryLinks: Map<String, String> = emptyMap(),
+    /** KOReader document IDs known to be another copy of a book here (ID -> the book's document). */
+    val koSameAs: Map<String, String> = emptyMap(),
+    // ---- Threads: new highlights posted there by themselves ----
+    /** Your Threads access token (from your own Meta app), its account, and when it was last renewed. */
+    val threadsToken: String? = null,
+    val threadsUser: String? = null,
+    val threadsUserId: String? = null,
+    val threadsTokenAt: Long = 0,
+    /** Post each new highlight, quote and note to Threads by itself, as a picture in a look picked at random. */
+    val threadsAuto: Boolean = false,
+    /** At most this many posts a day (the rest wait for the next day). */
+    val threadsPerDay: Int = 5,
+    /** Notes on their own (no passage) are posted too. */
+    val threadsNotes: Boolean = true,
+    /** Your note goes on the picture and in the post with its passage. */
+    val threadsWithNote: Boolean = true,
+    /** Highlights there were when posting was turned on (not posted), and ones posted (id -> when). */
+    val threadsSeen: Set<String> = emptySet(),
+    val threadsPosted: Map<String, Long> = emptyMap(),
+    /** Tries that failed, per highlight (given up after a few). */
+    val threadsFails: Map<String, Int> = emptyMap(),
+    val threadsError: String? = null,
+    /** The look used last, so the next one is different. */
+    val threadsLastLook: String? = null,
+    /** Any of the looks at random, rather than the Book card's layouts (the book's cover with the passage). */
+    val threadsAnyLook: Boolean = false,
+    /** Books whose new highlights go to Threads (each turned on on its own page; off to start with). */
+    val threadsBooks: Set<String> = emptySet(),
+    /** Books whose review was posted to Threads, and when. */
+    val threadsReviewed: Map<String, Long> = emptyMap(),
+    /** A reading session's highlights from one book go up together as one post (else one post each). */
+    val threadsPerSession: Boolean = true,
+    /** The post's topic tag: "" none, "genre" from the book (LitRPG, Fantasy…, else Books), or your own. */
+    val threadsTopic: String = "genre",
+    /** When each highlight waiting to be posted first came in (to tell when a session's over). */
+    val threadsArrived: Map<String, Long> = emptyMap(),
+    /** When each post went up (the daily limit counts posts, not highlights). */
+    val threadsPostLog: List<Long> = emptyList(),
+    /**
+     * With an on-device model: posts that give the story away go up hidden behind Threads' spoiler
+     * tap, and a book that isn't speculative fiction gets its topic picked (Romance, Thriller…).
+     */
+    val threadsAi: Boolean = true,
+    /** With an on-device model: the opening line written by it, in your voice (checked; else the usual wording). */
+    val threadsAiCaptions: Boolean = false,
+    /** Topics picked for books (by the on-device model), so each is asked once. */
+    val threadsTopics: Map<String, String> = emptyMap(),
+    /**
+     * Services linked on your crosspoint-sync server too (its "Connected services", by id), so
+     * CrossPoint's books aren't sent to them twice: the server sends those, this app the rest.
+     */
+    val serverLinked: Set<String> = emptySet(),
+    val serverLinkedAt: Long = 0L,
+    // ---- Highlights, quotes and notes exported to Readwise, Notion and Obsidian ----
+    /** Readwise's access token (readwise.io/access_token), and the highlights already sent there. */
+    val readwiseToken: String? = null,
+    val readwiseDone: Set<String> = emptySet(),
+    /** Notion: your integration's secret, the page books go under, each book's page there, and what's been added. */
+    val notionToken: String? = null,
+    val notionParent: String? = null,
+    val notionPages: Map<String, String> = emptyMap(),
+    val notionDone: Set<String> = emptySet(),
+    /** Obsidian: the folder in your vault (Android folder access), and each book file's last contents (a hash), so unchanged ones aren't written again. */
+    val obsidianFolder: String? = null,
+    val obsidianHashes: Map<String, String> = emptyMap(),
+    /** Each export's last problem ("readwise" -> why), and when it last worked. */
+    val exportErrors: Map<String, String> = emptyMap(),
+    val exportOkAt: Map<String, Long> = emptyMap(),
     /** How many pages KOReader lays each book out in (book document -> pages), to place its highlights in the book. */
     val koPages: Map<String, Int> = emptyMap(),
     /** A folder of EPUBs on that WebDAV storage (a Calibre library, say), for KOReader on another device: titles and exact places come from there. */

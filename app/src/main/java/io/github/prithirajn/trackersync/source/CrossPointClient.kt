@@ -114,6 +114,13 @@ class CrossPointClient(private val account: Account) {
         if (!r.ok) throw ServiceException("crosspoint-sync answered HTTP ${r.code}")
     }
 
+    /** The ids of the services linked on the server (its Connected services). */
+    fun linkedConnectors(): Set<String> {
+        val arr = get("/api/v1/connectors").optJSONArray("connectors") ?: return emptySet()
+        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+            .filter { it.optBoolean("linked", false) }.mapNotNull { it.optString("id").takeIf { id -> id.isNotEmpty() } }.toSet()
+    }
+
     /** True when the username and password are right. */
     fun verify(): Boolean {
         val r = Http.request("GET", account.server + "/users/auth", headers())

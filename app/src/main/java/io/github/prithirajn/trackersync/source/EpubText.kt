@@ -102,16 +102,43 @@ object EpubText {
     }.getOrNull()
 
     /** The EPUB's title and first author from its package file, or nulls. */
-    fun metadata(bytes: ByteArray): Pair<String?, String?> = runCatching {
+    fun metadata(bytes: ByteArray): Pair<String?, String?> = info(bytes).let { it.title to it.creator }
+
+    /**
+     * What an EPUB says about itself: its title and author, and for a web novel saved as an EPUB
+     * (by FanFicFare, WebToEpub, a CrossPoint plugin…) the story's link, from its details
+     * (dc:source, dc:identifier) or its first pages, and how many chapters this copy has.
+     */
+    data class Info(val title: String?, val creator: String?, val storyLink: String? = null, val chapters: Int? = null)
+
+    private val STORY = Regex(
+        """https?://(?:www\.|m\.|forums\.)?(?:royalroad\.com/fiction/\d+[^\s"'<>)]*|archiveofourown\.org/works/\d+|ao3\.org/works/\d+|scribblehub\.com/series/\d+[^\s"'<>)]*|wattpad\.com/story/\d+[^\s"'<>)]*|fanfiction\.net/s/\d+[^\s"'<>)]*|spacebattles\.com/threads/[^\s"'<>)]+|sufficientvelocity\.com/threads/[^\s"'<>)]+|webnovel\.com/book/[^\s"'<>)]+)""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** The first story link in [text], as the site's own story address. */
+    internal fun storyLinkIn(text: String): String? =
+        STORY.findAll(unescape(text)).firstNotNullOfOrNull { WebNovels.canonical(it.value.trimEnd('.', ',', ';')) }
+
+    fun info(bytes: ByteArray): Info = runCatching {
         val files = entries(bytes)
         fun file(name: String) = files[name] ?: files.entries.firstOrNull { it.key.equals(name, true) }?.value
-        val container = file("META-INF/container.xml")?.let { String(it, Charsets.UTF_8) } ?: return null to null
-        val opfPath = tags(container, "rootfile").firstNotNullOfOrNull { it["full-path"] } ?: return null to null
-        val opf = file(opfPath)?.let { String(it, Charsets.UTF_8) } ?: return null to null
+        val container = file("META-INF/container.xml")?.let { String(it, Charsets.UTF_8) } ?: return Info(null, null)
+        val opfPath = tags(container, "rootfile").firstNotNullOfOrNull { it["full-path"] } ?: return Info(null, null)
+        val opf = file(opfPath)?.let { String(it, Charsets.UTF_8) } ?: return Info(null, null)
         fun first(name: String) = Regex("""<(?:[\w.-]+:)?$name\b[^>]*>([\s\S]*?)</(?:[\w.-]+:)?$name>""").find(opf)?.groupValues?.get(1)
             ?.replace(Regex("<[^>]+>"), "")?.let(::unescape)?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotEmpty() }
-        first("title") to first("creator")
-    }.getOrDefault(null to null)
+        // The story's link: in the book's details first, else on its first pages (a title or information page).
+        val pages = files.keys.filter { Regex("(?i)\\.x?html?$").containsMatchIn(it) }.sorted()
+        val front = (pages.filter { Regex("(?i)title|info|cover|front|intro|about|0000|^.*/?0+1?\\.x?html?$").containsMatchIn(it) } + pages).distinct().take(4)
+        val link = storyLinkIn(opf) ?: front.firstNotNullOfOrNull { p -> file(p)?.let { storyLinkIn(String(it, Charsets.UTF_8).take(60_000)) } }
+        // The chapters: the reading order, less the cover, title, contents and information pages.
+        val chapters = link?.let {
+            val spine = tags(opf, "itemref").mapNotNull { it["idref"] }
+            spine.count { id -> !Regex("(?i)cover|title|toc|nav|info|front|intro|about|copyright|acknowledg|appendix").containsMatchIn(id) }.takeIf { n -> n > 0 }
+        }
+        Info(first("title"), first("creator"), link, chapters)
+    }.getOrDefault(Info(null, null))
 
     // ---- A chapter -----------------------------------------------------------------------------
 

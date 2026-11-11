@@ -8,6 +8,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -54,7 +55,7 @@ import kotlinx.coroutines.withContext
  * A note on its own (a note on a bookmark, with no passage) is shared as a note: in your hand,
  * without quote marks.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun QuoteShareSheet(
     clip: Clipping,
@@ -189,8 +190,8 @@ fun QuoteShareSheet(
             }
             if (failed && bmp != null) { VSpace(6); AnimatedQuiet("Couldn't draw that one; this is the last picture. Try another look or shape.", color = c.faint) }
             VSpace(14)
-            // The looks, as a row of chips (scrolls sideways).
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+            // The looks, as chips that wrap onto more lines, so every look is in sight.
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (l in QuoteCard.Look.entries) {
                     val on = l == look
                     Box(
@@ -280,6 +281,18 @@ fun QuoteShareSheet(
                     }
                 }, Modifier.weight(1f), filled = false, enabled = bmp != null)
             }
+            VSpace(8)
+            // Straight into a new Threads post, picture and words.
+            BigButton("Post to Threads", {
+                bmp?.let { b ->
+                    val how = runCatching { QuoteCard.postToThreads(context, b, plain.take(500)) }.getOrNull()
+                    said = when (how) {
+                        "app" -> "Opened in Threads with the picture. The words are copied too, if you need to paste them."
+                        "web" -> "Threads isn't installed, so it opened in the browser with the words (a picture can't go that way; save it and add it there)."
+                        else -> "Couldn't open Threads."
+                    }
+                }
+            }, filled = false, enabled = bmp != null)
             said?.let { VSpace(8); AnimatedQuiet(it, color = c.faint) }
             VSpace(12)
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {

@@ -37,6 +37,9 @@ object HardcoverTracker : Tracker {
     override val readsProgress = true
     override val statuses = ReadStatus.entries.toSet()
     override val tokenHelp = "Copy your API token from hardcover.app/account/api and paste it here."
+    override val tokenUrl = "https://hardcover.app/account/api"
+    override val tokenPlaceholder = "Bearer eyJ…"
+    override val tokenNote = "The token is stored encrypted on this phone. You can revoke it on hardcover.app any time."
     override val privacyNote =
         "Books the app adds to your shelves, and highlights, are Private with Only me or Public with Everyone. " +
             "Books already on your shelves keep their privacy."

@@ -177,8 +177,12 @@ object Http {
         return send()
     }
 
-    /** Downloads a file (a cover image). Follows cross-protocol redirects up to 5 times. Returns null on any failure. */
-    fun bytes(url: String, maxBytes: Int = 4_000_000): ByteArray? = try {
+    /**
+     * Downloads a file (a cover image, a book). Follows cross-protocol redirects up to 5 times;
+     * [headers] (a sign-in) go only to the first site, never to one it redirects to. Returns null on any failure.
+     */
+    fun bytes(url: String, maxBytes: Int = 4_000_000, headers: Map<String, String> = emptyMap(), timeoutMs: Int = 15_000): ByteArray? = try {
+        val firstHost = URL(url).host
         var currentUrl = url
         var redirects = 0
         var result: ByteArray? = null
@@ -186,9 +190,10 @@ object Http {
             val conn = URL(currentUrl).openConnection() as HttpURLConnection
             try {
                 conn.connectTimeout = 15_000
-                conn.readTimeout = 15_000
+                conn.readTimeout = timeoutMs
                 conn.instanceFollowRedirects = false
                 conn.setRequestProperty("User-Agent", defaultUserAgent)
+                if (URL(currentUrl).host == firstHost) for ((k, v) in headers) conn.setRequestProperty(k, v)
                 val code = conn.responseCode
                 if (code in 300..399) {
                     val loc = conn.getHeaderField("Location")

@@ -121,6 +121,7 @@ private fun ReleaseRow(vm: AppViewModel, r: Release, now: Long) {
             Text(r.title, style = CpType.body, color = c.text, maxLines = 2)
             val what = when (r.kind) {
                 "book", "volume" -> listOfNotNull(r.number?.let { "#$it in ${r.series}" } ?: r.series, r.author).joinToString(" · ")
+                "webnovel" -> r.author ?: r.series
                 else -> r.series
             }
             Quiet(what, color = c.faint, maxLines = 1)

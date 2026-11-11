@@ -55,7 +55,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 /** What the ⋯ menu on a book opens. */
-enum class BookAction { EDIT, COVER, DATES, PAGES, MERGE, SEPARATE, REMOVE, REREAD, WEBNOVEL, KOSYNC }
+enum class BookAction { EDIT, COVER, DATES, PAGES, MERGE, SEPARATE, REMOVE, REREAD, WEBNOVEL, KOSYNC, DNF }
 
 /**
  * The companion app's ⋯ menu for a book: edit title & author, change cover, reading dates,
@@ -80,6 +80,10 @@ fun BookMenuButton(state: Snapshot, book: Book, webNovelLinked: Boolean = false,
             } else null
             if (book.status == io.github.prithirajn.trackersync.data.ReadStatus.FINISHED) {
                 MenuItem(R.drawable.lucide_refresh_cw, "Read again") { pick(BookAction.REREAD) }
+            }
+            // Stopping a book you're not enjoying: its own action, not hidden in the progress sheet.
+            if (book.status != io.github.prithirajn.trackersync.data.ReadStatus.DNF && book.status != io.github.prithirajn.trackersync.data.ReadStatus.FINISHED) {
+                MenuItem(R.drawable.lucide_circle_x, "Did not finish") { pick(BookAction.DNF) }
             }
             MenuItem(R.drawable.lucide_pen_line, "Edit title & author") { pick(BookAction.EDIT) }
             MenuItem(R.drawable.lucide_image, "Change cover") { pick(BookAction.COVER) }
@@ -125,7 +129,7 @@ private fun MenuItem(
 @Composable
 fun BookActionSheet(vm: AppViewModel, state: Snapshot, book: Book, action: BookAction, onClose: () -> Unit, onRemoved: () -> Unit) {
     when (action) {
-        BookAction.WEBNOVEL -> {} // opens the link card on the book itself
+        BookAction.WEBNOVEL, BookAction.DNF -> {} // opened on the book itself
         BookAction.EDIT -> EditDetailsSheet(vm, book, onClose)
         BookAction.COVER -> CoverSheet(vm, book, onClose)
         BookAction.DATES -> DatesSheet(vm, book, onClose)

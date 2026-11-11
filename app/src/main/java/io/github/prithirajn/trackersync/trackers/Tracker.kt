@@ -64,7 +64,81 @@ fun JSONObject.firstYear(vararg keys: String): Int? {
 data class RemoteState(val status: ReadStatus?, val percent: Int?)
 
 /** How a tracker signs in. */
-enum class SignInKind { PASSWORD, WEBVIEW, TOKEN, DEVICE_CODE }
+enum class SignInKind {
+    PASSWORD, WEBVIEW, TOKEN, DEVICE_CODE,
+
+    /** A server address, then a username and password or an API key ([Tracker.serverLogin]). */
+    SERVER,
+
+    /** Your own app's client ID, then the service's sign-in page (OAuth with PKCE, [Tracker.oauthStart]). */
+    OAUTH,
+}
+
+/** What a [SignInKind.SERVER] sign-in asks for. */
+data class ServerLogin(
+    val serverPlaceholder: String,
+    /** Null when there's no username (an API key alone). */
+    val userLabel: String?,
+    val secretLabel: String,
+    /** Shown as dots, like a password. */
+    val secretIsPassword: Boolean = true,
+    /** Where to find what's asked for. */
+    val help: String,
+    /** What's kept on this phone. */
+    val keptNote: String,
+    /** Filled in already (a public server). */
+    val defaultServer: String? = null,
+)
+
+/** A sign-in page opened for [SignInKind.OAUTH], and what finishing it needs. */
+data class OAuthStart(val url: String, val redirectUri: String, val verifier: String, val state: String)
+
+/**
+ * Where you are in a book on a service you also read or listen on (Audiobookshelf, Jellyfin…).
+ * [updatedAt] is unix seconds; positions older than the book's own are ignored.
+ */
+data class RemotePosition(val fraction: Double, val finished: Boolean, val updatedAt: Long)
+
+/**
+ * The exact place in a CrossPoint book (KOReader's XPointer, "/body/DocFragment[12]/…") and its
+ * fraction, for services that need it (Readest, BookOrbit, KOSync). Set up by the sync engine.
+ */
+object ExactPositions {
+    @Volatile var lookup: ((document: String) -> Pair<String, Double>?)? = null
+    fun of(document: String): Pair<String, Double>? = runCatching { lookup?.invoke(document) }.getOrNull()
+}
+
+/** "https://" added when missing, trailing slashes dropped. */
+fun serverBase(server: String): String {
+    var u = server.trim()
+    if (!u.contains("://")) u = "https://$u"
+    return u.trimEnd('/')
+}
+
+/** Random URL-safe text (PKCE verifiers, OAuth state). */
+fun randomUrlSafe(bytes: Int = 48): String {
+    val b = ByteArray(bytes)
+    java.security.SecureRandom().nextBytes(b)
+    return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(b)
+}
+
+/** The PKCE challenge for [verifier] (S256). */
+fun pkceChallenge(verifier: String): String =
+    java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+        java.security.MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)),
+    )
+
+fun md5Hex(s: String): String =
+    java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+/** An ISO-8601 time ("2026-11-11T10:00:00Z", with or without fractions or an offset) as unix seconds; 0 when unreadable. */
+fun isoSeconds(v: Any?): Long {
+    val t = (v as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: return 0
+    return runCatching { java.time.OffsetDateTime.parse(t).toEpochSecond() }.getOrNull()
+        ?: runCatching { java.time.Instant.parse(t).epochSecond }.getOrNull()
+        ?: runCatching { java.time.LocalDateTime.parse(t).toEpochSecond(java.time.ZoneOffset.UTC) }.getOrNull()
+        ?: 0
+}
 
 /** A pairing started on a tracker: the user approves [userCode] at [verificationUri]. */
 data class DeviceLink(
@@ -180,6 +254,48 @@ interface Tracker {
     val name: String
     val signInKind: SignInKind
     val privacy: PrivacySupport
+
+    /** Shown with a Beta badge. */
+    val beta: Boolean get() = signInKind == SignInKind.WEBVIEW || signInKind == SignInKind.DEVICE_CODE
+
+    /** The line under a beta service's settings (a default one is shown when null). */
+    val betaNote: String? get() = null
+
+    /** One line under its name in the list, before it's linked. */
+    val hint: String? get() = null
+
+    /** For TOKEN sign-in: where the token is made (opened from the sheet), and how it's asked for. */
+    val tokenUrl: String? get() = null
+    val tokenLabel: String get() = "API token"
+    val tokenPlaceholder: String get() = ""
+    val tokenNote: String get() = "The token is stored encrypted on this phone. You can revoke it on $name any time."
+
+    /** For SERVER sign-in. */
+    val serverLogin: ServerLogin? get() = null
+    fun signInWithServer(server: String, user: String, secret: String): SignInResult = throw UnsupportedOperationException()
+
+    /** For OAUTH sign-in: how to make the app whose client ID is asked for. */
+    val oauthHelp: String get() = ""
+    fun oauthStart(clientId: String): OAuthStart = throw UnsupportedOperationException()
+    /** Swaps the [code] the sign-in page gave for a login. */
+    fun oauthFinish(clientId: String, code: String, start: OAuthStart): SignInResult = throw UnsupportedOperationException()
+
+    /**
+     * False for a service nothing is sent to (Spotify, which only says where you are): no updates
+     * are queued or sent, it only brings positions in ([bringsPositions]).
+     */
+    val writes: Boolean get() = true
+
+    /** False when it keeps statuses only (Micro.blog's shelves, Reader's archive): no progress is sent. */
+    val takesProgress: Boolean get() = true
+
+    /**
+     * True when it can say where you are in a linked book ([position]), so reading or listening
+     * further there moves the book here (through the main-source check: asked about, unless you
+     * said to always use it).
+     */
+    val bringsPositions: Boolean get() = false
+    fun position(session: Session, link: Link): RemotePosition? = null
 
     /** True when [state] returns the remote percentage (enables never-go-backwards). */
     val readsProgress: Boolean
@@ -396,7 +512,12 @@ fun formatHighlights(entries: List<io.github.prithirajn.trackersync.source.Clipp
 
 object Trackers {
     val all: List<Tracker> =
-        listOf(HardcoverTracker, FableTracker, PageboundTracker, StoryGraphTracker, GoodreadsTracker, SeekquelTracker)
+        listOf(
+            HardcoverTracker, FableTracker, PageboundTracker, StoryGraphTracker, GoodreadsTracker, SeekquelTracker,
+            // Reading apps and servers, as crosspoint-sync connects them.
+            ReadwiseReaderTracker, BookFusionTracker, AudiobookshelfTracker, JellyfinTracker,
+            BookOrbitTracker, SpotifyTracker, ReadestTracker, MicroblogTracker,
+        )
     fun byId(id: String): Tracker? = all.firstOrNull { it.id == id }
 }
 

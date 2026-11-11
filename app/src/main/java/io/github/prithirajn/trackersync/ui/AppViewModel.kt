@@ -1076,7 +1076,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val d = io { io.github.prithirajn.trackersync.source.WebNovels.fetch(url) }
             val w = d?.web
             if (w == null) { done("Couldn't read that page; check the link, or try again later"); return@launch }
-            store.update { s -> s.copy(webNovels = s.webNovels + (document to w)) }
+            store.update { s ->
+                // The same story again keeps what's known of your copy, its feed and its books; a new one starts its copy now.
+                val had = s.webNovels[document]
+                val kept = if (had != null && io.github.prithirajn.trackersync.source.WebNovels.canonical(had.url) == url) had.refreshedFrom(w).copy(found = false)
+                    else w.copy(copyChapters = w.chapters, copyAt = System.currentTimeMillis() / 1000)
+                s.copy(webNovels = s.webNovels + (document to kept))
+            }
             detailsCache.remove(document)
             // A complete story you've read to the end is now Finished; send it again.
             io { for (t in Trackers.all) if (store.snapshot.service(t.id).let { it.linked && it.enabled }) io.github.prithirajn.trackersync.sync.SyncEngine.queue(store, t.id, listOf(document)) }
@@ -1320,6 +1326,40 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Names for books known only by KOReader's ID, from files you pick (a list of IDs and names,
      * or IDs with Calibre numbers plus a Calibre catalog). [done] gets what happened.
      */
+    /** A KOReader book known only by its ID: guesses at which book it is, from its highlights' own words. */
+    fun guessKoBook(id: String, done: (List<io.github.prithirajn.trackersync.sync.BookGuess.Candidate>?) -> Unit) {
+        viewModelScope.launch {
+            val texts = store.snapshot.koUnnamed[id]?.split('\u001F')?.drop(1).orEmpty()
+            val r = runCatching { io { io.github.prithirajn.trackersync.sync.BookGuess.guess(texts) } }.getOrNull()
+            done(r)
+        }
+    }
+
+    /** Books with a name like [query] (Hardcover, Royal Road, Google Books), to pick when naming a KOReader book. */
+    fun lookUpBookName(query: String, done: (List<io.github.prithirajn.trackersync.sync.BookGuess.Candidate>?) -> Unit) {
+        viewModelScope.launch {
+            val hc = store.snapshot.service("hardcover").takeIf { it.linked && !it.needsReauth }?.let { io.github.prithirajn.trackersync.trackers.Session(it.credential) }
+            done(runCatching { io { io.github.prithirajn.trackersync.sync.BookGuess.byName(query, hc) } }.getOrNull())
+        }
+    }
+
+    /** Names a KOReader book known only by its ID; its highlights come in with that name on the next sync (now). */
+    fun nameKoBook(id: String, title: String, author: String?) {
+        val t = title.trim()
+        if (t.isEmpty()) return
+        viewModelScope.launch {
+            io {
+                store.update { s ->
+                    s.copy(
+                        koTitles = s.koTitles + (id to (t + "\t" + (author?.trim().orEmpty()))),
+                        koUnnamed = s.koUnnamed - id,
+                    )
+                }
+            }
+            syncNow(quiet = true)
+        }
+    }
+
     fun importBookNames(uris: List<android.net.Uri>, done: (String) -> Unit) {
         viewModelScope.launch {
             val msg = try {
@@ -2419,6 +2459,221 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             if (!quiet && !told) notify(result.message, error = result.needsAttention.isNotEmpty())
+            // New highlights out to Threads, when you've turned that on.
+            io { runCatching { ThreadsAuto.run(getApplication(), store) } }
+        }
+    }
+
+    // ---- Audiobooks (Audiobookshelf, Spotify): where you're listening, calibration, Resume ----
+
+    /** The audiobook services this book is matched on (confirmed), for its Audiobook card. */
+    fun audiobookLinks(s: Snapshot, document: String): List<Pair<Tracker, io.github.prithirajn.trackersync.data.Link>> =
+        listOf(io.github.prithirajn.trackersync.trackers.AudiobookshelfTracker, io.github.prithirajn.trackersync.trackers.SpotifyTracker).mapNotNull { t ->
+            val svc = s.service(t.id)
+            val link = s.link(t.id, document)?.takeIf { it.externalId != null && it.confirmed && it.source != LinkSource.NONE }
+            if (svc.linked && link != null) t to link else null
+        }
+
+    /** The audiobook's tracks and where you're listening, from [trackerId]. */
+    fun audiobookTracks(document: String, trackerId: String, done: (io.github.prithirajn.trackersync.trackers.Anchors.Tracks?, String?) -> Unit) {
+        viewModelScope.launch {
+            val r = io {
+                runCatching {
+                    val s = store.snapshot
+                    val link = s.link(trackerId, document) ?: return@runCatching null
+                    val session = Session(s.service(trackerId).credential)
+                    val t = when (trackerId) {
+                        io.github.prithirajn.trackersync.trackers.SpotifyTracker.id -> io.github.prithirajn.trackersync.trackers.SpotifyTracker.tracks(session, link)
+                        else -> io.github.prithirajn.trackersync.trackers.AudiobookshelfTracker.tracks(session, link)
+                    }
+                    if (session.changed) store.updateService(trackerId) { it.copy(credential = session.encode()) }
+                    t
+                }
+            }
+            done(r.getOrNull(), r.exceptionOrNull()?.message)
+        }
+    }
+
+    /**
+     * "Not the right spot?": where you are now in the book matches the start of track [track] (or
+     * clears it with null), so reading and listening places map through it from now on.
+     */
+    fun calibrateAudiobook(document: String, trackerId: String, tracks: io.github.prithirajn.trackersync.trackers.Anchors.Tracks, track: Int?) {
+        viewModelScope.launch {
+            io {
+                val s = store.snapshot
+                val link = s.link(trackerId, document) ?: return@io
+                val book = s.books[document] ?: return@io
+                val id = link.externalId ?: return@io
+                val session = Session(s.service(trackerId).credential)
+                val anchor = track?.let { i ->
+                    val t = tracks.tracks.getOrNull(i) ?: return@let null
+                    val audio = if (tracks.totalMs > 0) t.startMs.toDouble() / tracks.totalMs else return@let null
+                    io.github.prithirajn.trackersync.trackers.Anchors.Anchor(book.percentage, audio)
+                }
+                io.github.prithirajn.trackersync.trackers.Anchors.set(session, id, anchor)
+                store.updateService(trackerId) { it.copy(credential = session.encode()) }
+                // Your place goes to Audiobookshelf again, through the new mapping.
+                if (trackerId != io.github.prithirajn.trackersync.trackers.SpotifyTracker.id) SyncEngine.queue(store, trackerId, listOf(document))
+            }
+            notify(if (track == null) "Back to matching by length" else "Matched: you're at the start of that track")
+        }
+    }
+
+    /** Resume in Spotify: plays from your place (or where you stopped listening, if further). [open] gets a link to open when it couldn't play itself. */
+    fun resumeSpotify(document: String, open: (String, String) -> Unit, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val S = io.github.prithirajn.trackersync.trackers.SpotifyTracker
+            val r = io {
+                runCatching {
+                    val s = store.snapshot
+                    val link = s.link(S.id, document) ?: return@runCatching null
+                    val session = Session(s.service(S.id).credential)
+                    val res = S.resume(session, link, s.books[document]?.percentage)
+                    if (session.changed) store.updateService(S.id) { it.copy(credential = session.encode()) }
+                    res
+                }
+            }
+            val res = r.getOrNull()
+            when {
+                r.isFailure -> done(r.exceptionOrNull()?.message ?: "Couldn't reach Spotify")
+                res == null -> done("Spotify has no listening place for this audiobook")
+                res.playing -> done(null)
+                else -> {
+                    // No device playing (or no Premium): Spotify opens on the track, then it's started at the spot once it shows up.
+                    open(res.appUri, res.webUrl)
+                    if (res.reason == "PREMIUM_REQUIRED") done("Spotify only lets apps start playback with Premium: opened the track, at ${res.place.chapterName}")
+                    else {
+                        val played = io { runCatching { S.playWhenDeviceAppears(Session(store.snapshot.service(S.id).credential), res.place) }.getOrDefault(false) }
+                        done(if (played) null else "Opened ${res.place.chapterName} in Spotify; press play there")
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Highlight exports: Readwise, Notion, Obsidian ----
+
+    fun connectReadwise(token: String, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val ok = io { runCatching { io.github.prithirajn.trackersync.sync.Exports.readwiseCheck(token) }.getOrDefault(false) }
+            if (ok) { io { store.update { it.copy(readwiseToken = token.trim(), exportErrors = it.exportErrors - "readwise") } }; exportNow() }
+            done(if (ok) null else "Readwise didn't accept that token. Copy it again from readwise.io/access_token.")
+        }
+    }
+
+    fun connectNotion(token: String, pageLink: String, done: (String?) -> Unit) {
+        val parent = io.github.prithirajn.trackersync.sync.Exports.notionPageId(pageLink) ?: run { done("That isn't a Notion page link. Open the page, Share › Copy link, and paste it."); return }
+        viewModelScope.launch {
+            val err = io { io.github.prithirajn.trackersync.sync.Exports.notionCheck(token, parent) }
+            if (err == null) { io { store.update { it.copy(notionToken = token.trim(), notionParent = parent, exportErrors = it.exportErrors - "notion") } }; exportNow() }
+            done(err)
+        }
+    }
+
+    fun setObsidianFolder(uri: android.net.Uri) {
+        runCatching {
+            getApplication<Application>().contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        store.update { it.copy(obsidianFolder = uri.toString(), obsidianHashes = emptyMap(), exportErrors = it.exportErrors - "obsidian") }
+        exportNow()
+    }
+
+    /** Stops an export. Already exported highlights stay where they are; [fresh] forgets what was sent, so turning it on again sends everything. */
+    fun stopExport(name: String) = store.update { s ->
+        when (name) {
+            "readwise" -> s.copy(readwiseToken = null, readwiseDone = emptySet())
+            "notion" -> s.copy(notionToken = null, notionParent = null, notionPages = emptyMap(), notionDone = emptySet())
+            else -> s.copy(obsidianFolder = null, obsidianHashes = emptyMap())
+        }.copy(exportErrors = s.exportErrors - name)
+    }
+
+    /** Brings every set-up export up to date now. */
+    fun exportNow(done: () -> Unit = {}) {
+        viewModelScope.launch {
+            io { runCatching { io.github.prithirajn.trackersync.sync.Exports.run(store) } }
+            done()
+        }
+    }
+
+    // ---- Threads ----
+
+    /** Connects your Threads account with a token from your Meta app (made long-lasting with the app's secret, when given). */
+    fun connectThreads(token: String, secret: String?, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val err = try {
+                io {
+                    var t = token.trim()
+                    if (!secret.isNullOrBlank()) t = io.github.prithirajn.trackersync.sync.ThreadsClient.exchange(t, secret.trim())
+                    val me = io.github.prithirajn.trackersync.sync.ThreadsClient.me(t)
+                    store.update { it.copy(threadsToken = t, threadsUserId = me.id, threadsUser = me.username, threadsTokenAt = System.currentTimeMillis() / 1000, threadsError = null) }
+                }
+                null
+            } catch (e: Exception) { e.message ?: "Couldn't connect to Threads" }
+            done(err)
+        }
+    }
+
+    fun disconnectThreads() = store.update { it.copy(threadsToken = null, threadsUserId = null, threadsUser = null, threadsAuto = false, threadsError = null) }
+
+    /** New highlights of this book posted to Threads by themselves (off for every book to start with). */
+    fun setThreadsForBook(document: String, on: Boolean) = ThreadsAuto.setBook(store, document, on)
+
+    fun setThreadsOptions(perDay: Int? = null, notes: Boolean? = null, withNote: Boolean? = null, anyLook: Boolean? = null, perSession: Boolean? = null, topic: String? = null, ai: Boolean? = null, aiCaptions: Boolean? = null) = store.update { s ->
+        s.copy(
+            threadsAi = ai ?: s.threadsAi, threadsAiCaptions = aiCaptions ?: s.threadsAiCaptions,
+            threadsPerSession = perSession ?: s.threadsPerSession, threadsTopic = topic ?: s.threadsTopic,
+            threadsPerDay = (perDay ?: s.threadsPerDay).coerceIn(1, 25), threadsNotes = notes ?: s.threadsNotes,
+            threadsWithNote = withNote ?: s.threadsWithNote, threadsAnyLook = anyLook ?: s.threadsAnyLook,
+        )
+    }
+
+    /**
+     * Marks the book Did not finish, where you are in it (or at [percent] when given), with your
+     * rating and why, when given. It goes to your trackers as DNF.
+     */
+    fun markDnf(document: String, percent: Int?, rating: Double?, review: String?, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val err = try {
+                io {
+                    val b = store.snapshot.books[document] ?: throw IllegalStateException("That book isn't in your library any more")
+                    if (ManualBooks.isManual(b)) {
+                        percent?.let { ManualBooks.setPercent(store, document, it) }
+                        ManualBooks.setStatus(store, document, ReadStatus.DNF)
+                    } else io.github.prithirajn.trackersync.sync.ProgressOverride.set(store, document, percent = percent, status = ReadStatus.DNF)
+                    if (rating != null || !review.isNullOrBlank()) FinishFlow.save(store, document, rating, review?.trim()?.ifBlank { null })
+                }
+                null
+            } catch (e: Exception) { e.message ?: "Couldn't mark it" }
+            if (err == null) { notify("Marked Did not finish", "It goes to your trackers now."); syncNow(quiet = true) }
+            done(err)
+        }
+    }
+
+    /** The review's slides, to see before posting. */
+    fun reviewSlides(document: String, theme: Int, done: (List<android.graphics.Bitmap>) -> Unit) {
+        viewModelScope.launch {
+            val b = store.snapshot.books[document] ?: run { done(emptyList()); return@launch }
+            done(io { runCatching { ThreadsAuto.reviewSlides(getApplication(), b, theme) }.getOrDefault(emptyList()) })
+        }
+    }
+
+    /** Posts the book's rating and review to Threads. */
+    fun postReviewToThreads(document: String, theme: Int, wording: Int, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val err = io { ThreadsAuto.postReview(getApplication(), store, document, theme, wording) }
+            if (err == null) notify("Posted to Threads", null)
+            done(err)
+        }
+    }
+
+    /** Posts your newest highlight now, to see how it looks there. */
+    fun postNewestToThreads(done: (String) -> Unit) {
+        viewModelScope.launch {
+            val newest = io.github.prithirajn.trackersync.sync.Highlights.all(store.snapshot).firstOrNull { b -> store.snapshot.books[b.clip.document]?.held != true }
+            val msg = if (newest == null) "No highlights here yet."
+                else io { runCatching { ThreadsAuto.run(getApplication(), store, only = newest.clip.id) }.getOrElse { it.message } } ?: "Nothing posted."
+            done(msg)
         }
     }
 

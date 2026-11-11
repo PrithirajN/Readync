@@ -62,6 +62,45 @@ fun WebNovelCard(vm: AppViewModel, book: Book, web: WebNovel?, grown: Boolean, e
                 if (grown) {
                     Quiet("It got longer while you read (new chapters), so its percentage is of the longer book now.", color = c.faint)
                 }
+                // Where you are in chapters, and what's out past it.
+                val at = web.chapterAt(book.percentage)
+                val behind = web.behind(book.percentage)
+                if (at != null && book.percentage > 0) {
+                    VSpace(6)
+                    Text(
+                        "About chapter $at" + (web.chapters?.let { " of $it" } ?: "") + when {
+                            behind == null -> ""
+                            behind == 0 -> " · caught up"
+                            else -> " · $behind new since your copy"
+                        },
+                        style = CpType.bodyStrong, color = if ((behind ?: 0) > 0) c.accentText else c.text,
+                    )
+                    if ((behind ?: 0) > 0 && web.copyChapters != null) Quiet("Your copy has ${web.copyChapters} chapters. Download it again to read on; it stays the same book here.", color = c.faint)
+                }
+                web.latestTitle?.let { t ->
+                    val whenText = web.latestAt?.let { a -> " · " + ago(a * 1000) } ?: ""
+                    VSpace(4)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Quiet("Newest: $t$whenText", Modifier.weight(1f), color = c.faint, maxLines = 2)
+                        web.latestUrl?.let { u -> PillButton("Open", { runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(u))) } }) }
+                    }
+                }
+                if (web.ongoing && io.github.prithirajn.trackersync.source.WebNovels.feedUrl(web.url) != null) {
+                    Quiet("While you're reading it, new chapters are checked for every few hours, with an alert (New & upcoming).", color = c.faint)
+                } else if (web.ongoing) {
+                    Quiet("While you're reading it, new chapters are checked for once a day, with an alert (New & upcoming).", color = c.faint)
+                }
+                // Published as books too.
+                web.published?.let { n ->
+                    VSpace(8)
+                    Text("Published as $n book${if (n == 1) "" else "s"}" + (web.pubSeries?.let { " ($it)" } ?: ""), style = CpType.bodyStrong, color = c.text)
+                    web.pubNext?.let { nx ->
+                        val day = web.pubNextAt?.let { d -> java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy").format(java.time.Instant.ofEpochSecond(d).atZone(java.time.ZoneId.systemDefault())) }
+                        val out = web.pubNextAt?.let { it <= System.currentTimeMillis() / 1000 } ?: false
+                        Quiet("Next: " + (web.pubNextNo?.let { "Book $it, " } ?: "") + "\u201C$nx\u201D" + (day?.let { if (out) " · out $it" else " · coming $it" } ?: ""), color = c.faint)
+                    }
+                    web.pubUrl?.let { u -> VSpace(4); PillButton("See the books", { runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(u))) } }) }
+                }
                 if (web.found && !editing) {
                     Quiet("Found by searching ${web.site}. Not this story? Tap Change.", color = c.faint)
                 }
