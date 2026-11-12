@@ -83,7 +83,7 @@ import java.util.Locale
  * the period, and everything in one card at the end. Worked out from what the app already keeps.
  */
 object Wrapped {
-    enum class Period { THIS_MONTH, LAST_MONTH, THIS_YEAR }
+    enum class Period { THIS_MONTH, LAST_MONTH, THIS_YEAR, LAST_YEAR }
 
     data class Data(
         val title: String,
@@ -91,6 +91,8 @@ object Wrapped {
         val year: Boolean,
         val days: List<Pair<LocalDate, Int>>,
         val pages: Int,
+        /** Of [pages], those counted from the page counts of finished books with no reading days logged (brought in from a history). */
+        val fromBooks: Int,
         val minutes: Int,
         val readingDays: Int,
         val longestStreak: Int,
@@ -112,6 +114,7 @@ object Wrapped {
             Period.THIS_MONTH -> today.withDayOfMonth(1) to today
             Period.LAST_MONTH -> YearMonth.from(today).minusMonths(1).let { it.atDay(1) to it.atEndOfMonth() }
             Period.THIS_YEAR -> today.withDayOfYear(1) to today
+            Period.LAST_YEAR -> today.minusYears(1).withDayOfYear(1).let { it to it.withDayOfYear(it.lengthOfYear()) }
         }
         fun day(sec: Long?) = sec?.takeIf { it > 0 }?.let { Instant.ofEpochSecond(it).atZone(zone).toLocalDate() }
         fun inside(d: LocalDate?) = d != null && !d.isBefore(from) && !d.isAfter(to)
@@ -120,7 +123,8 @@ object Wrapped {
         var streak = 0; var best = 0
         for ((_, p) in days) { if (p > 0) { streak++; best = maxOf(best, streak) } else streak = 0 }
         val byWeekday = days.filter { it.second > 0 }.groupBy({ it.first.dayOfWeek }, { it.second }).mapValues { it.value.sum() }
-        val books = s.books.values.filter { !it.held }
+        // Books brought in from a tracker's history count too: held only means they aren't sent anywhere.
+        val books = s.books.values.toList()
         val finished = books.filter { it.status == ReadStatus.FINISHED && inside(day(it.finishedAt ?: it.timestamp)) }
             .sortedBy { it.finishedAt ?: it.timestamp }
         val fastest = finished.mapNotNull { b ->
@@ -133,13 +137,16 @@ object Wrapped {
             ?: clips.firstOrNull()
         val topAuthor = finished.mapNotNull { it.author?.takeIf { a -> a.isNotBlank() } }.groupingBy { it }.eachCount()
             .maxByOrNull { it.value }?.takeIf { it.value >= 2 }?.toPair()
+        // Finished books with no reading days here (brought in from a history): their whole page count, in the month they were finished.
+        val fromBooks = finished.filter { s.readingDays[it.document].isNullOrEmpty() }.sumOf { it.pageCount ?: 0 }
         val monthName = from.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
         return Data(
-            title = if (period == Period.THIS_YEAR) "Your ${from.year} in reading" else "Your $monthName in reading",
-            short = if (period == Period.THIS_YEAR) "${from.year}" else "$monthName ${from.year}",
-            year = period == Period.THIS_YEAR,
+            title = if (period == Period.THIS_YEAR || period == Period.LAST_YEAR) "Your ${from.year} in reading" else "Your $monthName in reading",
+            short = if (period == Period.THIS_YEAR || period == Period.LAST_YEAR) "${from.year}" else "$monthName ${from.year}",
+            year = (period == Period.THIS_YEAR || period == Period.LAST_YEAR),
             days = days,
-            pages = days.sumOf { it.second },
+            pages = days.sumOf { it.second } + fromBooks,
+            fromBooks = fromBooks,
             minutes = minutes,
             readingDays = days.count { it.second > 0 },
             longestStreak = best,
@@ -199,15 +206,17 @@ object Wrapped {
         // 2. Pages: the big number, the days and hours, and a bar for every day.
         if (d.pages > 0) slide { cv ->
             Ink.line(cv, "YOU READ", 96f, 300f, f.mono, 30f, Ink.DIM, W - 192f, spacing = 0.16f)
-            Ink.line(cv, num.format(d.pages), 96f, 560f, f.pixel, 280f, Ink.SIGNAL, W - 192f)
+            Ink.bigNumber(cv, num.format(d.pages), 88f, 560f, 270f, W - 176f, Ink.SIGNAL, f.interBold)
             Ink.line(cv, "pages", 100f, 660f, f.interBold, 64f, Ink.TEXT, W - 192f)
             val sub = listOfNotNull(
-                "on ${d.readingDays} day${if (d.readingDays == 1) "" else "s"}",
+                d.readingDays.takeIf { it > 0 }?.let { "on $it day${if (it == 1) "" else "s"}" },
+                d.fromBooks.takeIf { it > 0 }?.let { "${num.format(it)} from finished books' page counts" },
                 d.minutes.takeIf { it >= 60 }?.let { "about ${Math.round(it / 60.0)} hours" },
                 (d.pages / d.days.size.coerceAtLeast(1)).takeIf { it > 0 }?.let { "$it a day on average" },
             ).joinToString(" · ")
             Ink.line(cv, sub, 100f, 740f, f.inter, 38f, Ink.DIM, W - 200f)
             // A bar per day (or per week, over a year).
+            if (d.pages - d.fromBooks > 0) {
             val bars = if (d.year) d.days.chunked(7).map { w -> w.first().first to w.sumOf { it.second } } else d.days
             val max = (bars.maxOfOrNull { it.second } ?: 1).coerceAtLeast(1)
             val left = 96f; val right = W - 96f; val base = 1500f; val top = 950f
@@ -219,6 +228,7 @@ object Wrapped {
                     color = if (p == 0) 0xFF1E1E1C.toInt() else if (d.bestDay?.second == p && !d.year) Ink.SIGNAL else Ink.alpha(Ink.SIGNAL, 150)
                 })
             }
+            }
             d.bestDay?.let { (day, p) ->
                 Ink.line(cv, "Best day: ${day.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault())} ${day.dayOfMonth} ${day.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())}, $p pages", 96f, 1580f, f.inter, 34f, Ink.TEXT, W - 192f)
             }
@@ -227,7 +237,7 @@ object Wrapped {
         // 3. The rhythm: your longest streak and the day you read most.
         if (d.longestStreak >= 2 || d.favouriteDay != null) slide(0.5f) { cv ->
             Ink.line(cv, "LONGEST STREAK", 96f, 330f, f.mono, 30f, Ink.DIM, W - 192f, spacing = 0.16f)
-            Ink.line(cv, "${d.longestStreak}", 96f, 640f, f.pixel, 340f, Ink.SIGNAL, W - 192f)
+            Ink.bigNumber(cv, "${d.longestStreak}", 84f, 640f, 330f, W - 176f, Ink.SIGNAL, f.interBold)
             Ink.line(cv, "days in a row", 100f, 740f, f.interBold, 60f, Ink.TEXT, W - 192f)
             // A light per day of the streak, in rows of seven.
             val n = d.longestStreak.coerceAtMost(35)
@@ -323,7 +333,7 @@ object Wrapped {
                 val x = panel.left + 70f + (i % 2) * (panel.width() / 2)
                 val y = panel.top + 120f + (i / 2) * 300f
                 Ink.line(cv, k.uppercase(), x, y, f.mono, 28f, Ink.DIM, panel.width() / 2 - 90f, spacing = 0.14f)
-                Ink.line(cv, v, x, y + 170f, f.pixel, 150f, if (i == 0) Ink.SIGNAL else Ink.TEXT, panel.width() / 2 - 90f)
+                Ink.bigNumber(cv, v, x - 4f, y + 160f, 140f, panel.width() / 2 - 90f, if (i == 0) Ink.SIGNAL else Ink.TEXT, f.interBold)
             }
             Ink.line(cv, "Started ${d.started} · finished ${d.finished.size}", W / 2f, 1620f, f.inter, 36f, Ink.DIM, W - 192f, Paint.Align.CENTER)
         }
@@ -368,7 +378,7 @@ fun WrappedSheet(state: Snapshot, start: Wrapped.Period = Wrapped.Period.THIS_MO
         fill.animateTo(1f, tween(((1f - fill.value) * 6000).toInt().coerceAtLeast(1), easing = LinearEasing))
         if (at < n - 1) at++
     }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         DarkGadget {
             val c = Cp.colors
             Column(Modifier.fillMaxSize().background(c.page).windowInsetsPadding(WindowInsets.safeDrawing)) {
@@ -376,7 +386,7 @@ fun WrappedSheet(state: Snapshot, start: Wrapped.Period = Wrapped.Period.THIS_MO
                 Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconCircleButton(io.github.prithirajn.trackersync.R.drawable.lucide_x, "Close", onClose, tint = c.text)
                     Spacer(Modifier.width(10.dp))
-                    Segmented(Wrapped.Period.entries, period, { when (it) { Wrapped.Period.THIS_MONTH -> "This month"; Wrapped.Period.LAST_MONTH -> "Last month"; Wrapped.Period.THIS_YEAR -> "This year" } }, { period = it }, Modifier.weight(1f))
+                    Segmented(Wrapped.Period.entries, period, { when (it) { Wrapped.Period.THIS_MONTH -> "This month"; Wrapped.Period.LAST_MONTH -> "Last month"; Wrapped.Period.THIS_YEAR -> "${java.time.LocalDate.now().year}"; Wrapped.Period.LAST_YEAR -> "${java.time.LocalDate.now().year - 1}" } }, { period = it }, Modifier.weight(1f))
                 }
                 val list = slides
                 // The bars: one per slide, filled for those seen, filling for this one.

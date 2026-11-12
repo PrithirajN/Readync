@@ -42,7 +42,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PlainSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
+internal fun PlainSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
@@ -118,6 +118,8 @@ fun ReviewPostSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -
     var slides by remember { mutableStateOf<List<Bitmap>?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var recap by remember { mutableStateOf(false) }
+    if (recap) { BookRecapSheet(vm, state, book, onClose); return }
     LaunchedEffect(theme, book.rating, book.review) { slides = null; vm.reviewSlides(book.document, theme) { slides = it } }
     PlainSheet(if (book.status == ReadStatus.DNF) "Post your verdict?" else "Post your review?", onClose) {
         Quiet("To @${state.threadsUser ?: "you"} on Threads.", color = c.faint)
@@ -144,6 +146,10 @@ fun ReviewPostSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -
             busy = true; error = null
             vm.postReviewToThreads(book.document, theme, wording) { e -> busy = false; if (e == null) onClose() else error = e }
         }, busy = busy, enabled = list != null && (book.rating != null || !book.review.isNullOrBlank()))
+        if (book.status == ReadStatus.FINISHED) {
+            VSpace(8)
+            BigButton("\u2726 Or a recap: video & stats carousel", { recap = true }, look = KeyKind.INK)
+        }
         VSpace(8)
         BigButton("Not now", onClose, filled = false)
     }

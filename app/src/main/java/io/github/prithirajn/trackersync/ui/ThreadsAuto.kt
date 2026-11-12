@@ -372,6 +372,33 @@ object ThreadsAuto {
     }
 
     /**
+     * A finished book's recap pictures as one carousel post, in order, with [text] as the words.
+     * The pictures are left as they are (the sheet still shows them). Null when posted, else what went wrong.
+     */
+    fun postRecap(context: Context, store: Store, document: String, slides: List<Bitmap>, text: String, passage: String?): String? {
+        val s = store.snapshot
+        val book = s.books[document] ?: return "That book isn't here any more."
+        val token = s.threadsToken ?: return "Connect Threads first (Services \u203A Threads)."
+        val user = s.threadsUserId ?: return "Connect Threads first (Services \u203A Threads)."
+        if (slides.size < 2) return "Not enough to post yet."
+        return try {
+            val alt = "Reading recap of " + book.displayTitle + ". "
+            val images = slides.take(20).mapIndexed { i, bmp ->
+                val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+                ThreadsClient.upload(png) to (alt + "Picture ${i + 1} of ${slides.size}.")
+            }
+            val spoiler = spoils(s, book, listOfNotNull(passage, book.review?.let { QuoteCard.cleanReview(it) }).filter { it.isNotBlank() })
+            ThreadsClient.postCarousel(user, token, text.take(480), images, topic(store, book), spoiler)
+            store.update { it.copy(threadsError = null) }
+            store.log(null, "Posted your recap of \u201C${book.displayTitle}\u201D to Threads")
+            null
+        } catch (e: Exception) {
+            val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
+            if (signIn) "Threads needs a new token: paste one under Services \u203A Threads." else (e.message ?: "Couldn't post to Threads")
+        }
+    }
+
+    /**
      * One session up: alone, a single card with your note as the words (as [run] does for one);
      * together, a card each in different layouts, in the order they were made, your notes on their
      * cards. Returns null when posted, else what went wrong (its highlights tried again next time).

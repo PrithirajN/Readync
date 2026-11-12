@@ -75,7 +75,7 @@ object ShelfPoster {
     private fun yearOf(b: Book, zone: ZoneId) = (b.finishedAt ?: b.timestamp).takeIf { it > 0 }?.let { Instant.ofEpochSecond(it).atZone(zone).year }
 
     fun finished(s: Snapshot, year: Int?, zone: ZoneId = ZoneId.systemDefault()): List<Book> =
-        s.books.values.filter { it.status == ReadStatus.FINISHED && !it.held && (year == null || yearOf(it, zone) == year) }
+        s.books.values.filter { it.status == ReadStatus.FINISHED && (year == null || yearOf(it, zone) == year) }
             .sortedBy { it.finishedAt ?: it.timestamp }
 
     fun draw(context: Context, books: List<Book>, year: Int, style: Style, w: Int, h: Int): Bitmap {
@@ -192,7 +192,7 @@ fun ShelfPosterSheet(state: Snapshot, onClose: () -> Unit) {
         value = null
         value = withContext(Dispatchers.Default) { runCatching { ShelfPoster.draw(context, books, year, style, w, h) }.getOrNull() }
     }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         DarkGadget {
             val c = Cp.colors
             Column(Modifier.fillMaxSize().background(c.page).windowInsetsPadding(WindowInsets.safeDrawing)) {

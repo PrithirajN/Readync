@@ -829,6 +829,7 @@ private fun BookSheet(
     var tidying by remember { mutableStateOf(false) }
     var timing by remember { mutableStateOf(false) }
     var whoIs by remember { mutableStateOf(false) }
+    var recap by remember { mutableStateOf(false) }
     val openHistory = remember { androidx.compose.runtime.mutableStateListOf<String>() }
     // A book brought in from a tracker or Kindle goes to the others, not back to where it came from.
     val origin = book.origin?.let { Trackers.byId(it) }
@@ -841,8 +842,15 @@ private fun BookSheet(
     LaunchedEffect(book.document) { vm.loadDetails(book.document) }
     LaunchedEffect(Unit) { vm.loadHighlights() }
     val c = Cp.colors
+    // The whole page takes this book's colour: its wallpaper, keys, lights and lit segments.
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val bookSeed by androidx.compose.runtime.produceState<Int?>(null, book.coverUrl) {
+        value = book.coverUrl?.let { u -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { CoverAccent.of(appContext, u) }.getOrNull() } }
+    }
+    io.github.prithirajn.trackersync.ui.theme.AccentTheme(bookSeed) {
     ModalBottomSheet(
-        dragHandle = { SheetGrip() },
+        // The grip is drawn on the book's wallpaper instead, so the colour runs right to the top.
+        dragHandle = null,
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -859,13 +867,10 @@ private fun BookSheet(
             val facts = state.facts[book.document]
             // The book as a little device on a wallpaper in its cover's colours: a dark screen with
             // the title, the cover and your place rolling up in pixel digits, and keys under it.
-            val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
-            val bookSeed by androidx.compose.runtime.produceState<Int?>(null, book.coverUrl) {
-                value = book.coverUrl?.let { u -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { CoverAccent.of(appContext, u) }.getOrNull() } }
-            }
             Box(Modifier.fillMaxWidth()) {
-                io.github.prithirajn.trackersync.ui.theme.AccentTheme(bookSeed) { Wallpaper(height = 300.dp) }
+                Wallpaper(height = 340.dp)
                 Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp)) {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { SheetGrip() }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         DeviceLabel(
                             listOfNotNull(
@@ -1002,6 +1007,10 @@ private fun BookSheet(
                         BigButton("\u23F1 Start a reading session", { timing = true }, Modifier.weight(1.4f), look = KeyKind.INK)
                         if (aiReady && book.percent in 1..99) BigButton("Who's this?", { whoIs = true }, Modifier.weight(1f), filled = false)
                     }
+                } else {
+                    // Finished: the book told in numbers, as a video or a carousel to post.
+                    VSpace(12)
+                    BigButton("\u2726 Book recap: video & carousel", { recap = true }, look = KeyKind.INK)
                 }
                     // Where the position comes from, how the reading went, and what's linked to it.
                 // Where this book's position is trusted from, and the others by rank.
@@ -1133,6 +1142,7 @@ private fun BookSheet(
             }
         }
     }
+    }
     searching?.let { t ->
         // Not on that tracker at all: from the search, add it there from the book's details.
         val canAdd = t.addsBooks && state.link(t.id, book.document)?.externalId == null
@@ -1146,6 +1156,7 @@ private fun BookSheet(
     if (tidying) AiDescriptionSheet(vm, book) { tidying = false }
     if (timing) ReadingTimerSheet(vm, book) { timing = false }
     if (whoIs) WhoIsSheet(vm, book) { whoIs = false }
+    if (recap) BookRecapSheet(vm, state, state.books[book.document] ?: book) { recap = false }
     if (updating) UpdateProgressSheet(vm, book) { updating = false }
     addingTo?.let { first -> AddToTrackerSheet(vm, book, first) { addingTo = null } }
     bookAction?.let { a ->

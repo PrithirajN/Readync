@@ -2667,6 +2667,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Posts a finished book's recap pictures to Threads as one carousel. */
+    fun postRecapToThreads(document: String, slides: List<android.graphics.Bitmap>, text: String, passage: String?, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val err = io { ThreadsAuto.postRecap(getApplication(), store, document, slides, text, passage) }
+            if (err == null) notify("Posted to Threads", null)
+            done(err)
+        }
+    }
+
     /** Posts your newest highlight now, to see how it looks there. */
     fun postNewestToThreads(done: (String) -> Unit) {
         viewModelScope.launch {

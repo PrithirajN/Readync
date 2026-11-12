@@ -75,7 +75,7 @@ fun ReadingTimerSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
     fun pause() { if (running) { banked += System.currentTimeMillis() - since; running = false } }
     fun resume() { if (!running) { since = System.currentTimeMillis(); running = true } }
 
-    Dialog(onDismissRequest = { if (secs < 5) onClose() else { pause(); finishing = true } }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    Dialog(onDismissRequest = { if (secs < 5) onClose() else { pause(); finishing = true } }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         DarkGadget {
             val c = Cp.colors
             Column(Modifier.fillMaxSize().background(c.page).windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 16.dp)) {

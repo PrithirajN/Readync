@@ -297,9 +297,48 @@ object FableTracker : Tracker {
             val r = runCatching { request(session, "GET", path) }.getOrNull() ?: continue
             if (!r.ok) continue
             val o = runCatching { org.json.JSONTokener(r.body).nextValue() }.getOrNull() ?: continue
-            findPercent(o)?.let { return it }
+            // Only your own reading progress: the book's page has other percentages on it too
+            // (readers' stats, ratings), and the first of those isn't yours.
+            yourPercent(o)?.let { return it }
         }
         return null
+    }
+
+    /**
+     * The percentage in your reading progress on a Fable book: inside its reading_progress object
+     * (as current_percentage, the field the app writes), else a current_percentage anywhere.
+     * Null when there's none, rather than another number on the page.
+     */
+    private fun yourPercent(root: Any?): Int? {
+        fun pct(v: Any?): Int? = when (v) {
+            is Number -> v.toDouble()
+            is String -> v.toDoubleOrNull()
+            else -> null
+        }?.takeIf { it in 0.0..100.0 }?.let { Math.round(it).toInt() }
+        fun find(v: Any?, depth: Int, inProgress: Boolean): Int? {
+            if (depth > 8) return null
+            when (v) {
+                is JSONObject -> {
+                    if (inProgress) for (k in listOf("current_percentage", "percentage", "percent", "progress_percentage")) pct(v.opt(k))?.let { return it }
+                    for (k in v.keys()) {
+                        val key = k.lowercase()
+                        if (key.contains("reading_progress") || key == "progress" || key == "user_progress") find(v.opt(k), depth + 1, true)?.let { return it }
+                    }
+                    for (k in v.keys()) find(v.opt(k), depth + 1, inProgress)?.let { return it }
+                }
+                is JSONArray -> for (i in 0 until v.length()) find(v.opt(i), depth + 1, inProgress)?.let { return it }
+            }
+            return null
+        }
+        fun anywhere(v: Any?, depth: Int): Int? {
+            if (depth > 8) return null
+            when (v) {
+                is JSONObject -> { pct(v.opt("current_percentage"))?.let { return it }; for (k in v.keys()) anywhere(v.opt(k), depth + 1)?.let { return it } }
+                is JSONArray -> for (i in 0 until v.length()) anywhere(v.opt(i), depth + 1)?.let { return it }
+            }
+            return null
+        }
+        return find(root, 0, false) ?: anywhere(root, 0)
     }
 
     override fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility) {

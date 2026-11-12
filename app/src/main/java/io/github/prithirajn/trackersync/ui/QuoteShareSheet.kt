@@ -380,32 +380,15 @@ fun QuoteShareSheet(
             }, look = KeyKind.INK, enabled = bmp != null)
             Confetti(burst, Modifier.matchParentSize())
             }
-            // The passage as a short video: it types itself onto a page under its cover.
+            // The passage as a short video, made in the video studio.
             VSpace(8)
-            val scope = androidx.compose.runtime.rememberCoroutineScope()
-            var making by remember { mutableStateOf<Float?>(null) }
-            var video by remember(content.text, content.note, size) { mutableStateOf<java.io.File?>(null) }
-            if (video == null) {
-                BigButton(making?.let { "Making the video\u2026 ${(it * 100).toInt()}%" } ?: "\u25B6 Make it a video", {
-                    if (making == null) scope.launch {
-                        making = 0f
-                        val made = withContext(Dispatchers.Default) {
-                            runCatching {
-                                val cover = book?.coverUrl?.let { u -> runCatching { CoverCache.load(context, u, 1200) }.getOrNull() }
-                                QuoteVideo.make(context, QuoteVideo.Input(content.text, content.note, content.title, content.author, content.where, cover, story = size == QuoteCard.Size.STORY)) { p -> making = p }
-                            }.getOrNull()
-                        }
-                        making = null
-                        video = made
-                        said = if (made == null) "Couldn't make a video on this phone." else "Your video is ready."
-                    }
-                }, filled = false, busy = false)
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BigButton("Share video", { video?.let { runCatching { QuoteVideo.share(context, it, plain) } } }, Modifier.weight(1f), look = KeyKind.INK)
-                    BigButton("Save video", { video?.let { said = if (QuoteVideo.save(context, it)) "Saved to Movies \u203A ${io.github.prithirajn.trackersync.Edition.name}." else "Couldn't save here; use Share instead." } }, Modifier.weight(1f), filled = false)
-                }
+            var filming by remember { mutableStateOf(false) }
+            var filmCover by remember { mutableStateOf<Bitmap?>(null) }
+            LaunchedEffect(book?.coverUrl) {
+                filmCover = withContext(Dispatchers.IO) { book?.coverUrl?.let { u -> runCatching { CoverCache.load(context, u, 1200) }.getOrNull() } }
             }
+            BigButton("\u25B6 Make it a video", { filming = true }, filled = false)
+            if (filming) VideoStudio(QuoteVideo.Input(content.text, content.note, content.title, content.author, content.where, filmCover), plain) { filming = false }
             said?.let { VSpace(8); AnimatedQuiet(it, color = c.faint) }
             VSpace(12)
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {

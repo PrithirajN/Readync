@@ -187,6 +187,12 @@ fun RateSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit
     var spoilersFor by remember { mutableStateOf("") }
     // Saved, for a book finished or stopped, with Threads connected: offered to post it there.
     var offerThreads by remember { mutableStateOf(false) }
+    // Saved, for a finished book without Threads: offered a recap to share anywhere.
+    var offerRecap by remember { mutableStateOf(false) }
+    if (offerRecap) {
+        RecapOfferSheet(vm, state, state.books[book.document] ?: book) { onClose() }
+        return
+    }
     if (offerThreads) {
         ReviewPostSheet(vm, state, state.books[book.document] ?: book) { onClose() }
         return
@@ -295,7 +301,13 @@ fun RateSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit
             busy = true
             vm.saveReview(book.document, rating, review) { err ->
                 busy = false
-                if (err == null) { if (state.threadsToken != null && ThreadsAuto.canReview(book)) offerThreads = true else onClose() }
+                if (err == null) {
+                    when {
+                        state.threadsToken != null && ThreadsAuto.canReview(book) -> offerThreads = true
+                        book.status == io.github.prithirajn.trackersync.data.ReadStatus.FINISHED -> offerRecap = true
+                        else -> onClose()
+                    }
+                }
             }
         }, busy = busy, enabled = rating != null || review.isNotBlank())
         VSpace(8)

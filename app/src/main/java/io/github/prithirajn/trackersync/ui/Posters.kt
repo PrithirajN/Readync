@@ -78,6 +78,46 @@ internal object Ink {
 
     // ---- drawing ----
 
+    /**
+     * A soft, smooth blur of [src] for a background: a small copy (made in halving steps, so it
+     * averages instead of skipping pixels), box-blurred three times each way (close to a true
+     * gaussian, with no blocks), to be drawn large with filtering.
+     */
+    fun softBlur(src: Bitmap, width: Int = 180, radius: Int = 7): Bitmap {
+        var cur = src
+        while (cur.width / 2 >= width) {
+            val next = Bitmap.createScaledBitmap(cur, cur.width / 2, (cur.height / 2).coerceAtLeast(1), true)
+            if (cur !== src) cur.recycle()
+            cur = next
+        }
+        val w = width
+        val h = (width.toFloat() * cur.height / cur.width).toInt().coerceAtLeast(2)
+        val small = Bitmap.createScaledBitmap(cur, w, h, true)
+        if (cur !== src && cur !== small) cur.recycle()
+        val px = IntArray(w * h)
+        small.getPixels(px, 0, w, 0, 0, w, h)
+        val tmp = IntArray(w * h)
+        fun pass(from: IntArray, to: IntArray, horizontal: Boolean) {
+            val len = if (horizontal) w else h
+            val lines = if (horizontal) h else w
+            for (line in 0 until lines) {
+                var sr = 0; var sg = 0; var sb = 0
+                fun at(i: Int): Int { val k = i.coerceIn(0, len - 1); return if (horizontal) from[line * w + k] else from[k * w + line] }
+                for (i in -radius..radius) { val p = at(i); sr += r(p); sg += g(p); sb += b(p) }
+                val n = radius * 2 + 1
+                for (i in 0 until len) {
+                    val idx = if (horizontal) line * w + i else i * w + line
+                    to[idx] = argb(255, sr / n, sg / n, sb / n)
+                    val add = at(i + radius + 1); val drop = at(i - radius)
+                    sr += r(add) - r(drop); sg += g(add) - g(drop); sb += b(add) - b(drop)
+                }
+            }
+        }
+        repeat(3) { pass(px, tmp, true); pass(tmp, px, false) }
+        small.setPixels(px, 0, w, 0, 0, w, h)
+        return small
+    }
+
     /** [cover] filling [dst] (cropped to fit), with rounded corners when [radius] is given. */
     fun drawCover(cv: Canvas, cover: Bitmap, dst: RectF, radius: Float = 0f, alpha: Int = 255) {
         val sh = BitmapShader(cover, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
@@ -149,6 +189,14 @@ internal object Ink {
         if (t.isNullOrBlank()) return
         val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = face; textSize = size; this.color = color; textAlign = align; letterSpacing = spacing }
         cv.drawText(TextUtils.ellipsize(t, p, maxW, TextUtils.TruncateAt.END).toString(), x, y, p)
+    }
+
+    /** A big number, heavy and tight like a poster's, shrunk if need be to fit [maxW] (never cut off). */
+    fun bigNumber(cv: Canvas, t: String, x: Float, baseline: Float, size: Float, maxW: Float, color: Int, face: Typeface) {
+        val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = face; textSize = size; this.color = color; letterSpacing = -0.045f }
+        val w = p.measureText(t)
+        if (w > maxW) p.textSize = size * maxW / w
+        cv.drawText(t, x, baseline, p)
     }
 
     /** The app's name, small, as a mark at the foot of a picture. */

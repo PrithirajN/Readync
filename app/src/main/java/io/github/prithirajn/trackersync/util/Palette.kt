@@ -89,6 +89,36 @@ object Palette {
      * The app's accent set from a cover colour, at the same lightness the default green uses
      * in each theme, so text on it stays readable whatever the cover.
      */
+    /**
+     * A bright signal colour from a cover, for keys, lights and lit segments: the cover's hue made
+     * vivid (as the device's orange is), dark enough for white writing on it. Null for a cover with
+     * hardly any colour, which keeps the orange.
+     */
+    fun signalFrom(seed: Int, dark: Boolean): Accent? {
+        val (h, s0, _) = toHsl(seed)
+        if (s0 < 0.14f) return null
+        val s = (s0 * 1.25f).coerceIn(0.62f, 0.92f)
+        // Yellows and greens read light, so they sit a little darker to keep white writing clear.
+        val l = when (h) {
+            in 40f..175f -> if (dark) 0.5f else 0.44f
+            else -> if (dark) 0.6f else 0.55f
+        }
+        return if (dark) Accent(
+            accent = fromHsl(h, s, l),
+            text = fromHsl(h, s * 0.9f, 0.72f),
+            tint = fromHsl(h, s * 0.5f, 0.13f),
+            ring = fromHsl(h, s * 0.6f, 0.3f),
+        ) else Accent(
+            accent = fromHsl(h, s, l),
+            text = fromHsl(h, s * 0.9f, 0.36f),
+            tint = fromHsl(h, s * 0.6f, 0.94f),
+            ring = fromHsl(h, s * 0.6f, 0.78f),
+        )
+    }
+
+    /** The colour a little deeper, for the ledge under a signal key. */
+    fun deeper(argb: Int): Int { val (h, s, l) = toHsl(argb); return fromHsl(h, s, (l - 0.17f).coerceAtLeast(0.08f)) }
+
     fun accentFrom(seed: Int, dark: Boolean): Accent {
         val (h, s0, _) = toHsl(seed)
         val s = s0.coerceIn(0.32f, 0.72f)

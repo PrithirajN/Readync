@@ -196,16 +196,26 @@ object Cp {
 }
 
 /**
- * The cover of the book you're reading colours the wallpaper behind the device ([CpColors.wall]),
- * easing from the old colour to the new. The accent stays the device's signal orange.
+ * The book you're reading colours the device: the wallpaper behind it ([CpColors.wall]) and the
+ * signal colour of its keys, lights and lit segments, both easing from the old colour to the new.
+ * A cover with hardly any colour (black, white, grey) keeps the signal orange.
  */
 @Composable
 fun AccentTheme(seed: Int?, content: @Composable () -> Unit) {
     val base = LocalCp.current
     val set = seed?.let { Palette.accentFrom(it, base.isDark) }
-    val wall by animateColorAsState(set?.let { Color(it.accent) } ?: base.wall, tween(durationMillis = 900), label = "wall")
-    CompositionLocalProvider(LocalCp provides base.copy(wall = wall)) {
-        MaterialTheme(colorScheme = MaterialTheme.colorScheme, content = content)
+    val signal = seed?.let { Palette.signalFrom(it, base.isDark) }
+    val ease = tween<Color>(durationMillis = 900)
+    val wall by animateColorAsState(set?.let { Color(it.accent) } ?: base.wall, ease, label = "wall")
+    val accent by animateColorAsState(signal?.let { Color(it.accent) } ?: base.accent, ease, label = "accent")
+    val accentText by animateColorAsState(signal?.let { Color(it.text) } ?: base.accentText, ease, label = "accentText")
+    val accentTint by animateColorAsState(signal?.let { Color(it.tint) } ?: base.accentTint, ease, label = "accentTint")
+    val accentRing by animateColorAsState(signal?.let { Color(it.ring) } ?: base.accentRing, ease, label = "accentRing")
+    val ledge by animateColorAsState(signal?.let { Color(Palette.deeper(it.accent)) } ?: base.signalLedge, ease, label = "ledge")
+    CompositionLocalProvider(
+        LocalCp provides base.copy(wall = wall, accent = accent, accentText = accentText, accentTint = accentTint, accentRing = accentRing, signalLedge = ledge),
+    ) {
+        MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = accent), content = content)
     }
 }
 
