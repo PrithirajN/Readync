@@ -111,7 +111,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     }
 
     AccentTheme(seed) {
-    CompositionLocalProvider(LocalAnimationsOn provides rememberAnimationsOn()) {
+    CompositionLocalProvider(LocalAnimationsOn provides rememberAnimationsOn(), LocalToasts provides vm) {
     Box(
         Modifier
             .fillMaxSize()
@@ -248,9 +248,22 @@ private fun TabBar(current: Tab, onSelect: (Tab) -> Unit) {
     }
 }
 
+/**
+ * The view model whose messages pop up as toasts. Sheets (their own windows, over the app) show
+ * them too with [SheetToaster], so what you just did is answered where you are.
+ */
+internal val LocalToasts = androidx.compose.runtime.compositionLocalOf<AppViewModel?> { null }
+
+/** The toast inside a sheet, at its bottom (call it last, in a Box filling the sheet). */
+@Composable
+internal fun androidx.compose.foundation.layout.BoxScope.SheetToaster() {
+    val vm = LocalToasts.current ?: return
+    Toaster(vm, Modifier.align(Alignment.BottomCenter), bottom = 16.dp)
+}
+
 /** Rise-and-fade toast, like the companion app's Toaster. */
 @Composable
-private fun Toaster(vm: AppViewModel, modifier: Modifier) {
+internal fun Toaster(vm: AppViewModel, modifier: Modifier, bottom: androidx.compose.ui.unit.Dp = 80.dp) {
     val toast by vm.toast.collectAsState()
     LaunchedEffect(toast?.id) {
         val t = toast
@@ -266,7 +279,7 @@ private fun Toaster(vm: AppViewModel, modifier: Modifier) {
         exit = fadeOut(Motion.fast()) + slideOutVertically(Motion.fast()) { it / 4 },
         modifier = modifier
             .navigationBarsPadding()
-            .padding(start = 16.dp, end = 16.dp, bottom = 80.dp),
+            .padding(start = 16.dp, end = 16.dp, bottom = bottom),
     ) {
         val t = toast ?: return@AnimatedVisibility
         val c = Cp.colors

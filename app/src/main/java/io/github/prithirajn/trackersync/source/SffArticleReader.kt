@@ -831,6 +831,15 @@ object SffArticleReader {
         return s
     }
 
+    /** The body without a heading at its very top that only repeats the article's title (shown above it already). */
+    internal fun withoutRepeatedTitle(body: String, vararg titles: String?): String {
+        val m = Regex("(?is)^\\s*<(h[1-4])\\b[^>]*>(.*?)</\\1>\\s*").find(body) ?: return body
+        fun norm(t: String) = Html.text(t).lowercase().filter { it.isLetterOrDigit() }
+        val h = norm(m.groupValues[2])
+        if (h.isEmpty()) return body
+        return if (titles.any { it != null && norm(it) == h }) body.substring(m.range.last + 1) else body
+    }
+
     /** Retains only safe inline formatting tags (`<strong>`, `<b>`, `<em>`, `<i>`, `<code>`, `<a href>`, `<br>`). */
     private fun cleanInlineHtml(raw: String): String {
         var s = raw
@@ -1074,7 +1083,7 @@ object SffArticleReader {
                     <div class="meta">$meta</div>
                     $summaryHtml
                     <div class="body">
-                        ${article.bodyHtml}
+                        ${withoutRepeatedTitle(article.bodyHtml, article.title, item.title)}
                     </div>
                     <div class="end">◆</div>
                 </article>
@@ -1085,7 +1094,7 @@ object SffArticleReader {
                         var ps = document.querySelectorAll('.body p');
                         for (var i = 0; i < ps.length && i < 6; i++) {
                             var t = (ps[i].textContent || '').trim();
-                            if (t.length >= 160 && /^[A-Za-z“"']/.test(t) && !/^(buy|order|pre-?order|format\/info|official)\b/i.test(t) && !ps[i].querySelector('img')) { ps[i].classList.add('lede'); break; }
+                            var first = ps[i].firstElementChild; var labelled = first && /^(B|STRONG)$/.test(first.tagName) && t.indexOf((first.textContent || '').trim()) === 0; if (t.length >= 160 && /^[A-Za-z“"']/.test(t) && !labelled && !/^[A-Z][A-Z0-9 \/&'-]{2,40}:/.test(t) && !/^(buy|order|pre-?order|format\/info|official)\b/i.test(t) && !ps[i].querySelector('img')) { ps[i].classList.add('lede'); break; }
                         }
                         // Tables scroll on their own instead of pushing the page wide.
                         document.querySelectorAll('.body table').forEach(function (t) {

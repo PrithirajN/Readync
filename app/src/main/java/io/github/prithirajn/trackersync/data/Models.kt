@@ -1323,6 +1323,35 @@ data class PricePoint(
 }
 
 /**
+ * One listing of a book at a store, for choosing between editions: its page, format, edition
+ * (deluxe, special…), publisher, page count and price when it was found.
+ */
+data class PriceListing(
+    val store: String,
+    val url: String,
+    val title: String? = null,
+    val format: String? = null,
+    val publisher: String? = null,
+    val pages: Int? = null,
+    val edition: String? = null,
+    val price: Double? = null,
+) {
+    fun toJson(): org.json.JSONObject = org.json.JSONObject().put("s", store).put("u", url)
+        .put("t", title ?: org.json.JSONObject.NULL).put("f", format ?: org.json.JSONObject.NULL)
+        .put("pub", publisher ?: org.json.JSONObject.NULL).put("pg", pages ?: org.json.JSONObject.NULL)
+        .put("e", edition ?: org.json.JSONObject.NULL).put("p", price ?: org.json.JSONObject.NULL)
+
+    companion object {
+        fun from(o: org.json.JSONObject) = PriceListing(
+            o.optString("s"), o.optString("u"),
+            if (o.isNull("t")) null else o.optString("t"), if (o.isNull("f")) null else o.optString("f"),
+            if (o.isNull("pub")) null else o.optString("pub"), if (o.isNull("pg")) null else o.optInt("pg"),
+            if (o.isNull("e")) null else o.optString("e"), if (o.isNull("p")) null else o.optDouble("p"),
+        )
+    }
+}
+
+/**
  * A book's price being watched: the price you'd buy it at, a store page you pointed it to (by
  * store), every price seen (newest last, a few hundred kept), when it was last looked at, and the
  * lowest price you were told about (so a drop is said once).
@@ -1343,6 +1372,8 @@ data class PriceWatch(
     val author: String? = null,
     val isbn: String? = null,
     val cover: String? = null,
+    /** Each store's listings of it found when it was looked for (editions to choose between). */
+    val choices: Map<String, List<PriceListing>> = emptyMap(),
 ) {
     /** The book to look for: from the library when it's there, else as the tracker knows it. */
     fun book(s: Snapshot): Book? = s.books[document]
@@ -1365,6 +1396,7 @@ data class PriceWatch(
         .put("pinned", org.json.JSONArray(pinned.toList()))
         .put("title", title ?: org.json.JSONObject.NULL).put("author", author ?: org.json.JSONObject.NULL)
         .put("isbn", isbn ?: org.json.JSONObject.NULL).put("cover", cover ?: org.json.JSONObject.NULL)
+        .put("choices", org.json.JSONObject().also { o -> choices.forEach { (k, v) -> o.put(k, org.json.JSONArray().also { a -> v.forEach { a.put(it.toJson()) } }) } })
 
     companion object {
         fun from(o: org.json.JSONObject): PriceWatch {
@@ -1376,6 +1408,11 @@ data class PriceWatch(
                 o.optJSONArray("pinned")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet(),
                 if (o.isNull("title")) null else o.optString("title"), if (o.isNull("author")) null else o.optString("author"),
                 if (o.isNull("isbn")) null else o.optString("isbn"), if (o.isNull("cover")) null else o.optString("cover"),
+                o.optJSONObject("choices")?.let { c ->
+                    c.keys().asSequence().associateWith { k ->
+                        c.optJSONArray(k)?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(PriceListing::from) } } ?: emptyList()
+                    }
+                } ?: emptyMap(),
             )
         }
     }

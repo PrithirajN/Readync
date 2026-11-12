@@ -51,6 +51,9 @@ class TrackerSyncApp : Application() {
         }
         // The app's own copies of books (from your OPDS catalogs), for the words around a quote.
         io.github.prithirajn.trackersync.source.BookCopies.install(this)
+        io.github.prithirajn.trackersync.source.BookCopies.onBackground = { book, copy, why ->
+            io.github.prithirajn.trackersync.sync.Notices.bookCopy(this, book, copy, why)
+        }
         // Mihon's automatic backups, from the folder you chose.
         io.github.prithirajn.trackersync.ui.MihonFolder.install(this)
         io.github.prithirajn.trackersync.ui.KoSidecarFolder.install(this)

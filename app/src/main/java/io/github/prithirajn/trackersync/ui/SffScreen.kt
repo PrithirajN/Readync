@@ -380,6 +380,8 @@ internal fun StoryImage(url: String?, modifier: Modifier) {
     val context = LocalContext.current.applicationContext
     val px = with(LocalDensity.current) { 420.dp.roundToPx() }
     val image by produceState<ImageBitmap?>(url?.let { CoverCache.cached(it)?.asImageBitmap() }, url) {
+        // A new story in the same slot: its own picture (or none), never the last one's.
+        value = url?.let { CoverCache.cached(it)?.asImageBitmap() }
         if (url != null && value == null) {
             value = withContext(Dispatchers.IO) { runCatching { CoverCache.load(context, url, px) }.getOrNull()?.asImageBitmap() }
         }

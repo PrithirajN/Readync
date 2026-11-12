@@ -118,6 +118,7 @@ object Notices {
     private const val RELEASES = "releases"
     private const val PRICES = "prices"
     private const val POSITIONS = "positions"
+    private const val COPIES = "book-copies"
 
     /** Opens the app; with [action] (and [document]) it goes straight to that thing. */
     fun openApp(context: Context, action: String? = null, document: String? = null, code: Int = 0): PendingIntent {
@@ -180,6 +181,26 @@ object Notices {
                     .build(),
             )
         }
+    }
+
+    /** A sync kept a copy of a book you're reading for quotes (or couldn't find one). */
+    fun bookCopy(context: Context, book: io.github.prithirajn.trackersync.data.Book, copy: io.github.prithirajn.trackersync.source.BookCopies.Copy?, why: String?) {
+        if (!allowed(context)) return
+        channel(context, COPIES, "Copies for quotes")
+        NotificationManagerCompat.from(context).notify(
+            800 + (book.document.hashCode() and 0xFFFF),
+            NotificationCompat.Builder(context, COPIES)
+                .setSmallIcon(R.drawable.lucide_book_open)
+                .setContentTitle(if (copy != null) "Kept a copy of ${book.displayTitle}" else "No copy of ${book.displayTitle} yet")
+                .setContentText(
+                    if (copy != null) "From ${copy.server}, for the lines around your quotes"
+                    else (why ?: "Not on your catalogs") + " · tried again in a few days",
+                )
+                .setContentIntent(openApp(context, MainActivity.ACTION_OPEN_BOOK, book.document, 80))
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setAutoCancel(true)
+                .build(),
+        )
     }
 
     /** The probe is back, with what it found. */

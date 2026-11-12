@@ -109,6 +109,8 @@ object Opds {
         val publisher: String? = null,
         val language: String? = null,
         val categories: List<String> = emptyList(),
+        /** When the server last changed it (for most, when it was added): ISO text. */
+        val updated: String? = null,
     ) {
         val isBook: Boolean get() = acquisitions.isNotEmpty() || (navigation == null && summary != null)
         val image: String? get() = thumbnail ?: cover
@@ -122,6 +124,8 @@ object Opds {
         /** The search address for this catalog, as found in it (a template or an OpenSearch description). */
         val searchLink: String?,
         val searchIsDescription: Boolean,
+        /** The catalog's own "newest first" feed, when it names one. */
+        val newest: String? = null,
     )
 
     class OpdsException(message: String) : Exception(message)
@@ -174,6 +178,7 @@ object Opds {
         var next: String? = null
         var search: String? = null
         var searchDesc = false
+        var newest: String? = null
         val entries = ArrayList<Entry>()
         // The entry being read.
         var inEntry = false
@@ -203,12 +208,14 @@ object Opds {
                                         isAcq(rel) -> acqs += Acquisition(href, type, rel)
                                         isThumb(rel) -> e["thumb"] = href
                                         isImage(rel) -> e["cover"] = href
+                                        rel == "http://opds-spec.org/sort/new" && newest == null -> { newest = href; if (e["nav"] == null) e["nav"] = href }
                                         isFeedType(type) && rel != "alternate" && e["nav"] == null -> e["nav"] = href
                                         // Some servers list a file without the acquisition rel.
                                         rel == null && type != null && formatOf(type, href) != "FILE" && !isFeedType(type) -> acqs += Acquisition(href, type, "http://opds-spec.org/acquisition")
                                     }
                                 } else {
                                     when (rel) {
+                                        "http://opds-spec.org/sort/new" -> newest = href
                                         "next" -> next = href
                                         "search" -> if (search == null || type?.contains("atom") == true) {
                                             search = href; searchDesc = type?.contains("opensearchdescription") == true && !href.contains("{searchTerms}")
@@ -234,6 +241,7 @@ object Opds {
                             "id" -> if (path.getOrNull(path.size - 2) == "entry") e["id"] = t
                             "summary", "content" -> if (e["summary"] == null || tag == "summary") e["summary"] = stripHtml(t)
                             "issued", "published" -> if (e["published"] == null) e["published"] = t
+                            "updated" -> if (path.getOrNull(path.size - 2) == "entry") e["updated"] = t
                             "publisher" -> e["publisher"] = t
                             "language" -> e["language"] = t
                             "series" -> e["series"] = t
@@ -258,6 +266,7 @@ object Opds {
                             published = (e["published"] as? String)?.take(10),
                             publisher = e["publisher"] as? String, language = e["language"] as? String,
                             categories = cats.distinct().take(6),
+                            updated = e["updated"] as? String,
                         )
                     }
                     if (path.isNotEmpty()) path.removeAt(path.lastIndex)
@@ -265,7 +274,7 @@ object Opds {
             }
             ev = p.next()
         }
-        return Feed(title, base, entries, next, search, searchDesc)
+        return Feed(title, base, entries, next, search, searchDesc, newest)
     }
 
     internal fun parseJson(json: String, base: String): Feed {
@@ -273,11 +282,13 @@ object Opds {
         val meta = o.optJSONObject("metadata")
         var next: String? = null
         var search: String? = null
+        var newest: String? = null
         o.optJSONArray("links")?.let { ls ->
             for (i in 0 until ls.length()) {
                 val l = ls.optJSONObject(i) ?: continue
                 val rel = relOf(l)
                 when {
+                    rel.any { it.endsWith("sort/new") } -> newest = resolve(base, l.optString("href"))
                     "next" in rel -> next = resolve(base, l.optString("href"))
                     "search" in rel -> search = l.optString("href").let { h -> if (l.optBoolean("templated")) resolveTemplate(base, h) else resolve(base, h) }
                 }
@@ -293,7 +304,7 @@ object Opds {
                 g.optJSONArray("publications")?.let { addPubs(it, base, entries) }
             }
         }
-        return Feed(meta?.optString("title").orEmpty(), base, entries, next, search, false)
+        return Feed(meta?.optString("title").orEmpty(), base, entries, next, search, false, newest)
     }
 
     private fun relOf(l: JSONObject): List<String> = when (val r = l.opt("rel")) {
@@ -404,6 +415,38 @@ object Opds {
         val all = ArrayList(first.entries)
         first.next?.takeIf { all.size < 60 }?.let { n -> runCatching { all += fetch(server, n).entries } }
         return all.distinctBy { it.id }
+    }
+
+    // ---- what's new ----
+
+    private val NEWEST_NAV = Regex("(?i)\\b(newest|recent(ly)?( added| additions)?|latest|new (books|additions|arrivals)|by date|date added)\\b")
+    private val latestCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<Entry>>>()
+
+    /**
+     * The books [server] added most recently, newest first, up to [count]: from the catalog's own
+     * "newest" feed (OPDS sort/new), or the shelf it calls Newest, Recently added or the like.
+     * Kept for an hour unless [fresh]. Blocking.
+     */
+    fun latest(server: Server, count: Int = 30, fresh: Boolean = false): List<Entry> {
+        val now = System.currentTimeMillis()
+        if (!fresh) latestCache[server.id]?.takeIf { now - it.first < 3_600_000 }?.let { return it.second }
+        val root = fetch(server, server.url)
+        val url = root.newest
+            ?: root.entries.firstOrNull { it.navigation != null && NEWEST_NAV.containsMatchIn(it.title) }?.navigation
+            ?: throw OpdsException("${server.name} has no list of newest books")
+        var feed = fetch(server, url)
+        // A "newest" shelf that is itself a list of shelves: its first one.
+        if (feed.entries.none { it.isBook }) {
+            feed.entries.firstOrNull { it.navigation != null && NEWEST_NAV.containsMatchIn(it.title) }?.navigation?.let { feed = fetch(server, it) }
+        }
+        val out = ArrayList(feed.entries.filter { it.isBook })
+        var next = feed.next
+        while (out.size < count && next != null) {
+            val f = runCatching { fetch(server, next!!) }.getOrNull() ?: break
+            out += f.entries.filter { it.isBook }
+            next = f.next
+        }
+        return out.take(count).also { latestCache[server.id] = now to it }
     }
 
     // ---- getting a file ----

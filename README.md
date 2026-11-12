@@ -15,6 +15,7 @@
   <a href="https://github.com/PrithirajN/Readync/releases/latest"><b>Download the APK</b></a> ·
   <a href="#install">Install</a> ·
   <a href="#features">Features</a> ·
+  <a href="#supported-services">Services</a> ·
   <a href="#faq">FAQ</a> ·
   <a href="#source-code">Source code</a>
 </p>
@@ -38,48 +39,79 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 ## Features
 
 ### 📚 One sync, every tracker
-- Reading progress goes to **Hardcover, Goodreads, StoryGraph, Fable, Pagebound and Seekquel** automatically, every 15 minutes while you're online.
-- **Public or private** posting, chosen per tracker.
-- Books are matched for you, with **covers and descriptions**. If a book has no clear match, you pick it with one tap.
-- **Real reading dates**: start and finish days go to the trackers that take them.
+- **Automatic progress** to Hardcover, Goodreads, StoryGraph, Fable, Pagebound and Seekquel, every 15 minutes.
+- **Public or private**, chosen per tracker.
+- **Books matched for you**, with covers and descriptions; pick with one tap when it's unclear.
+- **Real reading dates** sent to the trackers that take them.
 
 ### ✍️ Highlights, ratings and reviews
-- **Highlights and notes** are sent too: to Hardcover, StoryGraph and Seekquel by default, and to Goodreads, Pagebound and Fable if you turn them on.
-- **Rate once, everywhere.** Star ratings in tenths, plus a review written in Markdown (spoiler tags included), sent to every tracker that accepts them.
-- **Share a highlight as a picture**, with your note on it: ten looks (Spotlight, Highlighter, Spine, Editorial, Typewriter, Index card, **Book card** — the passage with the book's real cover, title, series and author, in 15 layouts (cover colour, polaroid, postcard, shelf, ticket, "now reading" and more) —, **System window** — a LitRPG game notification with an experience bar —, **Wordprint** — a mark drawn from the passage itself, one ray per word around a ring showing how far into the book — and a **Book photo** of the passage on a real-looking book page with the actual text of that page around it), coloured from the book's cover, as a feed post, a square or a story. Post one to Threads in a tap, or turn on **Post to Threads** for a book (off for every book until you do) and its new highlights, quotes and notes go up by themselves after a sync, each as a Book card in a layout picked at random, with your note as the post's words (with your own Meta app's token, a few a day at most). When you finish a book, or mark it **Did not finish**, you're offered to post your stars and review, the review as slides to swipe through. Your note can go on the picture as it is or reworded just for it, and a note on its own (a KOReader note on a bookmark) is shared as a note, in handwriting, without quote marks.
-- **Export highlights to Readwise, Notion and Obsidian**: every highlight, quote and note, from every source, goes on after each sync. Readwise gets them in your library (with your notes, page and date) for its daily review; Notion gets a page per book with its cover, highlights as quotes and your notes in callouts; Obsidian gets a Markdown note per book in a vault folder you pick, with the book as properties, rewritten when highlights change while anything you write around Readync's part is kept.
-- **Reading apps and servers**, linked like crosspoint-sync's connected services: **Audiobookshelf** and **Jellyfin** (your place in the ebook moves the audiobook, and listening ahead moves the book), **BookFusion**, **BookOrbit** and **Readest** (your place both ways), **Readwise Reader** (finished books are archived), **Spotify** audiobooks (listening ahead moves the book; nothing is sent to Spotify), **Micro.blog** (Currently reading and Finished reading shelves, and highlights posted to your blog). A place further along in one of them is asked about on the book, like any other source, unless you say to always use it. CrossPoint books go with their exact place where the app takes one (Audiobookshelf's and BookFusion's readers open right there, and KOSync gets KOReader's own place), highlights go to BookOrbit and Readest at their exact spot in the book, and an audiobook's card on the book's page shows where you're listening, starts Spotify from your place (**Resume in Spotify**) and lets you say which track your reading place is at (**Not the right spot?**), so reading and listening line up. A service linked on your crosspoint-sync server too is never sent the same thing twice: the server sends your CrossPoint books and their highlights, and Readync sends everything else.
-- **Snap a page** from a paper book or your e-reader's screen (or a screenshot): a highlighted passage is picked out for you, saved as a highlight and, if you like, turned into a book photo.
+- **Highlights and notes** go to every tracker that takes them (some are opt-in).
+- **Rate once, everywhere**: stars in tenths and a Markdown review, spoiler tags included.
+- **Check before sending** (optional): mark each new highlight fine, a spoiler or private. No AI.
+- **Export** to Readwise, Notion and Obsidian after each sync.
+- **Snap a page** from a paper book or a screenshot and the highlighted passage is saved.
+
+<details>
+<summary>More on highlights</summary>
+
+- Hardcover, StoryGraph and Seekquel get highlights by default; Goodreads, Pagebound and Fable when you turn them on.
+- A spoiler goes behind Fable's, Pagebound's and Threads' spoiler tap, to private journals as it is, and to Goodreads and Micro.blog held back or with a warning, as you choose. Waiting highlights show on the Highlight of the day card and each book's Highlights tab.
+- Readwise gets them for its daily review; Notion gets a page per book with its cover; Obsidian gets a Markdown note per book, keeping anything you write around it.
+</details>
 
 ### 📖 Any way you read
 - **E-readers**: CrossPoint Sync, or KOReader through a KOSync server.
-- **KOReader highlights**: straight from KOReader's own files when it runs on the same phone or tablet (no plugin needed), or from the HighlightSync or AnnotationSync plugin on Koofr (or any WebDAV) when it runs elsewhere. They come in under each book, go to your trackers, and can be added to a CrossPoint device too, **on their exact words** so the Xteink draws them on the page (when the book's EPUB is in KOReader's books folder on your phone). Optionally, highlights made on the CrossPoint device go the other way into KOReader, through HighlightSync. A book the plugin knows only by KOReader's ID can be named from a list you have, typed, or **guessed from its highlights' own words** (looked up inside books on Google Books), for you to confirm.
-- **Moon+ Reader**: its sync to a free WebDAV storage like Koofr is read, so progress and highlights in Moon+ on your phone or tablet reach your trackers too. Step-by-step setup is in the app.
-- **Physical books**: snap a photo of the page you're on, and the page number is read on your phone (offline).
-- **Barcode scanning** adds a book from its ISBN.
-- **Web novels and fan fiction**: Royal Road, AO3, Scribble Hub, Wattpad and more. The story is linked from the link inside your EPUB (FanFicFare, WebToEpub and similar save it) when Readync can see the file (KOReader's folder on your phone, or your books on WebDAV), or found by title. While you read one, **new chapters are checked for every few hours** through the story's feed (Royal Road, Scribble Hub; others daily) with an alert, the book page shows which chapter you're on and how many are out past your copy, a copy downloaded again with new chapters stays the same book, and a story also published as books shows how many are out and when the next one comes (from Hardcover).
+- **KOReader highlights** from its own files on the same phone, or from HighlightSync / AnnotationSync on WebDAV.
+- **Moon+ Reader** through its WebDAV sync.
+- **Paper books**: photograph the page you're on, or scan the barcode to add one.
+- **Web novels and fan fiction** (Royal Road, AO3, Scribble Hub, Wattpad…) with new-chapter alerts.
+- **Reading apps and audiobooks**: Audiobookshelf, Jellyfin, BookFusion, BookOrbit, Readest, Readwise Reader, Spotify and Micro.blog.
+
+<details>
+<summary>More on sources</summary>
+
+- KOReader highlights can be put on a CrossPoint device **on their exact words**, and CrossPoint highlights can go back to KOReader through HighlightSync. A book known only by KOReader's ID can be named from its highlights' own words.
+- Web novels are linked from the link inside your EPUB (FanFicFare, WebToEpub) or found by title. The book page shows your chapter and how many are out past your copy.
+- Audiobooks keep pace with the ebook: **Resume in Spotify** starts from your place, and **Not the right spot?** fixes the match. A service also linked on your crosspoint-sync server is never sent the same thing twice.
+</details>
 
 ### 🎁 Made from your reading
-- **Check highlights before sending** (off unless you turn it on, under Services › Trackers): new highlights wait until you mark each one fine, a spoiler, or not to send — swipe cards, with "mark the rest fine" for a long session. No AI involved. A spoiler goes to Fable and Pagebound behind their spoiler tap, to private journals (Hardcover, StoryGraph, Seekquel, BookOrbit, Readest) as it is, and to Goodreads and Micro.blog either held back or with a spoiler warning above it, as you choose; Threads posts wait too and go up behind Threads' spoiler tap. While any wait, the Highlight of the day card on your library asks for them ("Review N"), and each book's Highlights tab has its own; once checked they go to your trackers straight away. Change your mind later from the highlight's card.
-- **Post to X**: next to every Threads button (quote cards, videos, Wrapped, the shelf poster, reviews and recaps) — X opens with the picture or video attached and the words filled in, ready for you to post. Up to four pictures a post, X's limit: with more, you pick which four. Nothing goes up on its own, and no X account setup or paid API is needed.
-- **Wrapped**: your month, this year or last year in reading as story slides to tap through: pages and reading days, your longest streak and your reading day, a year month by month (with your biggest month), the books you finished, your first and latest, book lengths (longest, shortest, average), time to finish (quickest, slowest, average days), your ratings (average, a bar per star, against your year so far), what you read (top genres, moods and pace), authors new to you with series against standalones and books you put down, the one you flew through, your passage of the month, how it compares with the stretch before (books, pages, hours, highlights), your reader type (written by the on-device AI when it's set up, else worked out from your genres and moods), and everything on one card. Books brought in from a tracker's history or an export count too (their page counts go to the month they were finished). Save them, share one, or post it to Threads.
-- **Moving quotes**: any highlight as a short video for Reels, Stories or Threads, made in a video studio with a live preview. Choose how the passage moves (typewriter, word by word, line by line, a highlighter sweep, kinetic big words or a slow fade), where it sits (on a page under its cover, straight on the scene, or as a subtitle over the cover), what's behind it (blurred cover, the cover itself, its colour, night or paper), the typeface, the pace, the shape (story, post or square), and whether the cover, your note, the title and a slow zoom show. Made on your phone as an MP4; watch it before you share or save it.
-- **Book recap**: when you finish a book, the book told in numbers: how many days it took and when, the pages and how many a day, a bar for each day you read, the hours, your highlights with the one you'd keep, and your stars and review. Make it a 15-second video for stories and reels (watch it live, then make, check and share it), or a carousel of 4:5 pictures, one stat to each: the cover, the days with a dot for each, the pages, the words (about 275 a page), day by day, how steadily you read (share of days, longest run and break, weekend share), the hours, your pace (pages an hour, a page every so many seconds, words a minute, how long a 300-page book would take), your highlights (one every N pages, per 100 pages) and where they fall, your passage, how it compares with your usual (× quicker or slower, pages a day and days against your average), its place in the year (#N finished, how fast and how long it ranks), and your stars and review, to save, share, or post to Threads as one swipeable post. It's offered after you rate a finished book, and it's on every finished book's page.
-- **Shelf poster**: a year's finished books as spines on wooden shelves (each the colour of its cover, as thick as the book is long) or as a wall of covers, sized for your phone's wallpaper or for a post.
-- **Daily review**: five of your older highlights each day to keep, let go of or edit, with a streak for the days you look back.
-- **Reading timer**: a full-screen session for paper books with a big timer and a page counter to tap as you turn pages. The minutes and pages count toward your day and streak, and the book moves to your page.
-- **Who's this?** (with the on-device AI): a reminder of who a character is, or what a place or word is, using only what comes before your place in the book.
-- **Widgets**: your current book on a little reading device (its percentage in pixel digits and a bar that fills), and a highlight of the day.
+- **Quote cards**: ten looks, from Book card (15 layouts) and Book photo to System window and Wordprint, coloured from the cover.
+- **Moving quotes**: a highlight as a short video for Reels, Stories or Threads, made in a live studio.
+- **Book recap**: a finished book in numbers, as a 15-second video or a carousel of one-stat pictures.
+- **Wrapped**: your month or year in reading as story slides, down to your reader type.
+- **Shelf poster**: a year's books as spines on a shelf or a wall of covers.
+- **Post to Threads** in a tap, or let a book's new highlights go up after a sync (off until you turn it on).
+- **Post to X**: the X app opens with the picture and words filled in.
+- **Daily review**, a **reading timer** for paper books, and **Who's this?** for characters (on-device AI, no spoilers).
+
+<details>
+<summary>More on what you can make</summary>
+
+- **Book recap** stats: days, pages, words, a bar per day, how steadily you read, pace, highlights and where they fall, against your usual and your year.
+- **Wrapped** slides: pages and days, streaks, month by month, books finished, lengths, time to finish, ratings, genres and moods, new authors, how it compares with the stretch before, and everything on one card. Books from imported history count too.
+- **Moving quotes**: typewriter, word by word, highlighter sweep, kinetic words or a slow fade, over the cover, its colour, night or paper; story, post or square.
+- Quote cards with **Copies for quotes** (see Catalogs) show the real lines around your passage without photographing the page.
+</details>
 
 ### ✨ And more
-- **Price tracker** at Amazon.in (print and Kindle), Bookswagon and Atlantic Books, on Catalogs › Deals: paste a book's page from any of the three and the book is read from it, found at the other two, and tracked (in your library or not); import a public Amazon wish list and its books are tracked all at once; or use Track its price in a book's ⋯ menu. Each shows every store's price against the printed one, the lowest seen and how the best price has moved; set your price (quick picks or your own) and you're told when it's under it, or 10% under the lowest so far. Prices are checked twice a day during syncs. Wrong edition? Paste the store page and it follows exactly that one.
-- **Catalogs**: your OPDS book servers (Calibre-Web, Calibre's content server, Kavita, Komga, Stump, COPS, Project Gutenberg…) in one tab, **searched all at once**: type once and every server is asked together, results arrive as each answers, and the same book on several servers shows once with every place and format to get it from (EPUB, KEPUB, PDF, CBZ…). Download into Downloads and open it, put it on your Want to Read, or browse any server's shelves like an OPDS reader. Have many servers? Paste the whole list at once: each address is checked a few at a time (a bare host:port is fine, the catalog is found where servers usually keep it), the ones that answer are added, and the rest are listed with why. OPDS 1 and 2, with sign-ins kept on the phone and sent only to their own server. **Copies for quotes**: books you're reading are looked for as EPUBs on your catalogs (one each sync) and kept inside the app's own storage, never in Downloads; any book can get one from its ⋯ menu or a catalog result. Quote Studio's book photo uses them for the real lines above and below your passage when you haven't photographed the page. Manage or remove them on Catalogs › Copies for quotes.
-- An **SFF news tab** for science fiction and fantasy readers, set like a magazine: the lead story across a big picture, top stories, news about books on your shelves, new books as covers, then the rest; a Latest view by day, a **Screen** view for SFF films, series and adaptations (from io9, /Film, Collider, Den of Geek, Bloody Disgusting, TrekMovie and more, keeping only their speculative-fiction stories), genres to follow or mute, and Saved. Articles open in a clean reader (Lora, a drop cap, pictures across the page, a progress bar, adjustable text size) with an AI menu to sum up, explain or check for spoilers.
-- **Home-screen widgets**: a sync card, a progress ring and a shelf of the books you're reading.
-- **Quick Settings tile** and app shortcuts (Snap page, Add a book, Sync now).
-- **Import your reading history** from a Goodreads, StoryGraph or Hardcover export, KOReader's statistics, or straight from Hardcover and Seekquel, with dates, ratings, reviews, Hardcover's quotes as highlights, and **day-by-day reading** where the source keeps it (KOReader's pages and minutes per day, Hardcover's progress updates). What's already in Readync is kept, and nothing is sent to your trackers. The on-device AI can work out an unfamiliar CSV's columns.
-- **Backups and moving phones**: a full backup locked with a password, or your reading data without any sign-ins, which merges into another phone and works across app versions.
-- Optional **on-device AI** helpers. Nothing leaves your phone.
+- **Catalogs**: the 50 newest books across all your OPDS servers, and every server searched at once, with download details and paste-a-list setup.
+- **Copies for quotes**: books you're reading kept privately inside the app, for the lines around your quotes.
+- **Price tracker** for Amazon.in, Bookswagon and Atlantic Books, with your own target price.
+- **SFF news** set like a magazine, with a Screen view for films and series, and a clean reader.
+- **Import your history** from Goodreads, StoryGraph, Hardcover, Seekquel or KOReader.
+- **Widgets**, a Quick Settings tile and app shortcuts.
+- **Backups** locked with a password, or a data-only copy to move phones.
+- Optional **on-device AI**. Nothing leaves your phone.
+
+<details>
+<summary>More on these</summary>
+
+- **Catalogs** work with Calibre-Web, Calibre's server, Kavita, Komga, Stump, COPS and Project Gutenberg (OPDS 1 and 2). The same book on several servers shows once; sign-ins stay on the phone and go only to their own server.
+- **Price tracker**: paste a store link or import an Amazon wish list; you're told when a price is under yours, or 10% under the lowest seen. Checked twice a day.
+- **SFF news**: For you, Latest, Screen, Genres and Saved; articles in Lora with a drop cap and an AI menu to sum up or check for spoilers.
+- **Import** keeps what's already in Readync, sends nothing to your trackers, and brings day-by-day reading where the source has it.
+</details>
 
 ## Install
 
@@ -105,7 +137,9 @@ and install it over your current copy.
 
 Either way, you stay signed in to all your trackers.
 
-## Supported trackers
+## Supported services
+
+### Trackers
 
 | Tracker | Progress | Highlights | Rating & review | Reading dates |
 | --- | :---: | :---: | :---: | :---: |
@@ -115,6 +149,85 @@ Either way, you stay signed in to all your trackers.
 | Fable | ✅ | optional | ✅ | ✅ |
 | Pagebound | ✅ | optional | ✅ | ✅ |
 | Seekquel | ✅ | ✅ | rating | source of dates |
+
+### Where your reading comes from
+
+| Source | Progress | Highlights | How it connects |
+| --- | :---: | :---: | --- |
+| CrossPoint Sync | ✅ | ✅ | Your CrossPoint Sync account |
+| KOReader (KOSync) | ✅ | — | KOReader's own KOSync server or a self-hosted one |
+| KOReader on the same phone | — | ✅ | Its own files, no plugin needed |
+| KOReader elsewhere | — | ✅ | HighlightSync or AnnotationSync plugin on Koofr or any WebDAV |
+| Moon+ Reader | ✅ | ✅ | Its WebDAV sync (a free Koofr account works), read only |
+| Physical books | ✅ | ✅ | A photo of the page (page number and highlighted passage), barcode to add |
+| Reading timer | ✅ | — | Pages and minutes from a timed session |
+
+### Reading apps and servers
+
+| Service | Your place | Highlights | Other |
+| --- | :---: | :---: | --- |
+| Audiobookshelf | both ways | — | Ebook and audiobook kept in line |
+| Jellyfin | both ways | — | Ebook and audiobook kept in line |
+| BookFusion | both ways | — | Opens at your exact place |
+| BookOrbit | both ways | ✅ | Highlights at their exact spot |
+| Readest | both ways | ✅ | Highlights at their exact spot |
+| Readwise Reader | — | — | Finished books archived |
+| Spotify audiobooks | read only | — | Listening ahead moves the book; Resume in Spotify |
+| Micro.blog | ✅ | ✅ | Currently reading and Finished reading shelves |
+
+### Highlight exports
+
+| Service | What it gets |
+| --- | --- |
+| Readwise | Every highlight with your notes, page and date, for its daily review |
+| Notion | A page per book: cover, highlights as quotes, notes in callouts |
+| Obsidian | A Markdown note per book in a vault folder you pick |
+
+### Web novels and fan fiction
+
+| Site | Linked from your EPUB | New-chapter alerts |
+| --- | :---: | --- |
+| Royal Road | ✅ | every few hours |
+| Scribble Hub | ✅ | every few hours |
+| Archive of Our Own (AO3) | ✅ | daily |
+| Wattpad | ✅ | daily |
+| …and more | ✅ | daily |
+
+### Sharing
+
+| Service | How |
+| --- | --- |
+| Threads | Post in a tap, or let a book's new highlights go up after each sync (off until you turn it on) |
+| X | Opens the X app with the picture or video and words filled in; you post it |
+| Any app | Share or save the picture or video |
+
+### Importing your history
+
+| Source | What comes in |
+| --- | --- |
+| Goodreads export | Books, dates, ratings, reviews |
+| StoryGraph export | Books, dates, ratings, reviews |
+| Hardcover (export or direct) | Books, dates, ratings, reviews, quotes as highlights, progress updates by day |
+| Seekquel (direct) | Books, dates, ratings, reviews |
+| KOReader statistics | Pages and minutes for each day |
+
+### Catalogs (OPDS)
+
+| Works with | |
+| --- | --- |
+| Calibre-Web, Calibre's content server, COPS | OPDS 1 |
+| Kavita, Komga, Stump | OPDS 1 and 2 |
+| Project Gutenberg and other public catalogs | OPDS 1 and 2 |
+
+All of them searched at once, with downloads into Downloads, and copies for quotes kept inside the app.
+
+### Price tracking
+
+| Store | Formats |
+| --- | --- |
+| Amazon.in | Print and Kindle edition prices |
+| Bookswagon | Print |
+| Atlantic Books | Print |
 
 ## FAQ
 

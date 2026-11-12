@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.prithirajn.trackersync.data.Book
+import io.github.prithirajn.trackersync.data.PriceListing
 import io.github.prithirajn.trackersync.data.PricePoint
 import io.github.prithirajn.trackersync.data.PriceWatch
 import io.github.prithirajn.trackersync.data.Snapshot
@@ -94,10 +95,21 @@ fun DealSheet(vm: AppViewModel, state: Snapshot, key: String, onClose: () -> Uni
         }
         if (line.size >= 2) { VSpace(12); Sparkline(line, Modifier.fillMaxWidth().height(44.dp)) }
         VSpace(12)
-        for (p in w.latest.sortedWith(compareBy({ it.price == null || !it.inStock }, { it.price ?: Double.MAX_VALUE }))) {
-            StoreRow(p) { p.url?.let { u -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } } }
+        // Each store: its price (and Kindle beside print on Amazon), which edition it is, and ways to change it:
+        // pick another edition it lists, or paste the page yourself, found or not.
+        val shopsInOrder = BookPrices.shops.sortedBy { sh ->
+            w.latest.filter { it.store == sh.id && it.price != null && it.inStock }.minOfOrNull { it.price!! } ?: Double.MAX_VALUE
         }
-        if (w.latest.isEmpty()) Quiet(if (w.checkedAt == 0L) "Looking at the stores…" else "Not found at any of the three yet.", color = c.faint)
+        for (sh in shopsInOrder) {
+            val pts = w.latest.filter { it.store == sh.id }.sortedBy { if (it.format == "Kindle") 1 else 0 }
+            val shown = pts.ifEmpty { listOf(PricePoint(sh.id, 0, null, inStock = false)) }
+            for (p in shown) {
+                val listing = w.choices[sh.id]?.firstOrNull { it.url == p.url }
+                StoreRow(p, listing) { p.url?.let { u -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } } }
+            }
+            StoreActions(vm, key, w, sh.id, found = pts.any { it.url != null }) { msg -> said = msg; checking = true; vm.checkPrice(key) { checking = false } }
+        }
+        if (w.checkedAt == 0L) Quiet("Looking at the stores…", color = c.faint)
         w.error?.let { VSpace(6); Quiet("Couldn't read the stores: $it", color = c.faint, maxLines = 3) }
         VSpace(14)
         TargetRow(w) { vm.setPriceTarget(key, it) }
@@ -106,7 +118,8 @@ fun DealSheet(vm: AppViewModel, state: Snapshot, key: String, onClose: () -> Uni
             PillButton(if (checking) "Checking…" else "Check now", {
                 if (!checking) { checking = true; said = null; vm.checkPrice(key) { e -> checking = false; said = e?.let { "Couldn't read the stores: $it" } } }
             })
-            PillButton("Wrong book?", { linking = !linking })
+            // For a book none of the stores found (or found wrongly everywhere): one page for any store.
+            if (w.latest.none { it.price != null }) PillButton("Wrong book?", { linking = !linking })
             if (inLibrary) PillButton("Open in library", { onClose(); AppActions.pending.value = AppAction.OpenBook(key) })
             else PillButton("+ Want to read", { vm.addTrackedToLibrary(key) { e -> said = e ?: "Added to Want to Read" } })
             PillButton("Stop tracking", { vm.unwatchPrice(key); onClose() }, danger = true)
@@ -129,9 +142,85 @@ fun DealSheet(vm: AppViewModel, state: Snapshot, key: String, onClose: () -> Uni
     }
 }
 
+/** "Hardcover · Deluxe edition · Tor · 608 pages". */
+internal fun listingLine(l: PriceListing): String =
+    listOfNotNull(l.format, l.edition, l.publisher, l.pages?.let { "$it pages" }).joinToString(" · ")
+
+/**
+ * Under a store's price: its other editions to choose from (when it lists more than one), and a
+ * page to paste for it, to fill in a store that didn't find the book or to override the one it did.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun StoreActions(vm: AppViewModel, key: String, w: PriceWatch, store: String, found: Boolean, onChanged: (String) -> Unit) {
+    val c = Cp.colors
+    val name = BookPrices.shop(store)?.name ?: store
+    val options = w.choices[store].orEmpty()
+    val current = w.links[store]
+    var choosing by remember(store) { mutableStateOf(false) }
+    var pasting by remember(store) { mutableStateOf(false) }
+    var url by remember(store) { mutableStateOf("") }
+    var err by remember(store) { mutableStateOf<String?>(null) }
+    androidx.compose.foundation.layout.FlowRow(
+        Modifier.padding(start = 40.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (options.size > 1) PillButton(if (choosing) "Hide editions" else "${options.size} editions · choose", { choosing = !choosing; pasting = false })
+        PillButton(if (pasting) "Cancel" else if (found) "Paste a different page" else "Paste its page", { pasting = !pasting; choosing = false; err = null })
+    }
+    if (choosing) {
+        for (o in options.sortedWith(compareBy<PriceListing>({ l -> if (Regex("(?i)hard").containsMatchIn(l.format ?: "")) 0 else if (Regex("(?i)paper").containsMatchIn(l.format ?: "")) 1 else 2 }, { l -> l.price ?: Double.MAX_VALUE }))) {
+            val on = o.url == current
+            Row(
+                Modifier.fillMaxWidth().padding(start = 40.dp, bottom = 6.dp).clip(CpShapes.control)
+                    .background(if (on) c.accentTint else c.divider)
+                    .bouncyClickable(CpShapes.control, pressedScale = 0.98f, onClickLabel = "Track this edition") {
+                        if (!on) {
+                            vm.setPriceLink(key, o.url)
+                            choosing = false
+                            onChanged("Tracking that edition at $name")
+                        }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(listingLine(o).ifEmpty { o.title ?: "Edition" }, style = CpType.label, color = if (on) c.accentText else c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    o.title?.let { Text(it, style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                }
+                HSpace(8)
+                Text(o.price?.let { rupees(it) } ?: "–", style = CpType.bodyStrong, color = c.text)
+                if (on) { HSpace(6); Text("tracking", style = CpType.small, color = c.accentText) }
+            }
+        }
+    }
+    if (pasting) {
+        Column(Modifier.padding(start = 40.dp, bottom = 8.dp)) {
+            CpTextField(url, { url = it; err = null }, "$name page", placeholder = when (store) {
+                "amazon" -> "https://www.amazon.in/dp/… or amzn.in/d/…"
+                "bookswagon" -> "https://www.bookswagon.com/book/…"
+                else -> "https://atlanticbooks.com/products/…"
+            }, keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
+            VSpace(6)
+            PillButton("Track this page", {
+                val shop = BookPrices.shopOf(url)
+                when {
+                    url.isBlank() -> err = "Paste the book's page first."
+                    shop != store -> err = "That's not a $name page."
+                    else -> {
+                        val e = vm.setPriceLink(key, url)
+                        if (e == null) { pasting = false; url = ""; onChanged("Following that page at $name") } else err = e
+                    }
+                }
+            }, outlined = false)
+            err?.let { VSpace(4); Quiet(it, color = c.errorText) }
+        }
+    }
+}
+
 /** One store's price: its name and format, the price against the printed one, or out of stock. Tap to open the page. */
 @Composable
-private fun StoreRow(p: PricePoint, onOpen: () -> Unit) {
+private fun StoreRow(p: PricePoint, listing: PriceListing? = null, onOpen: () -> Unit) {
     val c = Cp.colors
     Row(
         Modifier.fillMaxWidth().clip(CpShapes.control).bouncyClickable(CpShapes.control, pressedScale = 0.99f, onClickLabel = "Open the store") { onOpen() }.padding(vertical = 8.dp),
@@ -147,9 +236,11 @@ private fun StoreRow(p: PricePoint, onOpen: () -> Unit) {
                 when {
                     p.price == null && p.url == null -> "not found"
                     !p.inStock -> "out of stock"
-                    else -> listOfNotNull(p.format, p.title?.take(40)).joinToString(" · ").ifEmpty { "in stock" }
+                    p.format == "Kindle" -> "Kindle edition"
+                    listing != null -> listingLine(listing).ifEmpty { "in stock" }
+                    else -> listOfNotNull(p.format, BookPrices.editionOf(p.title), p.title?.take(40)).joinToString(" · ").ifEmpty { "in stock" }
                 },
-                style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = CpType.small, color = c.quiet, maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         }
         Column(horizontalAlignment = Alignment.End) {

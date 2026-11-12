@@ -51,9 +51,12 @@ internal fun PlainSheet(title: String, onClose: () -> Unit, content: @Composable
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
-        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
-            Text(title, style = CpType.section, color = c.text)
-            content()
+        androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+                Text(title, style = CpType.section, color = c.text)
+                content()
+            }
+            SheetToaster()
         }
     }
 }

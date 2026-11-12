@@ -11,6 +11,8 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
@@ -865,6 +867,7 @@ private fun BookSheet(
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
+        Box(Modifier.fillMaxSize()) {
         // Always the full height of the screen, so switching pages or loading never resizes the sheet.
         Column(
             Modifier
@@ -876,9 +879,13 @@ private fun BookSheet(
             val facts = state.facts[book.document]
             // The book as a little device on a wallpaper in its cover's colours: a dark screen with
             // the title, the cover and your place rolling up in pixel digits, and keys under it.
+            // At full height the sheet runs under the status bar: the wallpaper goes up behind it, the
+            // grip, label and ⋯ start below it (so the menu never sits on the clock or the battery).
+            val topInset = androidx.compose.foundation.layout.WindowInsets.statusBars
+                .asPaddingValues().calculateTopPadding()
             Box(Modifier.fillMaxWidth()) {
-                Wallpaper(height = 340.dp)
-                Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp)) {
+                Wallpaper(height = 340.dp + topInset)
+                Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = topInset)) {
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { SheetGrip() }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         DeviceLabel(
@@ -1031,6 +1038,8 @@ private fun BookSheet(
                     DayByDayCard(state.readingDays[book.document])
                     if (!book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
                     AudiobookCard(vm, state, book)
+                    // The app's own copy of it, for the lines around quotes: kept, coming, or why not.
+                    CopyCard(vm, book)
                 
                 BookSection("Sync")
                     ThreadsBookCard(vm, state, book) { postingReview = true }
@@ -1149,6 +1158,9 @@ private fun BookSheet(
             // A web novel being linked from the pill shows straight away, whatever the tab.
             if (storyLink && tab != 0 && !book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
             }
+        }
+        // What you just did (a copy kept, a price tracked…) answered here, over the book.
+        SheetToaster()
         }
     }
     }

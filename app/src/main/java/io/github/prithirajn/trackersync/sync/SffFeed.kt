@@ -112,7 +112,10 @@ object SffFeed {
                 2.0 * secs.sumOf { strengths[it] ?: 0.0 } / secs.size.coerceAtLeast(1) +
                 if (followed) 1.5 else 0.0
             val isRead = c.perspectives.any { it.id in read }
-            var score = quality * 2.2 * (0.3 + 0.7 * recency) + taste
+            // Your taste lifts a story among its contemporaries, but doesn't keep an old one on top:
+            // both fade with age, and past three weeks a story sinks well below the day's news.
+            var score = (quality * 2.2 + taste.coerceAtLeast(0.0)) * (0.25 + 0.75 * recency) + taste.coerceAtMost(0.0)
+            if (ageH > 21 * 24) score *= 0.25
             if (isRead) score *= 0.3
             Story(
                 cluster = c, sectors = secs, quality = quality, score = score, read = isRead,
@@ -142,8 +145,13 @@ object SffFeed {
     }
 
     /** The big card at the top: among the first three, the most important unread story with a picture. */
-    fun hero(stories: List<Story>): Story? =
-        stories.take(3).filter { !it.read && !it.spoiler && !it.lead.coverUrl.isNullOrBlank() }.maxByOrNull { it.quality }
+    fun hero(stories: List<Story>, now: Long = System.currentTimeMillis() / 1000): Story? {
+        fun ok(it: Story) = !it.read && !it.spoiler && !it.lead.coverUrl.isNullOrBlank()
+        // Recent news only (the last three days, else the last week).
+        fun age(it: Story) = now - (it.lead.publishedAt.takeIf { p -> p > 0 } ?: it.lead.firstSeenAt.takeIf { f -> f > 0 } ?: now)
+        return stories.take(6).filter { ok(it) && age(it) <= 3 * 86_400 }.maxByOrNull { it.quality }
+            ?: stories.take(10).filter { ok(it) && age(it) <= 7 * 86_400 }.maxByOrNull { it.quality }
+    }
 
     data class Today(val top: Story?, val echo: Pair<String, String>?, val fresh: Int)
 

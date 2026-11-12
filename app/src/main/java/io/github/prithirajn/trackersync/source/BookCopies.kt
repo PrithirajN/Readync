@@ -44,6 +44,30 @@ object BookCopies {
     val copies: StateFlow<Map<String, Copy>> = _copies
     private var loaded = false
 
+    /** Where a book's copy stands: being looked for, downloading, kept, or why it couldn't be had. */
+    data class Status(val state: String, val message: String? = null, val at: Long = System.currentTimeMillis() / 1000, val done: Long = 0, val total: Long = 0) {
+        companion object { const val LOOKING = "looking"; const val DOWNLOADING = "downloading"; const val KEPT = "kept"; const val FAILED = "failed" }
+    }
+
+    private val _status = MutableStateFlow<Map<String, Status>>(emptyMap())
+    /** The latest for each book (this session, plus the last failure kept from earlier ones). */
+    val status: StateFlow<Map<String, Status>> = _status
+
+    private fun setStatus(document: String, st: Status?) {
+        _status.value = if (st == null) _status.value - document else _status.value + (document to st)
+    }
+
+    /** The last time [document] couldn't be found, and why (kept between runs). */
+    fun lastFailure(context: Context, document: String): Status? {
+        _status.value[document]?.takeIf { it.state == Status.FAILED }?.let { return it }
+        val p = prefs(context)
+        val why = p.getString("why:$document", null) ?: return null
+        return Status(Status.FAILED, why, p.getLong("tried:$document", 0))
+    }
+
+    /** Told when a sync keeps a copy (or can't), to say so in a notification. */
+    @Volatile var onBackground: ((Book, Copy?, String?) -> Unit)? = null
+
     /** Books being fetched right now (by document), for the menus to say so. */
     private val _busy = MutableStateFlow<Set<String>>(emptySet())
     val busy: StateFlow<Set<String>> = _busy
@@ -99,6 +123,7 @@ object BookCopies {
         val c = all.remove(document) ?: return
         File(dir(context), c.file).delete()
         synchronized(opened) { opened.remove(document) }
+        setStatus(document, null)
         save(context, all)
     }
 
@@ -224,9 +249,22 @@ object BookCopies {
         _busy.value = _busy.value + book.document
         try {
             noteTried(context, book.document)
+            setStatus(book.document, Status(Status.LOOKING, "Looking on your ${Opds.load(context).size} catalogs"))
             progress(Opds.Progress("Looking on your catalogs"))
             val found = find(context, book) ?: throw CopyException("None of your catalogs has it as an EPUB")
-            return fetch(context, book, found, cancel, progress)
+            setStatus(book.document, Status(Status.DOWNLOADING, "From ${found.server.name}"))
+            val c = fetch(context, book, found, cancel) { p ->
+                setStatus(book.document, Status(Status.DOWNLOADING, "From ${found.server.name}", done = p.done, total = p.total))
+                progress(p)
+            }
+            prefs(context).edit().remove("why:${book.document}").apply()
+            setStatus(book.document, Status(Status.KEPT, "From ${c.server}"))
+            return c
+        } catch (e: Exception) {
+            val why = e.message ?: "Something went wrong"
+            prefs(context).edit().putString("why:${book.document}", why).apply()
+            setStatus(book.document, Status(Status.FAILED, why))
+            throw e
         } finally {
             _busy.value = _busy.value - book.document
         }
@@ -252,6 +290,7 @@ object BookCopies {
             .filter { !triedRecently(context, it.document) }
             .maxByOrNull { it.timestamp }
             ?: return
-        runCatching { get(context, next) }
+        val r = runCatching { get(context, next) }
+        runCatching { onBackground?.invoke(next, r.getOrNull(), r.exceptionOrNull()?.message) }
     }
 }

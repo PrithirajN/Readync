@@ -51,6 +51,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -119,6 +121,23 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     var only by remember { mutableStateOf<String?>(null) }
     var pasting by remember { mutableStateOf(false) }
     var copiesOpen by remember { mutableStateOf(false) }
+    var serversOpen by remember { mutableStateOf(false) }
+    // The newest books across every server: each asked at once, merged newest first, 50 shown.
+    val latestFound = remember { mutableStateListOf<Triple<Opds.Server, Opds.Entry, Int>>() }
+    var latestRunning by remember { mutableStateOf(0) }
+    var latestRound by remember { mutableStateOf(0) }
+    LaunchedEffect(servers.map { it.id }, latestRound) {
+        if (servers.isEmpty()) return@LaunchedEffect
+        latestFound.clear()
+        latestRunning = servers.size
+        servers.map { srv ->
+            scope.async {
+                val r = withContext(Dispatchers.IO) { runCatching { Opds.latest(srv, 30, fresh = latestRound > 0) } }
+                r.getOrNull()?.forEachIndexed { i, e -> latestFound += Triple(srv, e, i) }
+                latestRunning--
+            }
+        }.awaitAll()
+    }
     // Search the catalogs, or the deals on books whose price you're watching.
     var mode by rememberSaveable { mutableStateOf("Search") }
 
@@ -149,6 +168,19 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
             .map { (k, list) -> Hit(k, list.maxByOrNull { (it.second.summary?.length ?: 0) + if (it.second.image != null) 500 else 0 }!!.second, list) }
             .sortedByDescending { score(it, searched) }
     }
+    val latest = remember(latestFound.size) {
+        // Newest first by the date each server gives; without one, each server's own order, taken in turn.
+        latestFound.toList()
+            .groupBy { keyOf(it.second) }
+            .map { (k, list) -> Hit(k, list.maxByOrNull { (it.second.summary?.length ?: 0) + if (it.second.image != null) 500 else 0 }!!.second, list.map { it.first to it.second }) to list }
+            .sortedWith(
+                compareByDescending<Pair<Hit, List<Triple<Opds.Server, Opds.Entry, Int>>>> { (_, l) -> l.mapNotNull { it.second.updated?.take(19) }.maxOrNull() ?: "" }
+                    .thenBy { (_, l) -> l.minOf { it.third } }
+            )
+            .map { it.first }
+            .take(50)
+    }
+    val latestServers = remember(latestFound.size) { latestFound.map { it.first.id }.distinct().size }
     val listState = rememberLazyListState()
 
     LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp)) {
@@ -178,19 +210,54 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
         } else if (servers.isEmpty()) {
             item(key = "empty") { NoServers(onAdd = { addingNew = true }, onPaste = { pasting = true }, onSuggest = { name, url -> adding = Opds.Server(java.util.UUID.randomUUID().toString(), name, url) }) }
         } else if (searched.isEmpty()) {
-            item(key = "servers-head") { CatalogHead("Your servers") }
-            items(servers, key = { "srv-" + it.id }) { s -> ServerRow(s, onBrowse = { browsing = s }, onEdit = { adding = s }) }
+            // Your servers and the app's copies, one line each; the newest books across every server below.
+            item(key = "servers") { ServersRow(servers.size) { serversOpen = true } }
             item(key = "copies") { CopiesRow { copiesOpen = true } }
-            item(key = "hint") {
+            item(key = "latest-head") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { CatalogHead("Latest added") }
+                    if (latestRunning > 0) {
+                        CircularProgressIndicator(Modifier.size(14.dp), color = c.accent, strokeWidth = 2.dp)
+                        HSpace(16)
+                    } else {
+                        IconCircleButton(R.drawable.lucide_refresh_cw, "Check for newer", { latestRound++ }, tint = c.textMid)
+                        HSpace(12)
+                    }
+                }
+            }
+            item(key = "latest-note") {
                 Quiet(
-                    "Type above and all ${servers.size} are searched at once. The same book on several servers shows once, with each place to get it.",
-                    Modifier.padding(horizontal = 16.dp, vertical = 12.dp), color = c.faint,
+                    when {
+                        latestRunning > 0 && latest.isEmpty() -> "Asking ${servers.size} servers for what they added last…"
+                        latestRunning > 0 -> "${latest.size} so far · ${latestRunning} servers still answering"
+                        latest.isEmpty() -> "None of your servers lists its newest books."
+                        else -> "The ${latest.size} newest across ${latestServers} servers. Type above to search them all."
+                    },
+                    Modifier.padding(horizontal = 16.dp), color = c.faint,
                 )
+            }
+            items(latest.chunked(3), key = { row -> "lr-" + row.first().key }) { row ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    for (h in row) Box(Modifier.weight(1f)) { HitTile(h) { open = h } }
+                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
             }
         } else {
             // Each server's answer, as it comes in; tap one to see only its books.
             item(key = "status") {
-                Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // One line for the servers; their names (to see only one's books) when tapped.
+                var showServers by remember { mutableStateOf(false) }
+                val running = status.values.count { it.running }
+                val answered = status.values.count { !it.running && it.error == null && it.found > 0 }
+                Text(
+                    (if (running > 0) "Searching ${servers.size} servers ($running still going)" else "Searched ${servers.size} servers · found on $answered") +
+                        (only?.let { id -> " · only " + (servers.firstOrNull { it.id == id }?.name ?: "one") } ?: "") +
+                        if (showServers) " · hide servers" else " · by server",
+                    style = CpType.small, color = c.quiet,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)
+                        .bouncyClickable(RoundedCornerShape(8.dp), pressedScale = 0.99f, onClickLabel = "Servers") { showServers = !showServers },
+                )
+                if (showServers) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (s in servers) {
                         val st = status[s.id] ?: SearchState(running = false)
                         val on = only == s.id
@@ -224,7 +291,13 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
             }
             val still = status.values.any { it.running }
             if (hits.isEmpty() && !still) item(key = "none") { Quiet("Nothing on any server for “$searched”.", Modifier.padding(16.dp)) }
-            items(hits, key = { "h-" + it.key }) { h -> HitRow(h) { open = h } }
+            // Three to a row, covers first.
+            items(hits.chunked(3), key = { row -> "hr-" + row.first().key }) { row ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    for (h in row) Box(Modifier.weight(1f)) { HitTile(h) { open = h } }
+                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
         }
     }
 
@@ -232,6 +305,11 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     if (addingNew) ServerSheet(null, onClose = { addingNew = false })
     if (pasting) PasteServersSheet { pasting = false }
     if (copiesOpen) CopiesSheet(vm, state) { copiesOpen = false }
+    if (serversOpen) PlainSheet("Your servers", { serversOpen = false }) {
+        Quiet("Tap one to browse its shelves; Edit to change or remove it.")
+        VSpace(8)
+        for (srv in servers) ServerRow(srv, onBrowse = { serversOpen = false; browsing = srv }, onEdit = { serversOpen = false; adding = srv })
+    }
     adding?.let { s -> ServerSheet(s, onClose = { adding = null }) }
     browsing?.let { s -> BrowseServer(vm, state, s) { browsing = null } }
 }
@@ -301,8 +379,13 @@ private fun CatalogCover(server: Opds.Server, url: String?, title: String, width
         if (url != null && value == null) {
             value = withContext(Dispatchers.IO) {
                 Opds.image(server, url)?.let { b ->
-                    val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-                    runCatching { BitmapFactory.decodeByteArray(b, 0, b.size, if (b.size > 400_000) opts else null)?.asImageBitmap() }.getOrNull()
+                    // Full size unless it's very large (a phone-width tile wants ~500 px).
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(b, 0, b.size, bounds)
+                    var sample = 1
+                    while (bounds.outWidth / (sample * 2) >= 600) sample *= 2
+                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                    runCatching { BitmapFactory.decodeByteArray(b, 0, b.size, opts)?.asImageBitmap() }.getOrNull()
                 }
             }?.also { coverMemory.put(url, it) }
         }
@@ -326,7 +409,7 @@ private fun HitRow(h: Hit, onOpen: () -> Unit) {
         Modifier.fillMaxWidth().bouncyClickable(RoundedCornerShape(0.dp), pressedScale = 0.99f, onClickLabel = "Open ${e.title}") { onOpen() }
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        CatalogCover(h.places.first().first, e.image, e.title, 62.dp, 93.dp)
+        CatalogCover(h.places.first().first, e.cover ?: e.thumbnail, e.title, 62.dp, 93.dp)
         HSpace(14)
         Column(Modifier.weight(1f)) {
             Text(e.title, fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, lineHeight = 22.sp, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
@@ -335,9 +418,35 @@ private fun HitRow(h: Hit, onOpen: () -> Unit) {
             VSpace(6)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 for (f in h.formats.take(4)) Chip(f, color = c.text, background = c.divider)
-                for ((s, _) in h.places.distinctBy { it.first.id }) Chip(s.name, color = c.accentText, background = c.accentTint)
+                val n = h.places.distinctBy { it.first.id }.size
+                if (n > 1) Chip("Found in $n", color = c.accentText, background = c.accentTint)
             }
         }
+    }
+}
+
+/** A search result as a tile: the cover, its title and author, its formats and how many servers have it. */
+@Composable
+private fun HitTile(h: Hit, onOpen: () -> Unit) {
+    val c = Cp.colors
+    val e = h.entry
+    // The sharpest cover any of its servers has.
+    val (server, cover) = h.places.firstNotNullOfOrNull { (srv, pe) -> pe.cover?.let { srv to it } }
+        ?: h.places.firstNotNullOfOrNull { (srv, pe) -> pe.thumbnail?.let { srv to it } }
+        ?: (h.places.first().first to null)
+    val n = h.places.distinctBy { it.first.id }.size
+    Column(Modifier.fillMaxWidth().bouncyClickable(RoundedCornerShape(8.dp), pressedScale = 0.97f, onClickLabel = "Open ${e.title}") { onOpen() }) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            CatalogCover(server, cover, e.title, maxWidth, maxWidth * 1.5f)
+        }
+        VSpace(7)
+        Text(e.title, fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 18.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        e.authors.firstOrNull()?.let { Text(it, style = CpType.small, color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        VSpace(3)
+        Text(
+            listOfNotNull(h.formats.take(2).joinToString(" · ").ifBlank { null }, "found in $n").joinToString(" · "),
+            style = CpType.small.copy(fontSize = 11.sp), color = c.accentText, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -418,6 +527,27 @@ private fun HitSheet(vm: AppViewModel, state: Snapshot, h: Hit, onClose: () -> U
     }
 }
 
+/** Your servers as one line: how many, and the way in to browse or change them. */
+@Composable
+private fun ServersRow(count: Int, onOpen: () -> Unit) {
+    val c = Cp.colors
+    Row(
+        Modifier.fillMaxWidth().bouncyClickable(RoundedCornerShape(0.dp), pressedScale = 0.99f, onClickLabel = "Your servers") { onOpen() }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(c.accentTint), contentAlignment = Alignment.Center) {
+            LucideIcon(R.drawable.lucide_globe, Modifier.size(18.dp), c.accentText)
+        }
+        HSpace(12)
+        Column(Modifier.weight(1f)) {
+            Text("Your servers", style = CpType.bodyStrong, color = c.text, maxLines = 1)
+            Quiet("$count server${if (count == 1) "" else "s"} · browse, edit or remove", maxLines = 1)
+        }
+        LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(18.dp), c.quiet)
+    }
+}
+
 /** The app's own copies of books (for the words around quotes): how many, and the way in to them. */
 @Composable
 private fun CopiesRow(onOpen: () -> Unit) {
@@ -460,6 +590,7 @@ private fun CopiesSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) 
     val bc = io.github.prithirajn.trackersync.source.BookCopies
     val copies by bc.copies.collectAsState()
     val busy by bc.busy.collectAsState()
+    val statuses by bc.status.collectAsState()
     var auto by remember { mutableStateOf(bc.auto(context)) }
     PlainSheet("Copies for quotes", onClose) {
         Quiet("EPUBs from your catalogs, kept in the app's own storage (not in Downloads, not seen by other apps). Quote Studio's book photo and Fable's book-photo quotes use them for the real lines above and below your passage, when you haven't photographed its page.")
@@ -474,12 +605,21 @@ private fun CopiesSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) 
             Text("Reading, without a copy", style = CpType.label, color = c.text)
             for (b in missing.take(12)) {
                 VSpace(8)
+                val st = statuses[b.document]
+                val why = if (st == null && b.document !in busy) bc.lastFailure(context, b.document) else null
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(b.displayTitle, style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        b.author?.let { Quiet(it, maxLines = 1) }
+                        Quiet(
+                            when {
+                                st != null && st.state != io.github.prithirajn.trackersync.source.BookCopies.Status.KEPT -> st.message ?: "Looking…"
+                                why != null -> "Couldn't: ${why.message} · ${ago(why.at * 1000)}"
+                                else -> b.author ?: "Not tried yet"
+                            },
+                            maxLines = 1, color = if (why != null || st?.state == io.github.prithirajn.trackersync.source.BookCopies.Status.FAILED) c.errorText else c.quiet,
+                        )
                     }
-                    PillButton(if (b.document in busy) "Looking…" else "Find", { if (b.document !in busy) vm.toggleBookCopy(b.document) })
+                    PillButton(if (b.document in busy) "Looking…" else if (why != null) "Try again" else "Find", { if (b.document !in busy) vm.toggleBookCopy(b.document) })
                 }
             }
         }
