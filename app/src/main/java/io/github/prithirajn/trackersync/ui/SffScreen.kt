@@ -1,10 +1,8 @@
 package io.github.prithirajn.trackersync.ui
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,7 +21,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -53,10 +50,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -70,7 +65,6 @@ import io.github.prithirajn.trackersync.sync.SffArtifactAi
 import io.github.prithirajn.trackersync.sync.SffFeed
 import io.github.prithirajn.trackersync.sync.SffRadar
 import io.github.prithirajn.trackersync.sync.SffRadar.Sector
-import io.github.prithirajn.trackersync.sync.SffChart
 import io.github.prithirajn.trackersync.ui.theme.Cp
 import io.github.prithirajn.trackersync.ui.theme.CpShapes
 import io.github.prithirajn.trackersync.ui.theme.CpType
@@ -79,12 +73,15 @@ import io.github.prithirajn.trackersync.ui.theme.Lora
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
+import java.util.Locale
 
-/** The SFF tab's three views, as Artifact had them. */
-private enum class SffView(val label: String) { FOR_YOU("For You"), TOPICS("Topics"), PROFILE("Profile") }
+/** The SFF tab's views: ranked for you, newest first, by genre, and what you've kept. */
+private enum class SffView(val label: String) { FOR_YOU("For you"), LATEST("Latest"), GENRES("Genres"), SAVED("Saved") }
 
-/** Each sector's colour on cards and on the chart. */
+/** Each genre's colour, for its name over a story and its dot. */
 internal fun sectorColor(sec: Sector): Color = when (sec) {
     Sector.ORBIT -> Color(0xFF5B8DEF)
     Sector.CITADEL -> Color(0xFFE0A33A)
@@ -93,17 +90,22 @@ internal fun sectorColor(sec: Sector): Color = when (sec) {
     Sector.CHRONOS -> Color(0xFFE2683C)
 }
 
+/** A genre by its plain name (the feed's sectors, without the star-chart names). */
+internal fun genreName(sec: Sector): String = when (sec) {
+    Sector.ORBIT -> "Science fiction"
+    Sector.CITADEL -> "Fantasy"
+    Sector.SPIRE -> "Progression & LitRPG"
+    Sector.VOID -> "Horror & weird"
+    Sector.CHRONOS -> "Dystopia & time travel"
+}
+
 /**
- * The SFF tab: every piece of speculative-fiction news in one place, ranked the way Artifact
- * ranked news (see [SffFeed]), and the Star Chart and Astral Probe built on the same taste model
- * (see [SffChart]).
- *
- * For You opens on Today's sky (the day's biggest story, your probe, a highlight of yours to go
- * with it), then the probe's briefing, then the feed: a big hero story, picture cards with the
- * publisher, headline and why it's here, what's new since your last look marked, what you've read
- * dimmed, spoilers blurred, and every eighth story from a sector you rarely read. Topics is the
- * five sectors and the news topics to follow, mute or open. Profile is your Star Chart, level,
- * probe, expedition, constellations, the month's sky, saved stories, history and sources.
+ * The SFF tab: speculative-fiction news from a few dozen outlets, clubbed by story and ranked for
+ * you (see [SffFeed]), set like a magazine. For you opens on the lead story across a big picture,
+ * then the top stories, what's new about books on your shelves, new books as covers, and the rest
+ * as a list, with a wide picture now and then. Latest is everything newest first; Genres is the five
+ * genres and the news topics to follow, mute or open; Saved is what you've kept, what you've read,
+ * alerts and sources.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -115,7 +117,7 @@ fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
     var reading by remember { mutableStateOf<Pair<SffArtifactAi.SffStoryCluster, Int>?>(null) }
     var menuFor by remember { mutableStateOf<SffFeed.Story?>(null) }
 
-    // A clock for "new", countdowns and the next refresh.
+    // A clock for "new" and the next refresh.
     var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
     LaunchedEffect(Unit) { while (true) { delay(30_000); now = System.currentTimeMillis() / 1000 } }
 
@@ -143,9 +145,6 @@ fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
     val stories by produceState(emptyList<SffFeed.Story>(), state.sffItems, state.sffSky, state.sffProfile, state.books, state.facts, now / 600) {
         value = withContext(Dispatchers.Default) { runCatching { SffFeed.build(state, System.currentTimeMillis() / 1000) }.getOrDefault(emptyList()) }
     }
-    val chart by produceState<SffChart.Chart?>(null, state.books, state.facts, state.sffSky, state.releases, now / 600) {
-        value = withContext(Dispatchers.Default) { runCatching { SffChart.chart(state, System.currentTimeMillis() / 1000) }.getOrNull() }
-    }
 
     // A story from a notification: open it.
     val pending by AppActions.pending.collectAsState()
@@ -167,32 +166,21 @@ fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
 
     val libraryTitles = remember(state.books) { state.books.values.associateBy { Matcher.baseTitle(it.displayTitle) } }
     val listState = rememberLazyListState()
+    val open: (SffFeed.Story, Int) -> Unit = { s, i -> reading = s.cluster to i }
 
     LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp)) {
         item(key = "head") {
             Column(PagePadding) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Eyebrow(chart?.className ?: "Speculative fiction")
+                        val today = LocalDate.now()
+                        Eyebrow(today.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault()) + ", " + today.dayOfMonth + " " + today.month.getDisplayName(TextStyle.FULL, Locale.getDefault()))
                         PageTitle("SFF")
                     }
-                    ProbePill(state, now) { view = SffView.PROFILE }
-                    HSpace(8)
                     IconCircleButton(R.drawable.lucide_refresh_cw, "Refresh the news", { vm.refreshSff(force = true) }, busy = state.sffLoading, tint = c.accentText)
                 }
                 VSpace(12)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (v in SffView.entries) {
-                        val on = v == view && openSector == null && openTopic == null
-                        Box(
-                            Modifier.clip(CpShapes.pill).background(if (on) c.text else c.divider)
-                                .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, role = Role.Tab, onClickLabel = v.label) {
-                                    view = v; openSector = null; openTopic = null
-                                }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                        ) { Text(v.label, style = CpType.label, color = if (on) c.page else c.textMid) }
-                    }
-                }
+                Segmented(SffView.entries, view, { it.label }, { view = it; openSector = null; openTopic = null }, Modifier.fillMaxWidth())
             }
         }
 
@@ -200,37 +188,42 @@ fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
         val topic = openTopic?.let { id -> SffFeed.TOPICS.firstOrNull { it.id == id } }
         when {
             sector != null || topic != null -> {
-                item(key = "filtered-head") {
-                    FilteredHead(state, sector, topic, onBack = { openSector = null; openTopic = null }, vm = vm)
-                }
-                val shown = stories.filter { s ->
-                    (sector == null || sector in s.sectors) && (topic == null || SffFeed.inTopic(s.cluster, topic))
-                }
+                item(key = "filtered-head") { FilteredHead(state, sector, topic, onBack = { openSector = null; openTopic = null }, vm = vm) }
+                val shown = stories.filter { s -> (sector == null || sector in s.sectors) && (topic == null || SffFeed.inTopic(s.cluster, topic)) }
                 if (shown.isEmpty()) item(key = "filtered-empty") { EmptyNote("Nothing here yet. New stories come in about every hour.") }
-                items(shown, key = { "f-" + it.id }) { s ->
-                    StoryCard(s, now, onOpen = { reading = s.cluster to it }, onMenu = { menuFor = s })
+                shown.forEachIndexed { i, s ->
+                    item(key = "f-" + s.id) {
+                        if (i == 0 && !s.lead.coverUrl.isNullOrBlank()) WideStory(s, open, { menuFor = s }) else ListStory(s, open, { menuFor = s })
+                    }
                 }
             }
-            view == SffView.FOR_YOU -> forYou(
-                state = state, stories = stories, now = now, vm = vm,
-                onOpen = { s, i -> reading = s.cluster to i },
-                onOpenItem = { item, why -> reading = single(item, why) to 0 },
-                onMenu = { menuFor = it },
-                onProfile = { view = SffView.PROFILE },
-            )
-            view == SffView.TOPICS -> item(key = "topics") {
-                SffTopics(vm, state, chart, stories, onSector = { openSector = it.id }, onTopic = { openTopic = it.id })
+            view == SffView.FOR_YOU -> forYou(state, stories, vm, open, onMenu = { menuFor = it })
+            view == SffView.LATEST -> {
+                val latest = stories.sortedByDescending { it.lead.publishedAt.takeIf { t -> t > 0 } ?: it.lead.firstSeenAt }
+                if (latest.isEmpty()) item(key = "latest-empty") { EmptyNote(if (state.sffLoading) "Gathering the news…" else "Pull the news in with the refresh button.") }
+                var lastDay: LocalDate? = null
+                for (s in latest) {
+                    val at = s.lead.publishedAt.takeIf { it > 0 } ?: s.lead.firstSeenAt
+                    val d = if (at > 0) java.time.Instant.ofEpochSecond(at).atZone(java.time.ZoneId.systemDefault()).toLocalDate() else null
+                    if (d != null && d != lastDay) {
+                        lastDay = d
+                        item(key = "day-$d") { SectionHead(dayLabel(d)) }
+                    }
+                    item(key = "l-" + s.id) { ListStory(s, open, { menuFor = s }) }
+                }
             }
-            else -> item(key = "profile") {
-                SffProfile(
-                    vm, state, chart, now,
+            view == SffView.GENRES -> item(key = "genres") {
+                SffGenres(vm, state, stories, onSector = { openSector = it.id }, onTopic = { openTopic = it.id })
+            }
+            else -> item(key = "saved") {
+                SffSaved(
+                    vm, state,
                     onOpenRead = { h ->
                         val item = state.sffItems.firstOrNull { it.id == h.id } ?: state.sffSky.saved.firstOrNull { it.id == h.id }
                             ?: SffFeedItem(id = h.id, category = "NEWS_AWARDS", source = h.source, title = h.title, url = h.url, coverUrl = h.coverUrl)
                         reading = single(item, "From your history") to 0
                     },
                     onOpenItem = { item -> reading = single(item, "Saved") to 0 },
-                    onSector = { openSector = it.id },
                 )
             }
         }
@@ -250,69 +243,94 @@ fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
 internal fun single(item: SffFeedItem, why: String) =
     SffArtifactAi.SffStoryCluster("one-${item.id}", item, listOf(item), item.tags, item.source, why, false, 0.0)
 
+private fun isBookish(s: SffFeed.Story) = s.lead.category == "DISCOVERY" || s.lead.category == "SERIES_HORIZON"
+
+/**
+ * For you, as a front page: the lead across a big picture, three top stories, what's new about books
+ * on your shelves, new books as covers, then the rest as a list (a wide picture every sixth).
+ */
 private fun androidx.compose.foundation.lazy.LazyListScope.forYou(
     state: Snapshot,
     stories: List<SffFeed.Story>,
-    now: Long,
     vm: AppViewModel,
     onOpen: (SffFeed.Story, Int) -> Unit,
-    onOpenItem: (SffFeedItem, String) -> Unit,
     onMenu: (SffFeed.Story) -> Unit,
-    onProfile: () -> Unit,
 ) {
-    val today = SffFeed.today(state, stories, now)
-    item(key = "today") { TodaySky(vm, state, today, now, onOpen = { today.top?.let { onOpen(it, 0) } }, onProfile = onProfile) }
-    if (state.sffSky.briefing.isNotEmpty()) {
-        item(key = "briefing") { Briefing(vm, state, onOpenItem) }
-    }
     if (state.sffError != null && stories.isEmpty()) {
         item(key = "error") { EmptyNote(state.sffError, action = "Try again") { vm.refreshSff(force = true) } }
-    } else if (stories.isEmpty()) {
+        return
+    }
+    if (stories.isEmpty()) {
         item(key = "loading") { EmptyNote(if (state.sffLoading) "Gathering the news from 40-odd sources…" else "Pull the news in with the refresh button.") }
+        return
     }
-    val hero = SffFeed.hero(stories)
-    hero?.let { h -> item(key = "hero") { HeroCard(h, now, onOpen = { onOpen(h, it) }, onMenu = { onMenu(h) }) } }
-    val rest = stories.filter { it !== hero }
-    val freshCount = rest.count { it.fresh }
-    var shownNewLine = false
-    var shownSeenLine = false
-    for ((i, s) in rest.withIndex()) {
-        if (s.fresh && !shownNewLine && freshCount > 0) {
-            shownNewLine = true
-            item(key = "new-line") { Divider("$freshCount new since ${clock(state.sffSky.prevSeenAt)}", accent = true) }
-        }
-        if (!s.fresh && shownNewLine && !shownSeenLine) {
-            shownSeenLine = true
-            item(key = "seen-line") { Divider("Seen before") }
-        }
-        item(key = "s-" + s.id) {
-            StoryCard(s, now, onOpen = { onOpen(s, it) }, onMenu = { onMenu(s) })
-        }
-        if (i > 200) break
+    val news = stories.filter { !isBookish(it) }
+    val books = stories.filter { isBookish(it) && !it.lead.coverUrl.isNullOrBlank() }
+    val lead = SffFeed.hero(news) ?: news.firstOrNull { !it.lead.coverUrl.isNullOrBlank() } ?: news.firstOrNull()
+    val shelves = news.filter { it !== lead && it.lead.matchedLibraryBook != null && !it.read }.take(6)
+    val rest = news.filter { it !== lead && it !in shelves }
+    val top = rest.take(3)
+    val more = rest.drop(3)
+
+    lead?.let { s -> item(key = "lead") { LeadStory(s, onOpen) { onMenu(s) } } }
+    if (top.isNotEmpty()) {
+        item(key = "top-head") { SectionHead("Top stories") }
+        for (s in top) item(key = "t-" + s.id) { TopStory(s, onOpen) { onMenu(s) } }
     }
-    if (stories.isNotEmpty()) {
-        item(key = "caught-up") {
-            val next = ((state.sffUpdatedAt + SffRadar.REFRESH_INTERVAL_SEC - now) / 60).coerceAtLeast(1)
-            Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("You're all caught up", style = CpType.bodyStrong, color = Cp.colors.text)
-                Quiet("Fresh stories in about $next min. Your probe charges as you read.", color = Cp.colors.faint)
+    if (shelves.isNotEmpty()) {
+        item(key = "shelves") {
+            Column {
+                SectionHead("About your books")
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(shelves, key = { "sh-" + it.id }) { s -> ShelfStory(s, onOpen) }
+                }
             }
+        }
+    }
+    if (books.isNotEmpty()) {
+        item(key = "books") {
+            Column {
+                SectionHead("New books")
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    items(books.take(16), key = { "b-" + it.id }) { s -> BookStory(s, onOpen) }
+                }
+            }
+        }
+    }
+    if (more.isNotEmpty()) {
+        item(key = "more-head") { SectionHead("More news") }
+        more.take(200).forEachIndexed { i, s ->
+            item(key = "m-" + s.id) {
+                if (i % 6 == 5 && !s.lead.coverUrl.isNullOrBlank() && !s.spoiler) WideStory(s, onOpen) { onMenu(s) }
+                else ListStory(s, onOpen) { onMenu(s) }
+            }
+        }
+    }
+    item(key = "caught-up") {
+        val next = ((state.sffUpdatedAt + SffRadar.REFRESH_INTERVAL_SEC - System.currentTimeMillis() / 1000) / 60).coerceAtLeast(1)
+        Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("That's everything", style = CpType.bodyStrong, color = Cp.colors.text)
+            Quiet("Fresh stories in about $next min.", color = Cp.colors.faint)
         }
     }
 }
 
-private fun clock(at: Long): String =
-    if (at <= 0) "your last look" else DateTimeFormatter.ofPattern("h:mm a").format(java.time.Instant.ofEpochSecond(at).atZone(java.time.ZoneId.systemDefault()))
+private fun dayLabel(d: LocalDate): String {
+    val today = LocalDate.now()
+    return when (d) {
+        today -> "Today"
+        today.minusDays(1) -> "Yesterday"
+        else -> d.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault()) + ", " + d.dayOfMonth + " " + d.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
+    }
+}
 
+/** A section's name, set like a magazine's: bold, with a short rule in the accent beside it. */
 @Composable
-private fun Divider(text: String, accent: Boolean = false) {
+private fun SectionHead(text: String) {
     val c = Cp.colors
-    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (accent) Box(Modifier.size(8.dp).clip(CircleShape).background(c.accent))
-        if (accent) HSpace(8)
-        Text(text, style = CpType.label, color = if (accent) c.accentText else c.quiet)
-        HSpace(10)
-        Box(Modifier.weight(1f).height(1.dp).background(c.divider))
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 26.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, fontFamily = Inter, fontWeight = FontWeight.ExtraBold, fontSize = 19.sp, color = c.text)
+        Box(Modifier.padding(start = 12.dp).weight(1f).height(1.dp).background(c.divider))
     }
 }
 
@@ -331,149 +349,12 @@ private fun EmptyNote(text: String, action: String? = null, onAction: () -> Unit
     }
 }
 
-/** The probe's charge (or where it is), up by the title; tap for the Star Chart. */
-@Composable
-private fun ProbePill(state: Snapshot, now: Long, onTap: () -> Unit) {
-    val c = Cp.colors
-    val sky = state.sffSky
-    val text = when {
-        SffChart.returned(sky, now) -> "Probe back!"
-        sky.probeSector != null -> "Probe ${((sky.probeReturnsAt - now).coerceAtLeast(0) + 59) / 60}m"
-        sky.charge >= 100 -> "Probe ready"
-        else -> "Probe ${sky.charge}%"
-    }
-    val hot = SffChart.returned(sky, now) || (sky.probeSector == null && sky.charge >= 100)
-    Box(
-        Modifier.clip(CpShapes.pill).background(if (hot) c.accent else c.accentTint)
-            .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, onClickLabel = "Open the Star Chart") { onTap() }
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-    ) { Text(text, style = CpType.label, color = if (hot) c.page else c.accentText) }
-}
-
-/** Today's sky: the day's biggest story, your probe, a highlight of yours, what's new. */
-@Composable
-private fun TodaySky(vm: AppViewModel, state: Snapshot, today: SffFeed.Today, now: Long, onOpen: () -> Unit, onProfile: () -> Unit) {
-    val c = Cp.colors
-    val sky = state.sffSky
-    val night = Brush.linearGradient(listOf(Color(0xFF141A33), Color(0xFF2B1F4A), Color(0xFF3B2A3F)))
-    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
-        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(night).padding(18.dp).animateContentSize()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Today's sky", style = CpType.eyebrow, color = Color(0xFFF2D9A6))
-                Box(Modifier.weight(1f))
-                if (today.fresh > 0) {
-                    Box(Modifier.clip(CpShapes.pill).background(Color(0x33FFFFFF)).padding(horizontal = 10.dp, vertical = 4.dp)) {
-                        Text("${today.fresh} new", style = CpType.small, color = Color.White)
-                    }
-                }
-            }
-            today.top?.let { top ->
-                VSpace(8)
-                Column(Modifier.fillMaxWidth().bouncyClickable(CpShapes.control, pressedScale = 0.98f, onClickLabel = "Read") { onOpen() }.padding(vertical = 4.dp)) {
-                    Text(top.lead.source.substringBefore(" ·").uppercase(), style = CpType.chip, color = Color(0xFFB9C3E8))
-                    VSpace(2)
-                    Text(top.lead.aiHeadline ?: top.lead.title, fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, lineHeight = 26.sp, color = Color.White, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    val outlets = top.cluster.perspectives.map { it.source.substringBefore(" ·") }.distinct().size
-                    if (outlets > 1) {
-                        VSpace(2)
-                        Text("Covered by $outlets outlets", style = CpType.small, color = Color(0xFFB9C3E8))
-                    }
-                }
-            }
-            VSpace(12)
-            // The probe, right here.
-            Row(Modifier.fillMaxWidth().clip(CpShapes.control).background(Color(0x22FFFFFF)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    val where = sky.probeSector?.let { Sector.byId(it).title }
-                    Text(
-                        when {
-                            SffChart.returned(sky, now) -> "Your probe is back from $where"
-                            where != null -> "Probe exploring $where"
-                            sky.charge >= 100 -> "Probe charged: choose where it goes"
-                            else -> "Probe charging · ${sky.charge}%"
-                        },
-                        style = CpType.label, color = Color.White,
-                    )
-                    VSpace(6)
-                    val frac = when {
-                        where != null -> (1f - (sky.probeReturnsAt - now).toFloat() / SffChart.PROBE_TRAVEL_SEC).coerceIn(0.03f, 1f)
-                        else -> (sky.charge / 100f).coerceIn(0.03f, 1f)
-                    }
-                    Box(Modifier.fillMaxWidth().height(6.dp).clip(CpShapes.pill).background(Color(0x33FFFFFF))) {
-                        Box(Modifier.fillMaxWidth(frac).height(6.dp).clip(CpShapes.pill).background(Color(0xFFF2D9A6)))
-                    }
-                    if (where == null && sky.charge < 100) {
-                        VSpace(4)
-                        Text("Charges as you read: pages in any book, or stories read through.", style = CpType.small, color = Color(0xFFB9C3E8))
-                    }
-                }
-                HSpace(10)
-                when {
-                    SffChart.returned(sky, now) -> PillButton("Bring it in", { vm.claimSffProbe() }, outlined = false)
-                    sky.probeSector == null && sky.charge >= 100 -> PillButton("Launch", onProfile, outlined = false)
-                }
-            }
-            today.echo?.let { (quote, book) ->
-                VSpace(12)
-                Text("“${quote.take(220)}${if (quote.length > 220) "…" else ""}”", fontFamily = Lora, fontSize = 15.sp, lineHeight = 22.sp, color = Color(0xFFEDE6F7))
-                Text("— you highlighted this in $book", style = CpType.small, color = Color(0xFFB9C3E8))
-            }
-            sky.expedition?.takeIf { !it.done }?.let { e ->
-                VSpace(12)
-                val sec = Sector.byId(e.sector)
-                Text(
-                    "This week's expedition · ${sec.title}: ${e.articles}/${e.articlesGoal} stories" + if (e.pagesGoal > 0) " · ${e.pages.coerceAtMost(e.pagesGoal)}/${e.pagesGoal} pages" else "",
-                    style = CpType.small, color = Color(0xFFF2D9A6),
-                )
-            }
-        }
-    }
-}
-
-/** What the probe brought back: its stories and a book, side by side. */
-@Composable
-private fun Briefing(vm: AppViewModel, state: Snapshot, onOpenItem: (SffFeedItem, String) -> Unit) {
-    val c = Cp.colors
-    val sky = state.sffSky
-    val sec = sky.briefingSector?.let { Sector.byId(it) }
-    Column(Modifier.padding(top = 16.dp)) {
-        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(10.dp).clip(CircleShape).background(sec?.let { sectorColor(it) } ?: c.accent))
-            HSpace(8)
-            Column(Modifier.weight(1f)) {
-                Text("Probe briefing" + (sec?.let { " · ${it.title}" } ?: ""), style = CpType.bodyStrong, color = c.text)
-                sky.briefingSector?.let { sky.revealed[it] }.orEmpty().lastOrNull()?.let { Quiet("Revealed on your chart: $it", color = c.accentText) }
-            }
-            PillButton("Done", { vm.sffDismissBriefing() })
-        }
-        VSpace(8)
-        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(sky.briefing, key = { "b-" + it.id }) { item ->
-                val read = sky.history.any { it.id == item.id && it.seconds >= 10 }
-                Column(
-                    Modifier.width(220.dp).clip(RoundedCornerShape(16.dp)).background(c.surface).border(1.dp, c.hairline, RoundedCornerShape(16.dp))
-                        .bouncyClickable(RoundedCornerShape(16.dp), pressedScale = 0.98f, onClickLabel = "Read") { onOpenItem(item, "From your probe's briefing") }
-                        .alpha(if (read) 0.55f else 1f),
-                ) {
-                    if (!item.coverUrl.isNullOrBlank()) StoryImage(item.coverUrl, Modifier.fillMaxWidth().height(110.dp))
-                    Column(Modifier.padding(12.dp)) {
-                        Text(item.source.substringBefore(" ·"), style = CpType.chip, color = c.accentText)
-                        VSpace(2)
-                        Text(item.aiHeadline ?: item.title, style = CpType.bodyStrong, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                        item.matchedLibraryBook?.takeIf { item.category == "DISCOVERY" }?.let { VSpace(4); Quiet(it, maxLines = 1) }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /** A story's picture, edge to edge, loaded like covers are (and cached the same way). */
 @Composable
 internal fun StoryImage(url: String?, modifier: Modifier) {
     val c = Cp.colors
     val context = LocalContext.current.applicationContext
-    val px = with(LocalDensity.current) { 360.dp.roundToPx() }
+    val px = with(LocalDensity.current) { 420.dp.roundToPx() }
     val image by produceState<ImageBitmap?>(url?.let { CoverCache.cached(it)?.asImageBitmap() }, url) {
         if (url != null && value == null) {
             value = withContext(Dispatchers.IO) { runCatching { CoverCache.load(context, url, px) }.getOrNull()?.asImageBitmap() }
@@ -484,158 +365,209 @@ internal fun StoryImage(url: String?, modifier: Modifier) {
     }
 }
 
-/** The publisher's badge: its first letter in a small rounded square. */
-@Composable
-private fun Publisher(source: String, at: Long, tail: String? = null, dim: Boolean = false) {
-    val c = Cp.colors
-    val name = source.substringBefore(" ·")
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(18.dp).clip(RoundedCornerShape(5.dp)).background(if (dim) c.faint else c.text), contentAlignment = Alignment.Center) {
-            Text(name.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: "•", fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = c.page)
-        }
-        HSpace(6)
-        Text(name, style = CpType.small.copy(fontWeight = FontWeight.SemiBold), color = if (dim) c.quiet else c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-        if (at > 0) Text(" · " + ago(at * 1000), style = CpType.small, color = c.quiet, maxLines = 1)
-        tail?.let { Text(" · $it", style = CpType.small, color = c.quiet, maxLines = 1) }
-    }
-}
-
 private fun minutesOf(item: SffFeedItem): Int? {
     val words = (item.fullContent ?: item.summary)?.split(Regex("\\s+"))?.size ?: return null
     return (words / 220).coerceAtLeast(1).takeIf { words > 120 }
 }
 
+private fun headline(s: SffFeed.Story) = s.lead.aiHeadline ?: s.lead.title
+
+/** "Tor.com · 3h · 4 min", with "+2 outlets" when others carry it. */
+private fun metaLine(s: SffFeed.Story): String {
+    val lead = s.lead
+    val outlets = s.cluster.perspectives.map { it.source.substringBefore(" ·") }.distinct().size
+    return listOfNotNull(
+        lead.source.substringBefore(" ·"),
+        lead.publishedAt.takeIf { it > 0 }?.let { ago(it * 1000) },
+        minutesOf(lead)?.let { "$it min" },
+        (outlets - 1).takeIf { it > 0 }?.let { "+$it outlet${if (it > 1) "s" else ""}" },
+    ).joinToString("  ·  ")
+}
+
+/** Above a headline: its genre in its colour (with a dot when it's new), or why it's here. */
 @Composable
-private fun WhyLine(s: SffFeed.Story) {
+private fun Kicker(s: SffFeed.Story, onDark: Boolean = false) {
     val c = Cp.colors
-    val text = when {
-        s.exploring -> "Exploring · ${s.sectors.firstOrNull()?.title ?: "something new"}"
-        else -> s.lead.matchedLibraryBook?.removePrefix("✨ On-Device AI Pick · ") ?: s.cluster.whyInFeed.substringBefore(" · ")
-    }
+    val sec = s.sectors.firstOrNull()
+    val why = s.lead.matchedLibraryBook?.removePrefix("✨ On-Device AI Pick · ")
     Row(verticalAlignment = Alignment.CenterVertically) {
-        s.sectors.firstOrNull()?.let { Box(Modifier.size(7.dp).clip(CircleShape).background(sectorColor(it))); HSpace(6) }
-        Text(text, style = CpType.small, color = if (s.exploring || s.lead.matchedLibraryBook != null) c.accentText else c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (s.fresh && !s.read) { Box(Modifier.size(7.dp).clip(CircleShape).background(c.accent)); HSpace(6) }
+        Text(
+            why ?: sec?.let { genreName(it) } ?: "News",
+            fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 12.5.sp,
+            color = when { onDark -> Color.White.copy(alpha = 0.85f); why != null -> c.accentText; sec != null -> sectorColor(sec); else -> c.quiet },
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
-/** The day's big story: a full-width picture, a large headline, the publisher, why it's here. */
+/** The lead story: its picture across the page, darkened at the foot, with the headline set on it. */
 @Composable
-private fun HeroCard(s: SffFeed.Story, now: Long, onOpen: (Int) -> Unit, onMenu: () -> Unit) {
-    val c = Cp.colors
-    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surface).border(1.dp, c.hairline, RoundedCornerShape(20.dp))
-                .bouncyClickable(RoundedCornerShape(20.dp), pressedScale = 0.99f, onClickLabel = "Read") { onOpen(0) },
-        ) {
-            StoryImage(s.lead.coverUrl, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
-            Column(Modifier.padding(16.dp)) {
-                Publisher(s.lead.source, s.lead.publishedAt, minutesOf(s.lead)?.let { "$it min" })
+private fun LeadStory(s: SffFeed.Story, onOpen: (SffFeed.Story, Int) -> Unit, onMenu: () -> Unit) {
+    val shape = RoundedCornerShape(24.dp)
+    Box(
+        Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp).fillMaxWidth().aspectRatio(0.86f).clip(shape)
+            .bouncyClickable(shape, pressedScale = 0.99f, onClickLabel = "Read") { onOpen(s, 0) },
+    ) {
+        StoryImage(s.lead.coverUrl, Modifier.fillMaxSize().let { if (s.spoiler) it.blur(20.dp) else it })
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.35f to Color(0x22000000), 1f to Color(0xE6000000))))
+        Column(Modifier.align(Alignment.BottomStart).padding(20.dp)) {
+            Kicker(s, onDark = true)
+            VSpace(8)
+            Text(
+                headline(s), fontFamily = Lora, fontWeight = FontWeight.Bold, fontSize = 27.sp, lineHeight = 33.sp,
+                color = Color.White, maxLines = 5, overflow = TextOverflow.Ellipsis,
+                modifier = if (s.spoiler) Modifier.blur(8.dp) else Modifier,
+            )
+            s.lead.summary?.takeIf { !s.spoiler }?.let {
                 VSpace(8)
-                Text(s.lead.aiHeadline ?: s.lead.title, fontFamily = Inter, fontWeight = FontWeight.ExtraBold, fontSize = 23.sp, lineHeight = 28.sp, color = c.text)
-                s.lead.summary?.let { VSpace(6); Text(it, style = CpType.body, color = c.textMid, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-                VSpace(10)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) { WhyLine(s) }
-                    Outlets(s, onOpen)
-                    MenuDots(onMenu)
+                Text(it, fontFamily = Inter, fontSize = 14.5.sp, lineHeight = 20.sp, color = Color.White.copy(alpha = 0.8f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            VSpace(12)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(metaLine(s), style = CpType.small, color = Color.White.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Box(Modifier.size(32.dp).clip(CircleShape).background(Color(0x33FFFFFF)).bouncyClickable(CircleShape, pressedScale = 0.9f, onClickLabel = "More") { onMenu() }, contentAlignment = Alignment.Center) {
+                    LucideIcon(R.drawable.lucide_ellipsis, Modifier.size(16.dp), Color.White)
                 }
             }
         }
     }
 }
 
+/** A top story: serif headline with two lines of its summary, its picture square beside it. */
 @Composable
-private fun Outlets(s: SffFeed.Story, onOpen: (Int) -> Unit) {
+private fun TopStory(s: SffFeed.Story, onOpen: (SffFeed.Story, Int) -> Unit, onMenu: () -> Unit) {
     val c = Cp.colors
-    val n = s.cluster.perspectives.size
-    if (n > 1) {
-        Box(
-            Modifier.clip(CpShapes.pill).background(c.accentTint)
-                .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, onClickLabel = "Other outlets") { onOpen(1) }
-                .padding(horizontal = 8.dp, vertical = 3.dp),
-        ) {
-            val outlets = s.cluster.perspectives.map { it.source.substringBefore(" ·") }.distinct().size
-            Text(if (outlets > 1) "+${outlets - 1} outlet${if (outlets > 2) "s" else ""}" else "+${n - 1} more", style = CpType.small, color = c.accentText)
+    StoryRow(s, onOpen, onMenu) {
+        Row {
+            Column(Modifier.weight(1f)) {
+                Kicker(s)
+                VSpace(6)
+                Text(headline(s), fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 19.sp, lineHeight = 25.sp, color = c.text, maxLines = 4, overflow = TextOverflow.Ellipsis, modifier = spoilerBlur(s))
+                s.lead.summary?.takeIf { !s.spoiler }?.let {
+                    VSpace(6)
+                    Text(it, fontFamily = Inter, fontSize = 14.sp, lineHeight = 19.sp, color = c.textMid, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (!s.lead.coverUrl.isNullOrBlank()) {
+                HSpace(14)
+                StoryImage(s.lead.coverUrl, Modifier.size(104.dp).clip(RoundedCornerShape(16.dp)).let { if (s.spoiler) it.blur(14.dp) else it })
+            }
         }
     }
 }
 
+/** A story in the list: small picture to the left, genre, headline, where it's from. */
 @Composable
-private fun MenuDots(onMenu: () -> Unit) {
-    Box(Modifier.size(32.dp).clip(CircleShape).bouncyClickable(CircleShape, pressedScale = 0.9f, onClickLabel = "More") { onMenu() }, contentAlignment = Alignment.Center) {
-        LucideIcon(R.drawable.lucide_ellipsis, Modifier.size(16.dp), Cp.colors.quiet)
+private fun ListStory(s: SffFeed.Story, onOpen: (SffFeed.Story, Int) -> Unit, onMenu: () -> Unit) {
+    val c = Cp.colors
+    StoryRow(s, onOpen, onMenu) {
+        Row {
+            if (!s.lead.coverUrl.isNullOrBlank()) {
+                if (isBookish(s)) BookCover(s.lead.coverUrl, s.lead.title, 56.dp, 84.dp)
+                else StoryImage(s.lead.coverUrl, Modifier.size(84.dp).clip(RoundedCornerShape(14.dp)).let { if (s.spoiler) it.blur(12.dp) else it })
+                HSpace(14)
+            }
+            Column(Modifier.weight(1f)) {
+                Kicker(s)
+                VSpace(4)
+                Text(headline(s), fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, lineHeight = 21.sp, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = spoilerBlur(s))
+                if (isBookish(s)) s.lead.subtitle?.let { VSpace(2); Quiet(it, maxLines = 1) }
+            }
+        }
     }
 }
 
-/** A story in the feed, Artifact-style: picture, publisher, headline, why it's here; dimmed once read; spoilers blurred. */
+/** Now and then in the list: the picture across, the headline under it. */
 @Composable
-private fun StoryCard(s: SffFeed.Story, now: Long, onOpen: (Int) -> Unit, onMenu: () -> Unit) {
+private fun WideStory(s: SffFeed.Story, onOpen: (SffFeed.Story, Int) -> Unit, onMenu: () -> Unit) {
     val c = Cp.colors
-    val lead = s.lead
+    StoryRow(s, onOpen, onMenu) {
+        Column {
+            StoryImage(s.lead.coverUrl, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)))
+            VSpace(12)
+            Kicker(s)
+            VSpace(6)
+            Text(headline(s), fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 21.sp, lineHeight = 27.sp, color = c.text, maxLines = 4, overflow = TextOverflow.Ellipsis)
+            s.lead.summary?.let { VSpace(6); Text(it, fontFamily = Inter, fontSize = 14.sp, lineHeight = 19.sp, color = c.textMid, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+        }
+    }
+}
+
+private fun spoilerBlur(s: SffFeed.Story) = if (s.spoiler) Modifier.blur(7.dp) else Modifier
+
+/**
+ * The frame every story in the list shares: tap to read (a spoiler shows first), dimmed once
+ * read, its meta line and menu under it, a hairline between stories.
+ */
+@Composable
+private fun StoryRow(s: SffFeed.Story, onOpen: (SffFeed.Story, Int) -> Unit, onMenu: () -> Unit, content: @Composable () -> Unit) {
+    val c = Cp.colors
     var revealed by remember(s.id) { mutableStateOf(false) }
     val hidden = s.spoiler && !revealed
-    val bookish = lead.category == "DISCOVERY" || lead.category == "SERIES_HORIZON"
-    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).alpha(if (s.read) 0.55f else 1f)) {
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(c.surface).border(1.dp, c.hairline, RoundedCornerShape(18.dp))
-                .bouncyClickable(RoundedCornerShape(18.dp), pressedScale = 0.99f, onClickLabel = "Read ${lead.title}") { if (hidden) revealed = true else onOpen(0) },
-        ) {
-            if (!bookish && !lead.coverUrl.isNullOrBlank()) {
-                Box {
-                    StoryImage(lead.coverUrl, Modifier.fillMaxWidth().height(170.dp).let { if (hidden) it.blur(18.dp) else it })
-                    if (s.fresh && !s.read) NewBadge(Modifier.align(Alignment.TopStart).padding(10.dp))
-                }
+    Column(
+        Modifier.fillMaxWidth()
+            .bouncyClickable(RoundedCornerShape(0.dp), pressedScale = 0.99f, onClickLabel = "Read ${s.lead.title}") { if (hidden) revealed = true else onOpen(s, 0) }
+            .padding(start = 16.dp, end = 10.dp, top = 14.dp)
+            .alpha(if (s.read) 0.5f else 1f),
+    ) {
+        Box(Modifier.padding(end = 6.dp)) { content() }
+        if (hidden) {
+            VSpace(8)
+            Row(Modifier.clip(CpShapes.pill).background(c.divider).padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                LucideIcon(R.drawable.lucide_eye_off, Modifier.size(13.dp), c.warn)
+                HSpace(6)
+                Text("May spoil a book you're reading · tap to show", style = CpType.small, color = c.textMid)
             }
-            Row(Modifier.padding(14.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { Publisher(lead.source, lead.publishedAt, minutesOf(lead)?.let { "$it min" }, dim = s.read) }
-                        if (s.fresh && !s.read && (bookish || lead.coverUrl.isNullOrBlank())) NewBadge()
-                    }
-                    VSpace(6)
-                    Text(
-                        lead.aiHeadline ?: lead.title,
-                        fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 17.sp, lineHeight = 22.sp,
-                        color = c.text, maxLines = 4, overflow = TextOverflow.Ellipsis,
-                        modifier = if (hidden) Modifier.blur(8.dp) else Modifier,
-                    )
-                    if (hidden) {
-                        VSpace(6)
-                        Row(Modifier.clip(CpShapes.pill).background(c.divider).padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                            LucideIcon(R.drawable.lucide_eye_off, Modifier.size(13.dp), c.warn)
-                            HSpace(6)
-                            Text("May spoil a book you're reading · tap to show", style = CpType.small, color = c.textMid)
-                        }
-                    } else if (bookish) {
-                        lead.subtitle?.let { VSpace(2); Quiet(it, maxLines = 1) }
-                    }
-                    VSpace(8)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { WhyLine(s) }
-                        s.reaction?.let { Text(it, style = CpType.body); HSpace(4) }
-                        if (s.saved) { LucideIcon(R.drawable.lucide_book_plus, Modifier.size(14.dp), c.accentText); HSpace(4) }
-                        Outlets(s, onOpen)
-                        MenuDots(onMenu)
-                    }
-                }
-                if (bookish && !lead.coverUrl.isNullOrBlank()) {
-                    HSpace(12)
-                    BookCover(lead.coverUrl, lead.title, 58.dp, 86.dp)
-                }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(metaLine(s), style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (s.saved) { LucideIcon(R.drawable.lucide_book_plus, Modifier.size(14.dp), c.accentText); HSpace(4) }
+            s.reaction?.let { Text(it, style = CpType.small); HSpace(4) }
+            Box(Modifier.size(36.dp).clip(CircleShape).bouncyClickable(CircleShape, pressedScale = 0.9f, onClickLabel = "More") { onMenu() }, contentAlignment = Alignment.Center) {
+                LucideIcon(R.drawable.lucide_ellipsis, Modifier.size(16.dp), c.quiet)
             }
+        }
+        Box(Modifier.padding(end = 6.dp).fillMaxWidth().height(1.dp).background(c.divider))
+    }
+}
+
+/** News about a book on your shelves: its cover small, which book, the headline. */
+@Composable
+private fun ShelfStory(s: SffFeed.Story, onOpen: (SffFeed.Story, Int) -> Unit) {
+    val c = Cp.colors
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        Modifier.width(260.dp).clip(shape).background(c.surface).border(1.dp, c.hairline, shape)
+            .bouncyClickable(shape, pressedScale = 0.98f, onClickLabel = "Read") { onOpen(s, 0) },
+    ) {
+        if (!s.lead.coverUrl.isNullOrBlank()) StoryImage(s.lead.coverUrl, Modifier.fillMaxWidth().height(120.dp).let { if (s.spoiler) it.blur(16.dp) else it })
+        Column(Modifier.padding(14.dp)) {
+            Kicker(s)
+            VSpace(6)
+            Text(headline(s), fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, lineHeight = 21.sp, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = spoilerBlur(s))
+            VSpace(6)
+            Text(s.lead.source.substringBefore(" ·"), style = CpType.small, color = c.quiet, maxLines = 1)
         }
     }
 }
 
+/** A new book: its cover, title, author, and when it's out. */
 @Composable
-private fun NewBadge(modifier: Modifier = Modifier) {
+private fun BookStory(s: SffFeed.Story, onOpen: (SffFeed.Story, Int) -> Unit) {
     val c = Cp.colors
-    Box(modifier.clip(CpShapes.pill).background(c.accent).padding(horizontal = 8.dp, vertical = 2.dp)) {
-        Text("NEW", style = CpType.chip, color = c.page)
+    Column(
+        Modifier.width(116.dp).clip(RoundedCornerShape(12.dp)).bouncyClickable(RoundedCornerShape(12.dp), pressedScale = 0.97f, onClickLabel = "Open ${s.lead.title}") { onOpen(s, 0) }
+            .alpha(if (s.read) 0.55f else 1f),
+    ) {
+        BookCover(s.lead.coverUrl, s.lead.title, 116.dp, 174.dp)
+        VSpace(8)
+        Text(s.lead.title, fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp, lineHeight = 17.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(listOfNotNull(s.lead.author, s.lead.releaseDate ?: s.lead.year?.toString()).joinToString(" · "), style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
-/** A story's other actions: not interested, hide the publisher, follow or mute its sector, save, share. */
+/** A story's other actions: save, more or less like it, follow or mute its genre, hide the publisher, share. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun StoryMenu(vm: AppViewModel, state: Snapshot, s: SffFeed.Story, onClose: () -> Unit) {
@@ -643,7 +575,7 @@ private fun StoryMenu(vm: AppViewModel, state: Snapshot, s: SffFeed.Story, onClo
     val context = LocalContext.current
     ModalBottomSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), shape = CpShapes.sheet, containerColor = c.page) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
-            Text(s.lead.aiHeadline ?: s.lead.title, style = CpType.bodyStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(headline(s), fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 24.sp, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
             Quiet(s.lead.source.substringBefore(" ·"))
             VSpace(14)
             fun row(label: String, note: String? = null, act: () -> Unit) = Pair(label to note, act)
@@ -653,15 +585,16 @@ private fun StoryMenu(vm: AppViewModel, state: Snapshot, s: SffFeed.Story, onClo
                 add(row("More like this", "Lifts its topics in your feed") { vm.sffFeedback(s.cluster, true) })
                 add(row("Not interested", "Fewer stories like it") { vm.sffFeedback(s.cluster, false) })
                 for (sec in s.sectors) {
+                    val name = genreName(sec)
                     val following = sec.id in state.sffSky.followed
-                    add(row(if (following) "Stop following ${sec.title}" else "Follow ${sec.title}", sec.subtitle) { vm.sffFollow(sec.id, sec.title) })
-                    add(row(if (sec.id in state.sffSky.mutedSectors) "Unmute ${sec.title}" else "Mute ${sec.title}") { vm.sffMute(sec.id, sec.title) })
+                    add(row(if (following) "Stop following $name" else "Follow $name") { vm.sffFollow(sec.id, name) })
+                    add(row(if (sec.id in state.sffSky.mutedSectors) "Unmute $name" else "Mute $name") { vm.sffMute(sec.id, name) })
                 }
                 add(row(if (publisher in state.sffSky.blockedSources) "Show $publisher again" else "Hide $publisher") { vm.sffBlockSource(publisher) })
                 s.lead.url?.let { u ->
                     add(row("Share") {
                         val send = android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
-                            .putExtra(android.content.Intent.EXTRA_TEXT, "${s.lead.aiHeadline ?: s.lead.title}\n$u")
+                            .putExtra(android.content.Intent.EXTRA_TEXT, "${headline(s)}\n$u")
                         runCatching { context.startActivity(android.content.Intent.createChooser(send, "Share story")) }
                     })
                 }
@@ -679,12 +612,12 @@ private fun StoryMenu(vm: AppViewModel, state: Snapshot, s: SffFeed.Story, onClo
     }
 }
 
-/** The head of one sector's or topic's own feed: back, its name, follow and mute. */
+/** The head of one genre's or topic's own feed: back, its name, follow and mute. */
 @Composable
 private fun FilteredHead(state: Snapshot, sector: Sector?, topic: SffFeed.Topic?, onBack: () -> Unit, vm: AppViewModel) {
     val c = Cp.colors
     val id = sector?.id ?: topic?.id ?: return
-    val name = sector?.title ?: topic?.label ?: ""
+    val name = sector?.let { genreName(it) } ?: topic?.label ?: ""
     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(36.dp).clip(CircleShape).bouncyClickable(CircleShape, onClickLabel = "Back") { onBack() }, contentAlignment = Alignment.Center) {
@@ -692,7 +625,7 @@ private fun FilteredHead(state: Snapshot, sector: Sector?, topic: SffFeed.Topic?
             }
             HSpace(6)
             Column(Modifier.weight(1f)) {
-                Text(name, style = CpType.section, color = c.text)
+                Text(name, fontFamily = Lora, fontWeight = FontWeight.Bold, fontSize = 24.sp, color = sector?.let { sectorColor(it) } ?: c.text)
                 sector?.let { Quiet(it.subtitle) }
             }
         }
@@ -708,50 +641,35 @@ private fun FilteredHead(state: Snapshot, sector: Sector?, topic: SffFeed.Topic?
     }
 }
 
-/** Topics: the five sectors (your strength, how much you've explored) and the news topics. */
+/** Genres: the five, each with its unread count, to open, follow or mute; then the news topics. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SffTopics(vm: AppViewModel, state: Snapshot, chart: SffChart.Chart?, stories: List<SffFeed.Story>, onSector: (Sector) -> Unit, onTopic: (SffFeed.Topic) -> Unit) {
+private fun SffGenres(vm: AppViewModel, state: Snapshot, stories: List<SffFeed.Story>, onSector: (Sector) -> Unit, onTopic: (SffFeed.Topic) -> Unit) {
     val c = Cp.colors
     Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
-        SectionTitle("Sectors")
-        Quiet("Your strength in each grows with what you read; the feed leans toward it. Follow to see more, mute to see none.")
-        VSpace(10)
         for (sec in Sector.entries) {
-            val v = chart?.sectors?.firstOrNull { it.sector == sec }
             val count = stories.count { sec in it.sectors && !it.read }
-            Column(
-                Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(16.dp)).background(c.surface)
-                    .border(1.dp, c.hairline, RoundedCornerShape(16.dp))
-                    .bouncyClickable(RoundedCornerShape(16.dp), pressedScale = 0.99f, onClickLabel = "Open ${sec.title}") { onSector(sec) }
-                    .padding(14.dp),
+            val following = sec.id in state.sffSky.followed
+            val muted = sec.id in state.sffSky.mutedSectors
+            val shape = RoundedCornerShape(18.dp)
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(shape).background(c.surface).border(1.dp, c.hairline, shape)
+                    .bouncyClickable(shape, pressedScale = 0.99f, onClickLabel = "Open ${genreName(sec)}") { onSector(sec) }
+                    .alpha(if (muted) 0.5f else 1f),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(12.dp).clip(CircleShape).background(sectorColor(sec)))
-                    HSpace(8)
-                    Column(Modifier.weight(1f)) {
-                        Text(sec.title, style = CpType.bodyStrong, color = c.text)
-                        Quiet(sec.subtitle, maxLines = 1)
-                    }
-                    if (count > 0) Chip("$count unread", color = c.accentText, background = c.accentTint)
+                Box(Modifier.width(6.dp).height(78.dp).background(sectorColor(sec)))
+                Column(Modifier.weight(1f).padding(horizontal = 14.dp, vertical = 12.dp)) {
+                    Text(genreName(sec), fontFamily = Lora, fontWeight = FontWeight.Bold, fontSize = 19.sp, color = c.text)
+                    Quiet(sec.subtitle, maxLines = 1)
+                    if (count > 0) Text("$count unread", style = CpType.small, color = sectorColor(sec))
                 }
-                VSpace(10)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("${v?.rank ?: "Initiate"} · ${v?.xp ?: 0} XP · ${((v?.explored ?: 0f) * 100).toInt()}% explored", style = CpType.small, color = c.textMid)
-                        VSpace(4)
-                        ProgressBar(((v?.strength ?: 0.0).toFloat()).coerceIn(0.03f, 1f))
-                    }
-                    HSpace(10)
-                    val following = sec.id in state.sffSky.followed
-                    val muted = sec.id in state.sffSky.mutedSectors
-                    PillButton(if (following) "Following" else if (muted) "Muted" else "Follow", {
-                        if (muted) vm.sffMute(sec.id, sec.title) else vm.sffFollow(sec.id, sec.title)
-                    }, outlined = !following)
-                }
+                PillButton(if (following) "Following" else if (muted) "Muted" else "Follow", {
+                    if (muted) vm.sffMute(sec.id, genreName(sec)) else vm.sffFollow(sec.id, genreName(sec))
+                }, Modifier.padding(end = 12.dp), outlined = !following)
             }
         }
-        VSpace(10)
+        VSpace(14)
         SectionTitle("Topics")
         VSpace(8)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -771,7 +689,3 @@ private fun SffTopics(vm: AppViewModel, state: Snapshot, chart: SffChart.Chart?,
         }
     }
 }
-
-/** Sizes for pictures of covers, so the probe and chart cards match the feed. */
-internal val CoverW: Dp = 44.dp
-internal val CoverH: Dp = 66.dp

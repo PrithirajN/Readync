@@ -18,7 +18,7 @@ object IconTint {
         Tint("rose", 0xFFA34A6B.toInt(), 338f),
         Tint("red", 0xFFA8433F.toInt(), 3f),
         Tint("orange", 0xFFB5652B.toInt(), 25f),
-        Tint("amber", 0xFF9C7A1E.toInt(), 44f),
+        Tint("amber", 0xFFAD7F12.toInt(), 44f),
         Tint("slate", 0xFF4E5A63.toInt(), null),
     )
 

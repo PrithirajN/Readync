@@ -487,6 +487,8 @@ interface Tracker {
 fun formatHighlights(entries: List<io.github.prithirajn.trackersync.source.Clipping>, limit: Int): List<String> {
     val blocks = entries.sortedBy { it.createdAt }.map { c ->
         buildString {
+            // A spoiler going to a public post with no spoiler setting of its own: said first.
+            if (c.spoilerWarning) append("\u26A0\uFE0F Spoiler warning\n\n")
             append(quoted(c.text))
             c.note?.trim()?.takeIf { it.isNotEmpty() }?.let { append("\nNote: ").append(it) }
             val where = listOfNotNull(

@@ -47,6 +47,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         }
         val result = SyncEngine(app.store).run()
         Notices.after(applicationContext, app.store.snapshot.settings, result, app.store)
+        runCatching { Notices.priceDrops(applicationContext, app.store) }
         // New highlights out to Threads, when you've turned that on.
         runCatching { io.github.prithirajn.trackersync.ui.ThreadsAuto.run(applicationContext, app.store) }
         Result.success()
@@ -90,16 +91,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 }
 
 /**
- * Wakes when the Astral Probe is due back: brings its briefing in and, if you want, says so.
- * Scheduled when you launch it.
+ * Was the Astral Probe's return. The probe is gone from the SFF tab: a wake-up still queued from
+ * before does nothing (kept so WorkManager can still find the class it saved).
  */
 class SffProbeWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val app = applicationContext as TrackerSyncApp
-        runCatching { SffRadar.claimProbe(app.store) }
-        Notices.probeBack(applicationContext, app.store)
-        Result.success()
-    }
+    override suspend fun doWork(): Result = Result.success()
 
     companion object {
         private const val NAME = "sff-probe-return"
@@ -120,6 +116,7 @@ object Notices {
     private const val PROBLEMS = "problems"
     private const val FINISHED = "finished"
     private const val RELEASES = "releases"
+    private const val PRICES = "prices"
     private const val POSITIONS = "positions"
 
     /** Opens the app; with [action] (and [document]) it goes straight to that thing. */
@@ -160,6 +157,29 @@ object Notices {
             )
         }
         store.update { it.copy(sffSky = SffChart.markNotified(it.sffSky, news.map { n -> n.id }, now)) }
+    }
+
+    /** A watched book's price under what you'd pay, or well under what it was. */
+    fun priceDrops(context: Context, store: io.github.prithirajn.trackersync.data.Store) {
+        if (!allowed(context)) return
+        val drops = io.github.prithirajn.trackersync.source.BookPrices.newDrops(store)
+        if (drops.isEmpty()) return
+        channel(context, PRICES, "Price drops")
+        val nm = NotificationManagerCompat.from(context)
+        for ((book, p) in drops.take(3)) {
+            val shop = io.github.prithirajn.trackersync.source.BookPrices.shop(p.store)?.name ?: p.store
+            val price = "₹" + java.text.NumberFormat.getIntegerInstance(java.util.Locale("en", "IN")).format(Math.round(p.price ?: 0.0))
+            nm.notify(
+                700 + (book.document.hashCode() and 0xFFFF),
+                NotificationCompat.Builder(context, PRICES)
+                    .setSmallIcon(R.drawable.lucide_bell)
+                    .setContentTitle("${book.displayTitle} is $price")
+                    .setContentText(listOfNotNull(shop, p.format, p.mrp?.let { m -> "was ₹${Math.round(m)}" }).joinToString(" · "))
+                    .setContentIntent(openApp(context, MainActivity.ACTION_OPEN_BOOK, book.document, 70))
+                    .setAutoCancel(true)
+                    .build(),
+            )
+        }
     }
 
     /** The probe is back, with what it found. */

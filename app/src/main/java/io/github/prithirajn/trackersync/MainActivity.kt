@@ -25,9 +25,17 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handle(intent)
         setContent {
             TrackerSyncTheme {
-                AppRoot()
+                io.github.prithirajn.trackersync.ui.ProvideAppInsets {
+                    AppRoot()
+                }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The recent-apps card wears the same icon colour as the app (not the one it was opened from).
+        io.github.prithirajn.trackersync.ui.IconSwitcher.applyToTask(this)
     }
 
     override fun onStop() {

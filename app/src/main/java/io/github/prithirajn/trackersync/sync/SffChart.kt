@@ -555,7 +555,7 @@ object SffChart {
     fun recap(s: Snapshot, month: YearMonth, zone: ZoneId = ZoneId.systemDefault()): Recap {
         fun inMonth(at: Long?) = at != null && at > 0 && YearMonth.from(Instant.ofEpochSecond(at).atZone(zone)) == month
         val reads = s.sffSky.history.filter { inMonth(it.at) && it.seconds >= 10 }
-        val finished = s.books.values.filter { !it.held && it.status == ReadStatus.FINISHED && inMonth(it.finishedAt) }
+        val finished = s.books.values.filter { it.status == ReadStatus.FINISHED && inMonth(it.finishedAt) }
         val by = HashMap<Sector, Int>()
         for (r in reads) r.sectors.firstOrNull()?.let { Sector.byId(it) }?.let { by[it] = (by[it] ?: 0) + 1 }
         for (b in finished) sectorsOf(s, b).firstOrNull()?.let { by[it] = (by[it] ?: 0) + 3 }

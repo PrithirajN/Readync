@@ -18,7 +18,7 @@ object Shelves {
     fun counts(books: Collection<Book>): Map<ReadStatus, Int> =
         tabs.associateWith { t -> books.count { tabOf(it) == t } }
 
-    enum class Sort(val label: String) { RECENT("Recent"), TITLE("Title"), AUTHOR("Author"), PROGRESS("Progress") }
+    enum class Sort(val label: String) { RECENT("Recent"), TITLE("Title"), AUTHOR("Author"), PROGRESS("Progress"), PRICE("Price drop") }
 
     /**
      * A tab's books. Recent is newest first by what the tab is about (when it was finished for
@@ -37,6 +37,8 @@ object Shelves {
             Sort.TITLE -> on.sortedBy { (it.title ?: "").lowercase().removePrefix("the ").removePrefix("a ") }
             Sort.AUTHOR -> on.sortedWith(compareBy({ (it.author ?: "\uFFFF").lowercase() }, { (it.title ?: "").lowercase() }))
             Sort.PROGRESS -> on.sortedByDescending { it.percentage }
+            // By price drop: newest first here; the Library puts the watched ones in order (it has the prices).
+            Sort.PRICE -> on.sortedByDescending { it.timestamp }
         }
     }
 
@@ -93,7 +95,7 @@ object Shelves {
     fun finishedThisMonth(books: Collection<Book>, now: Long = System.currentTimeMillis()): Int {
         val m = month(now)
         return books.count { b ->
-            b.status == ReadStatus.FINISHED && !b.held &&
+            b.status == ReadStatus.FINISHED &&
                 (b.finishedAt ?: b.timestamp).let { t -> t > 0 && month(t * 1000) == m }
         }
     }

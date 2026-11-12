@@ -367,6 +367,7 @@ fun QuoteShareSheet(
             // Straight into a new Threads post, picture and words: the dark key, with a little burst.
             var burst by remember { mutableStateOf(0) }
             Box {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BigButton("Post to Threads", {
                 bmp?.let { b ->
                     val how = runCatching { QuoteCard.postToThreads(context, b, plain.take(500)) }.getOrNull()
@@ -377,7 +378,15 @@ fun QuoteShareSheet(
                         else -> "Couldn't open Threads."
                     }
                 }
-            }, look = KeyKind.INK, enabled = bmp != null)
+            }, Modifier.weight(1.4f), look = KeyKind.INK, enabled = bmp != null)
+            BigButton("Post to X", {
+                bmp?.let { b ->
+                    val how = runCatching { XPost.pictures(context, listOf(b), plain) }.getOrNull()
+                    if (how == "app" || how == "web") burst++
+                    said = XPost.said(how)
+                }
+            }, Modifier.weight(1f), look = KeyKind.INK, enabled = bmp != null)
+            }
             Confetti(burst, Modifier.matchParentSize())
             }
             // The passage as a short video, made in the video studio.

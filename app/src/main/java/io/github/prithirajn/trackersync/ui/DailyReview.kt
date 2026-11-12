@@ -148,9 +148,9 @@ fun DailyReviewSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
             dx.snapTo(0f)
         }
     }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
         val c = Cp.colors
-        Column(Modifier.fillMaxSize().background(c.page).windowInsetsPadding(WindowInsets.safeDrawing)) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconCircleButton(io.github.prithirajn.trackersync.R.drawable.lucide_x, "Close", onClose, tint = c.text)
                 Column(Modifier.padding(start = 12.dp).weight(1f)) {
@@ -219,7 +219,7 @@ fun DailyReviewSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
 
 /** One highlight as a card: the passage, your note in your hand, and its book with the cover. */
 @Composable
-private fun ReviewCard(state: Snapshot, item: Highlights.Item, modifier: Modifier, hint: Float = 0f) {
+internal fun ReviewCard(state: Snapshot, item: Highlights.Item, modifier: Modifier, hint: Float = 0f, leftTag: String = "LET GO", rightTag: String = "KEEP") {
     val c = Cp.colors
     val b = state.books[item.clip.document]
     Box(
@@ -249,7 +249,7 @@ private fun ReviewCard(state: Snapshot, item: Highlights.Item, modifier: Modifie
         if (abs(hint) > 40f) {
             val keep = hint > 0
             Text(
-                if (keep) "KEEP" else "LET GO",
+                if (keep) rightTag else leftTag,
                 style = CpType.label, color = if (keep) c.accentText else c.quiet,
                 modifier = Modifier.align(if (keep) Alignment.TopStart else Alignment.TopEnd).padding(14.dp)
                     .graphicsLayer { alpha = ((abs(hint) - 40f) / 200f).coerceIn(0f, 1f); rotationZ = if (keep) -8f else 8f }

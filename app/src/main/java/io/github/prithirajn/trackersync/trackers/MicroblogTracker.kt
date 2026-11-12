@@ -159,6 +159,7 @@ object MicroblogTracker : Tracker {
         val bookUrl = link.externalUuid?.takeIf { it.isNotBlank() }?.let { "$BASE/books/${Http.enc(it)}" }
         val head = "<p>" + (bookUrl?.let { "<a href=\"${esc(it)}\">${esc(title)}</a>" } ?: esc(title)) + (link.author?.let { " by ${esc(it)}" } ?: "") + "</p>"
         val body = (listOf(head) + entries.sortedBy { it.createdAt }.map { c ->
+            (if (c.spoilerWarning) "<p><strong>\u26A0\uFE0F Spoiler warning</strong></p>" else "") +
             "<blockquote><p>${para(c.text)}</p></blockquote>" +
                 (c.note?.takeIf { it.isNotBlank() }?.let { "<p>${para(it)}</p>" } ?: "") +
                 (c.chapter?.takeIf { it.isNotBlank() }?.let { "<p><em>${para(it)}</em></p>" } ?: "")

@@ -55,7 +55,8 @@ object ThreadsAuto {
 
     /** Every highlight and note here now, with its book (books held back left out). */
     private fun items(s: Snapshot): List<Pair<Highlights.Item, Book>> =
-        Highlights.all(s).mapNotNull { i -> s.books[i.clip.document]?.takeIf { !it.held }?.let { i to it } }
+        Highlights.all(s).filter { !io.github.prithirajn.trackersync.sync.SpoilerCheck.blocked(s, it.clip.id) }
+            .mapNotNull { i -> s.books[i.clip.document]?.takeIf { !it.held }?.let { i to it } }
 
     /**
      * Turns posting on for one book (off to start with): its highlights so far count as seen, so
@@ -419,7 +420,7 @@ object ThreadsAuto {
                 val words = if (item.clip.note.isNullOrBlank() && !isNote(item.clip.id))
                     aiCaption(st, x.book, listOf(item.clip.text))?.let { it + "\n\n" + bookLine(x.book) } ?: postText(item, x.book, st.threadsWithNote, picture = true)
                     else postText(item, x.book, st.threadsWithNote, picture = true)
-                ThreadsClient.post(user, token, words, imageUrl, altText(item, x.book), topic(store, x.book), spoils(st, x.book, listOf(item.clip.text)))
+                ThreadsClient.post(user, token, words, imageUrl, altText(item, x.book), topic(store, x.book), io.github.prithirajn.trackersync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, x.book, listOf(item.clip.text)))
                 usedKey = look.key
             } else {
                 // A different layout for each card (none the same as the last post's first).
@@ -430,7 +431,7 @@ object ThreadsAuto {
                 }
                 val passages = x.items.map { it.clip.text }
                 val words = aiCaption(st, x.book, passages)?.let { it + "\n\n" + bookLine(x.book) } ?: sessionText(x)
-                ThreadsClient.postCarousel(user, token, words, images, topic(store, x.book), spoils(st, x.book, passages))
+                ThreadsClient.postCarousel(user, token, words, images, topic(store, x.book), x.items.any { io.github.prithirajn.trackersync.sync.SpoilerCheck.isSpoiler(st, it.clip.id) } || spoils(st, x.book, passages))
                 usedKey = order.last().key
             }
             val at = System.currentTimeMillis() / 1000
@@ -509,7 +510,7 @@ object ThreadsAuto {
                     // Always with its picture (never the words alone).
                     val (imageUrl, drawn) = pictureUrl(context, st, item, book, look, styles)
                     look = drawn
-                    ThreadsClient.post(st.threadsUserId!!, token, postText(item, book, st.threadsWithNote, picture = true), imageUrl, altText(item, book), topic(store, book), spoils(st, book, listOf(item.clip.text)))
+                    ThreadsClient.post(st.threadsUserId!!, token, postText(item, book, st.threadsWithNote, picture = true), imageUrl, altText(item, book), topic(store, book), io.github.prithirajn.trackersync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, book, listOf(item.clip.text)))
                     posted++
                     store.update { x ->
                         x.copy(

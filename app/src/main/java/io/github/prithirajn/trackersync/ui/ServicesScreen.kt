@@ -204,6 +204,12 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                         VSpace(12)
                         AddServiceRow(if (linkedTrackers.isEmpty()) "Link a book tracker" else "Add a book tracker") { addingApps = false; adding = true }
                     }
+                    // Before highlights go out: off unless you want to look at each one first (for spoilers).
+                    if (linkedTrackers.isNotEmpty()) {
+                        VSpace(16)
+                        DeviceLabel("Before highlights go out", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
+                        CheckHighlightsCard(vm, state)
+                    }
                 }
                 1 -> {
                 // Everything else as one short list of rows, each opening its own sheet, so the page
@@ -910,8 +916,8 @@ private fun SeekquelAccountOption(vm: AppViewModel, credential: String?) {
 private fun SeekquelWebDialog(onDone: () -> Unit, onClose: () -> Unit) {
     val c = Cp.colors
     var signedIn by remember { mutableStateOf(false) }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().background(c.page).systemBarsPadding()) {
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Sign in to Seekquel", style = CpType.bodyStrong, color = c.text)
@@ -1620,9 +1626,9 @@ private fun KindleWebDialog(domain: String, onDone: (String, String) -> Unit, on
     var detectedUa by remember { mutableStateOf<String?>(null) }
     Dialog(
         onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        properties = FullScreen,
     ) {
-        Column(Modifier.fillMaxSize().background(c.page).systemBarsPadding()) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1889,9 +1895,9 @@ private fun LibbyWebDialog(onDone: (String, String?) -> Unit, onClose: () -> Uni
 
     Dialog(
         onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        properties = FullScreen,
     ) {
-        Column(Modifier.fillMaxSize().background(c.page).systemBarsPadding()) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2060,8 +2066,8 @@ private fun AudibleWebDialog(
 ) {
     val c = Cp.colors
     var done by remember { mutableStateOf(false) }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().background(c.page).systemBarsPadding()) {
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Sign in to Audible ${signIn.store.name}", style = CpType.bodyStrong, color = c.text)
@@ -2503,8 +2509,8 @@ private fun AniListSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit)
 private fun AniListWebDialog(url: String, onToken: (String) -> Unit, onClose: () -> Unit) {
     val c = Cp.colors
     var done by remember { mutableStateOf(false) }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().background(c.page).systemBarsPadding()) {
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Sign in to AniList", style = CpType.bodyStrong, color = c.text)
@@ -3720,4 +3726,39 @@ private fun Stepper(value: Int, onMinus: () -> Unit, onPlus: () -> Unit) {
         }
         Key(onPlus, Modifier.size(34.dp, 36.dp), shape = CircleShape, ledge = 2.dp, label = "More") { Text("+", style = CpType.bodyStrong, color = c.text) }
     }
+}
+
+/**
+ * Check highlights before sending: off for most, who let them go out by themselves. On, new
+ * highlights wait to be marked fine, a spoiler or not to send, and what a spoiler does on the
+ * trackers with no spoiler setting is chosen here.
+ */
+@Composable
+private fun CheckHighlightsCard(vm: AppViewModel, state: Snapshot) {
+    val c = Cp.colors
+    var checking by remember { mutableStateOf(false) }
+    val waiting = remember(state.checkHighlights, state.clipChecked, state.sentClippings, state.cpClips, state.paperClips, state.kindleClips, state.koClips) {
+        io.github.prithirajn.trackersync.sync.SpoilerCheck.waiting(state).size
+    }
+    CpCard {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp).animateContentSize()) {
+            ThreadsSwitch(
+                "Check highlights before sending",
+                if (state.checkHighlights) "New highlights wait until you mark them fine, a spoiler or not to send." else "Off: highlights go out by themselves.",
+                state.checkHighlights,
+            ) { vm.setCheckHighlights(it) }
+            if (state.checkHighlights) {
+                VSpace(6)
+                Text("Spoilers on Goodreads and Micro.blog", style = CpType.label, color = c.text)
+                Quiet("They post publicly and have no spoiler setting. Fable and Pagebound hide a spoiler behind their own tap; private journals take it as it is.", color = c.faint)
+                VSpace(8)
+                Segmented(listOf("hold", "warn"), state.spoilerPublic, { if (it == "hold") "Hold back" else "Send with a warning" }, { vm.setSpoilerPublic(it) }, Modifier.fillMaxWidth())
+                VSpace(12)
+                if (waiting > 0) BigButton("Check $waiting highlight${if (waiting == 1) "" else "s"}", { checking = true }, look = KeyKind.INK)
+                else Quiet("Nothing waiting. New highlights show up here, on the book's Highlights tab and at the top of your library.", color = c.faint)
+                VSpace(10)
+            }
+        }
+    }
+    if (checking) HighlightCheckSheet(vm, state) { checking = false }
 }

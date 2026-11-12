@@ -75,10 +75,10 @@ fun ReadingTimerSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
     fun pause() { if (running) { banked += System.currentTimeMillis() - since; running = false } }
     fun resume() { if (!running) { since = System.currentTimeMillis(); running = true } }
 
-    Dialog(onDismissRequest = { if (secs < 5) onClose() else { pause(); finishing = true } }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = { if (secs < 5) onClose() else { pause(); finishing = true } }, properties = FullScreen) {
         DarkGadget {
             val c = Cp.colors
-            Column(Modifier.fillMaxSize().background(c.page).windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 16.dp)) {
+            Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe().padding(horizontal = 16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconCircleButton(io.github.prithirajn.trackersync.R.drawable.lucide_x, "Close", { if (secs < 5) onClose() else { pause(); finishing = true } }, tint = c.text)
                     Spacer(Modifier.width(12.dp))

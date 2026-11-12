@@ -548,7 +548,7 @@ object FableTracker : Tracker {
             val quoteId = createQuote(session, bookId, clip.text.trim().take(QUOTE_LIMIT), quoteTheme, picture)
             run {
                 val caption = clip.note?.trim()?.takeIf { it.isNotEmpty() }?.let { Markdown.toPlain(it) }?.take(POST_LIMIT).orEmpty()
-                val spoilers = clip.note?.let { Markdown.hasSpoiler(it) } ?: false
+                val spoilers = clip.spoiler || (clip.note?.let { Markdown.hasSpoiler(it) } ?: false)
                 fun body(audience: List<String>) = postBody(bookId, caption, spoilers, audience).put("quote_ids", JSONArray().put(quoteId))
                 if (previousId != null) {
                     val r = request(session, "PUT", "/api/user_posts/${Http.enc(previousId)}", body(listOf("readers")))
@@ -563,7 +563,7 @@ object FableTracker : Tracker {
             }
         }
         val text = formatHighlights(listOf(clip), POST_LIMIT).firstOrNull() ?: return null
-        val spoilers = clip.note?.let { Markdown.hasSpoiler(it) } ?: false
+        val spoilers = clip.spoiler || (clip.note?.let { Markdown.hasSpoiler(it) } ?: false)
         if (previousId != null) {
             val r = request(session, "PUT", "/api/user_posts/${Http.enc(previousId)}", postBody(bookId, text, spoilers, listOf("readers")))
             if (r.ok) return previousId

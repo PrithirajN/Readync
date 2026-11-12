@@ -708,9 +708,9 @@ fun AddOnSiteScreen(vm: AppViewModel, book: Book, tracker: io.github.prithirajn.
     var loading by remember { mutableStateOf(true) }
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onClose,
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        properties = FullScreen,
     ) {
-        Column(Modifier.fillMaxSize().background(c.page)) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Add on ${tracker.name}", style = CpType.bodyStrong, color = c.text)

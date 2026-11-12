@@ -79,8 +79,12 @@ fun DailyHighlightCard(
     onShare: (Highlights.Item) -> Unit,
     onSeeAll: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Highlights waiting to be checked before sending: while there are any, the card asks for them instead. */
+    toCheck: List<Highlights.Item> = emptyList(),
+    onCheck: () -> Unit = {},
 ) {
     val c = Cp.colors
+    if (toCheck.isNotEmpty()) { ToCheckCard(state, toCheck, onCheck, modifier); return }
     var shuffle by remember { mutableStateOf(0) }
     val today = remember { java.time.LocalDate.now() }
     val daily = remember(all, shuffle) { Highlights.ofTheDay(all, today, shuffle) } ?: return
@@ -147,6 +151,47 @@ fun DailyHighlightCard(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * In the Highlight of the day's place while highlights wait to be checked: the newest one waiting,
+ * its book, and the way to check them all (they go to your trackers once you have).
+ */
+@Composable
+private fun ToCheckCard(state: Snapshot, toCheck: List<Highlights.Item>, onCheck: () -> Unit, modifier: Modifier) {
+    val c = Cp.colors
+    val first = toCheck.first()
+    val b = state.books[first.clip.document]
+    CpCard(modifier) {
+        Column(
+            Modifier
+                .bouncyClickable(CpShapes.card, pressedScale = 0.99f, role = Role.Button, onClickLabel = "Check highlights", onClick = onCheck)
+                .padding(start = 18.dp, end = 14.dp, top = 14.dp, bottom = 14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Eyebrow("Check before sending", Modifier.weight(1f))
+                Text("${toCheck.size} waiting", style = CpType.small, color = c.accentText)
+            }
+            VSpace(6)
+            Text(
+                io.github.prithirajn.trackersync.trackers.quoted(first.clip.text),
+                style = CpType.body.copy(fontFamily = CpType.section.fontFamily, fontStyle = FontStyle.Italic, fontSize = CpType.body.fontSize * 1.15f, lineHeight = CpType.body.lineHeight * 1.15f),
+                color = c.text, maxLines = 4, overflow = TextOverflow.Ellipsis,
+            )
+            VSpace(10)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BookCover(b?.coverUrl, b?.displayTitle ?: "", 22.dp, 33.dp)
+                HSpace(10)
+                Text(
+                    if (toCheck.size == 1) listOfNotNull(b?.displayTitle, b?.author).joinToString(" · ")
+                    else "${b?.displayTitle?.let { QuoteCard.shortTitle(it) } ?: ""} and ${toCheck.size - 1} more",
+                    style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                )
+                HSpace(8)
+                PillButton("Review ${toCheck.size}", onCheck, outlined = false)
             }
         }
     }

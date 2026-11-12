@@ -257,6 +257,9 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("clipRemote", JSONObject().also { r -> s.clipRemote.forEach { (k, v) -> r.put(k, v) } })
         o.put("resend", JSONArray().also { a -> s.resend.forEach { a.put(it) } })
         o.put("clipHidden", JSONArray().also { a -> s.clipHidden.forEach { a.put(it) } })
+        o.put("checkHighlights", s.checkHighlights).put("spoilerPublic", s.spoilerPublic)
+        o.put("priceWatch", JSONObject().also { r -> s.priceWatch.forEach { (k, v) -> r.put(k, v.toJson()) } })
+        o.put("clipChecked", JSONObject().also { r -> s.clipChecked.forEach { (k, v) -> r.put(k, v) } })
         o.put("sent", JSONObject().also { r -> s.sent.forEach { (k, evs) -> r.put(k, JSONArray().also { a -> evs.forEach { a.put(it.toJson()) } }) } })
         o.put("positions", JSONObject().also { r ->
             s.positions.forEach { (d, pts) ->
@@ -563,6 +566,10 @@ class Store(private val file: File, private val secrets: Secrets) {
             clipRemote = o.obj("clipRemote")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             resend = o.optJSONArray("resend")?.strings()?.toSet() ?: emptySet(),
             clipHidden = o.optJSONArray("clipHidden")?.strings()?.toSet() ?: emptySet(),
+            checkHighlights = o.optBoolean("checkHighlights", false),
+            priceWatch = o.obj("priceWatch")?.let { r -> r.keys().asSequence().mapNotNull { k -> r.optJSONObject(k)?.let { k to io.github.prithirajn.trackersync.data.PriceWatch.from(it) } }.toMap() } ?: emptyMap(),
+            spoilerPublic = o.optString("spoilerPublic", "hold").ifEmpty { "hold" },
+            clipChecked = o.obj("clipChecked")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             sent = o.obj("sent")?.let { r ->
                 r.keys().asSequence().associateWith { k ->
                     val a = r.optJSONArray(k) ?: JSONArray()

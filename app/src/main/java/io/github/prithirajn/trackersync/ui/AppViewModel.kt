@@ -2025,6 +2025,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * 1-tap shelves a book from the SFF Radar or Star-Chart Probe as "Want to Read" in your
      * Library and queues it for Seekquel, Hardcover, and all enabled trackers.
      */
+    // ---- prices ----
+
+    /** Starts watching a book's price at Amazon.in, Bookswagon and Atlantic Books, and looks now. */
+    fun watchPrice(document: String) {
+        store.update { s ->
+            if (document in s.priceWatch) s
+            else s.copy(priceWatch = s.priceWatch + (document to io.github.prithirajn.trackersync.data.PriceWatch(document, since = System.currentTimeMillis() / 1000)))
+        }
+        checkPrice(document)
+    }
+
+    fun unwatchPrice(document: String) = store.update { it.copy(priceWatch = it.priceWatch - document) }
+
+    /** Looks at the stores for this book now. [done] gets what went wrong, if nothing was found. */
+    fun checkPrice(document: String, done: (String?) -> Unit = {}) {
+        viewModelScope.launch {
+            io { runCatching { io.github.prithirajn.trackersync.source.BookPrices.refresh(store, force = document) } }
+            done(store.snapshot.priceWatch[document]?.error)
+        }
+    }
+
+    /** The price you'd buy it at (null: tell me about any good drop). */
+    fun setPriceTarget(document: String, target: Double?) = store.update { s ->
+        s.priceWatch[document]?.let { w -> s.copy(priceWatch = s.priceWatch + (document to w.copy(target = target, told = null))) } ?: s
+    }
+
+    /** Points a store at this exact page (a pasted product address), and looks again. Null when it's not one of the stores. */
+    fun setPriceLink(document: String, url: String): String? {
+        val shop = io.github.prithirajn.trackersync.source.BookPrices.shopOf(url) ?: return "That isn't an Amazon.in, Bookswagon or Atlantic Books page."
+        store.update { s -> s.priceWatch[document]?.let { w -> s.copy(priceWatch = s.priceWatch + (document to w.copy(links = w.links + (shop to url.trim())))) } ?: s }
+        checkPrice(document)
+        return null
+    }
+
+    /** A book found in an OPDS catalog, onto your Want to Read (or opened, if it's already here). */
+    fun addFromCatalog(title: String, author: String?, cover: String?, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val existing = store.snapshot.books.values.firstOrNull { Matcher.sameBook(title, author, it.title ?: "", it.author) }
+            if (existing != null) { AppActions.pending.value = AppAction.OpenBook(existing.document); done(null); return@launch }
+            val error = try {
+                io { ManualBooks.add(store, ManualBooks.Pick(title = title, author = author, coverUrl = cover, pages = null, fraction = 0.0, status = ReadStatus.TO_READ)) }
+                null
+            } catch (e: Exception) { e.message ?: "Couldn't add it" }
+            if (error == null) notify("Added to Want to Read", title)
+            done(error)
+        }
+    }
+
     fun shelfSffItem(item: io.github.prithirajn.trackersync.data.SffFeedItem) {
         viewModelScope.launch {
             val existing = store.snapshot.books.values.firstOrNull {
@@ -2461,6 +2509,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!quiet && !told) notify(result.message, error = result.needsAttention.isNotEmpty())
             // New highlights out to Threads, when you've turned that on.
             io { runCatching { ThreadsAuto.run(getApplication(), store) } }
+            io { runCatching { io.github.prithirajn.trackersync.sync.Notices.priceDrops(getApplication(), store) } }
         }
     }
 
@@ -2668,6 +2717,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Posts a finished book's recap pictures to Threads as one carousel. */
+    // ---- Check highlights before sending ----
+
+    /** Turns the check on or off. Highlights not sent yet then wait to be checked; ones already sent stay as they are. */
+    fun setCheckHighlights(on: Boolean) = store.update { it.copy(checkHighlights = on) }
+
+    fun setSpoilerPublic(mode: String) = store.update { it.copy(spoilerPublic = mode) }
+
+    /** Marks highlights fine, a spoiler or not to send (null: not checked). They go on the next sync. */
+    fun markHighlights(ids: Collection<String>, what: String?, send: Boolean = false) {
+        store.update { io.github.prithirajn.trackersync.sync.SpoilerCheck.set(it, ids, what) }
+        if (send) sendChecked(ids.size)
+    }
+
+    /** Sends what's just been checked, straight away (a sync, quietly told). */
+    fun sendChecked(n: Int) = edit("Sending ${n} checked highlight${if (n == 1) "" else "s"}", {}, syncAfter = true) {}
+
     fun postRecapToThreads(document: String, slides: List<android.graphics.Bitmap>, text: String, passage: String?, done: (String?) -> Unit) {
         viewModelScope.launch {
             val err = io { ThreadsAuto.postRecap(getApplication(), store, document, slides, text, passage) }
@@ -3079,7 +3144,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val s = store.snapshot
         val m0 = io.github.prithirajn.trackersync.sync.Shelves.month()
         fun inMonth(t: Long?) = t != null && t > 0 && io.github.prithirajn.trackersync.sync.Shelves.month(t * 1000) == m0
-        val books = s.books.values.filter { !it.held }
+        // Books brought in from a history count too (held only means they aren't sent to trackers).
+        val books = s.books.values.toList()
         val finished = books.filter { it.status == ReadStatus.FINISHED && inMonth(it.finishedAt ?: it.timestamp) }
         val reading = books.filter { it.status == ReadStatus.READING && inMonth(it.timestamp) }.sortedByDescending { it.timestamp }
         val pages = io.github.prithirajn.trackersync.sync.Shelves.pagesThisMonth(s, null)

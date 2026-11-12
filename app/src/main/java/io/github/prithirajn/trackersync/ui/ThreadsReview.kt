@@ -112,6 +112,7 @@ fun ThreadsBookCard(vm: AppViewModel, state: Snapshot, book: Book, onReview: () 
 @Composable
 fun ReviewPostSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit) {
     val c = Cp.colors
+    val context = androidx.compose.ui.platform.LocalContext.current
     var theme by remember(book.document) { mutableStateOf((0 until QuoteCard.REVIEW_THEMES).random()) }
     // The post's words, worded one of many ways, picked at random (and changed with a tap).
     var wording by remember(book.document) { mutableStateOf((0 until ThreadsAuto.reviewWordings(book)).random()) }
@@ -146,6 +147,13 @@ fun ReviewPostSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -
             busy = true; error = null
             vm.postReviewToThreads(book.document, theme, wording) { e -> busy = false; if (e == null) onClose() else error = e }
         }, busy = busy, enabled = list != null && (book.rating != null || !book.review.isNullOrBlank()))
+        // The same slides on X, by hand (four at most there).
+        VSpace(8)
+        var xSaid by remember { mutableStateOf<String?>(null) }
+        BigButton("Post to X instead", {
+            list?.let { xSaid = XPost.said(XPost.pictures(context, it, ThreadsAuto.reviewText(book, wording)), if (it.size > XPost.MAX_PICTURES) "the first ${XPost.MAX_PICTURES} slides" else "the slides") }
+        }, filled = false, enabled = list != null)
+        xSaid?.let { VSpace(6); Quiet(it, color = c.faint) }
         if (book.status == ReadStatus.FINISHED) {
             VSpace(8)
             BigButton("\u2726 Or a recap: video & stats carousel", { recap = true }, look = KeyKind.INK)

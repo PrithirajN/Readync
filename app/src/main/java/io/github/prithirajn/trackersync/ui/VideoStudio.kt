@@ -114,10 +114,10 @@ fun VideoStudio(input: QuoteVideo.Input, plain: String, onClose: () -> Unit) {
         }
     }
 
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
         DarkGadget {
             val c = Cp.colors
-            Column(Modifier.fillMaxSize().background(c.page)) {
+            Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconCircleButton(io.github.prithirajn.trackersync.R.drawable.lucide_x, "Close", onClose, tint = c.text)
                     Text("Video", style = CpType.section, color = c.text, modifier = Modifier.padding(start = 12.dp, end = 12.dp))
@@ -250,8 +250,9 @@ fun VideoStudio(input: QuoteVideo.Input, plain: String, onClose: () -> Unit) {
                         }, enabled = scene != null)
                     } else {
                         BigButton("Edit", { made = null }, Modifier.weight(0.8f), filled = false)
-                        BigButton("Save", { said = if (QuoteVideo.save(context, file)) "Saved to Movies › ${io.github.prithirajn.trackersync.Edition.name}." else "Couldn't save here; use Share instead." }, Modifier.weight(1f), filled = false)
-                        BigButton("Share", { runCatching { QuoteVideo.share(context, file, plain) } }, Modifier.weight(1.3f))
+                        BigButton("Save", { said = if (QuoteVideo.save(context, file)) "Saved to Movies › ${io.github.prithirajn.trackersync.Edition.name}." else "Couldn't save here; use Share instead." }, Modifier.weight(0.9f), filled = false)
+                        BigButton("X", { said = XPost.said(XPost.video(context, file, plain), "the video") }, Modifier.weight(0.6f), look = KeyKind.INK)
+                        BigButton("Share", { runCatching { QuoteVideo.share(context, file, plain) } }, Modifier.weight(1f))
                     }
                 }
             }

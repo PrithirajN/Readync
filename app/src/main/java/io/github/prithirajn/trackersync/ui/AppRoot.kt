@@ -74,6 +74,7 @@ import kotlinx.coroutines.delay
 enum class Tab(val label: String, val icon: Int) {
     LIBRARY("Library", R.drawable.lucide_library_big),
     SFF("SFF", R.drawable.lucide_sparkles),
+    CATALOGS("Catalogs", R.drawable.lucide_globe),
     SERVICES("Services", R.drawable.lucide_link),
     ACTIVITY("Activity", R.drawable.lucide_list_checks),
 }
@@ -166,6 +167,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                             when (Tab.entries[page]) {
                                 Tab.LIBRARY -> LibraryScreen(vm, state, home = libraryHome)
                                 Tab.SFF -> SffScreen(vm, state, active = pager.settledPage == page)
+                                Tab.CATALOGS -> CatalogsScreen(vm, state)
                                 Tab.SERVICES -> ServicesScreen(vm, state)
                                 Tab.ACTIVITY -> ActivityScreen(vm, state)
                             }

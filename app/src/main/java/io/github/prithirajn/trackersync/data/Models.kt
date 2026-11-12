@@ -1298,6 +1298,72 @@ data class LogEntry(val time: Long, val service: String?, val message: String, v
  * One day's reading of one book: the pages read that day, the minutes when known, how far through
  * the book you were by the end of it (0–1) when that's what's known, and where it came from.
  */
+/** One price seen at one store: what it cost, against its printed price, and whether it was in stock. */
+data class PricePoint(
+    val store: String,
+    val at: Long,
+    val price: Double?,
+    val mrp: Double? = null,
+    val inStock: Boolean = true,
+    /** "Paperback", "Kindle"… where the store says. */
+    val format: String? = null,
+    val url: String? = null,
+    val title: String? = null,
+) {
+    fun toJson(): org.json.JSONObject = org.json.JSONObject().put("s", store).put("at", at).put("p", price ?: org.json.JSONObject.NULL)
+        .put("m", mrp ?: org.json.JSONObject.NULL).put("in", inStock).put("f", format ?: org.json.JSONObject.NULL).put("u", url ?: org.json.JSONObject.NULL)
+        .put("t", title ?: org.json.JSONObject.NULL)
+
+    companion object {
+        fun from(o: org.json.JSONObject) = PricePoint(
+            o.optString("s"), o.optLong("at"), if (o.isNull("p")) null else o.optDouble("p"), if (o.isNull("m")) null else o.optDouble("m"),
+            o.optBoolean("in", true), if (o.isNull("f")) null else o.optString("f"), if (o.isNull("u")) null else o.optString("u"), if (o.isNull("t")) null else o.optString("t"),
+        )
+    }
+}
+
+/**
+ * A book's price being watched: the price you'd buy it at, a store page you pointed it to (by
+ * store), every price seen (newest last, a few hundred kept), when it was last looked at, and the
+ * lowest price you were told about (so a drop is said once).
+ */
+data class PriceWatch(
+    val document: String,
+    val target: Double? = null,
+    val links: Map<String, String> = emptyMap(),
+    val history: List<PricePoint> = emptyList(),
+    val checkedAt: Long = 0,
+    val told: Double? = null,
+    val since: Long = 0,
+    val error: String? = null,
+) {
+    /** The newest price at each store. */
+    val latest: List<PricePoint> get() = history.groupBy { it.store + "|" + (it.format ?: "") }.values.map { it.maxBy { p -> p.at } }
+    /** The cheapest in-stock price now, anywhere. */
+    val best: PricePoint? get() = latest.filter { it.price != null && it.inStock }.minByOrNull { it.price!! }
+    /** The lowest in-stock price ever seen. */
+    val lowest: Double? get() = history.filter { it.inStock }.mapNotNull { it.price }.minOrNull()
+    /** The first best price seen, to say how far it's come down. */
+    val first: Double? get() = history.filter { it.inStock && it.price != null }.groupBy { it.at }.minByOrNull { it.key }?.value?.minOf { it.price!! }
+    /** How far the best price now is under the first one seen (0.25 = 25% less); null without both. */
+    val drop: Double? get() { val f = first ?: return null; val b = best?.price ?: return null; return if (f > 0) (f - b) / f else null }
+
+    fun toJson(): org.json.JSONObject = org.json.JSONObject().put("d", document).put("target", target ?: org.json.JSONObject.NULL)
+        .put("links", org.json.JSONObject(links)).put("history", org.json.JSONArray().also { a -> history.forEach { a.put(it.toJson()) } })
+        .put("checkedAt", checkedAt).put("told", told ?: org.json.JSONObject.NULL).put("since", since).put("error", error ?: org.json.JSONObject.NULL)
+
+    companion object {
+        fun from(o: org.json.JSONObject): PriceWatch {
+            val links = o.optJSONObject("links")?.let { l -> l.keys().asSequence().associateWith { l.optString(it) } } ?: emptyMap()
+            val h = o.optJSONArray("history")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(PricePoint::from) } } ?: emptyList()
+            return PriceWatch(
+                o.optString("d"), if (o.isNull("target")) null else o.optDouble("target"), links, h, o.optLong("checkedAt"),
+                if (o.isNull("told")) null else o.optDouble("told"), o.optLong("since"), if (o.isNull("error")) null else o.optString("error"),
+            )
+        }
+    }
+}
+
 data class ReadDay(val pages: Int? = null, val minutes: Int? = null, val reached: Double? = null, val source: String) {
     fun toJson(): org.json.JSONObject = org.json.JSONObject().apply {
         pages?.let { put("p", it) }; minutes?.let { put("m", it) }; reached?.let { put("r", it) }; put("s", source)
@@ -1581,6 +1647,17 @@ data class Snapshot(
     val resend: Set<String> = emptySet(),
     /** CrossPoint highlights you deleted here only (by id): not shown or sent. */
     val clipHidden: Set<String> = emptySet(),
+    /**
+     * Check highlights before sending: when on, a new highlight goes to no tracker (and isn't
+     * posted to Threads) until you've marked it fine, a spoiler, or not to send.
+     */
+    val checkHighlights: Boolean = false,
+    /** For trackers that post publicly with no spoiler setting (Goodreads, Micro.blog): "hold" a spoiler back, or "warn" above it. */
+    val spoilerPublic: String = "hold",
+    /** What you made of each highlight (by id): "ok", "spoiler" or "skip" (kept here, sent nowhere). */
+    val clipChecked: Map<String, String> = emptyMap(),
+    /** Books whose price you're watching (by document): where, what you'd pay, and every price seen. */
+    val priceWatch: Map<String, PriceWatch> = emptyMap(),
     /** Positions the reader reported per book (newest last, a few hundred kept), to place highlights. */
     val positions: Map<String, List<PositionPoint>> = emptyMap(),
     /** What was sent to each tracker for each book ("service|document"), newest last. */

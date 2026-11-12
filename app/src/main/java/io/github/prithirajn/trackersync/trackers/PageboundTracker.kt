@@ -511,7 +511,7 @@ object PageboundTracker : Tracker {
             ?.toInt()?.takeIf { it > 0 }
         val title = postTitle("Quote", at, clip.chapter, clip.pageIn(total))
         val content = quoteContent(clip.text, clip.note).take(10_000)
-        val spoiler = clip.note?.let { Markdown.hasSpoiler(it) } ?: false
+        val spoiler = clip.spoiler || (clip.note?.let { Markdown.hasSpoiler(it) } ?: false)
         if (previousId != null) {
             // As Pagebound's "Edit post": PUT /posts/{id}, marked edited.
             val edit = postBody(0, title, content, at, "quote", spoiler = spoiler).getJSONObject("post")

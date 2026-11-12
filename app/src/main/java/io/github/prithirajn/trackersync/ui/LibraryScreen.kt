@@ -98,6 +98,13 @@ private fun greeting(): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
+    // Highlights waiting to be checked before sending: shown in the Highlight of the day's place.
+    val toCheck = remember(state.checkHighlights, state.clipChecked, state.sentClippings, state.cpClips, state.paperClips, state.kindleClips, state.koClips, state.clipEdits) {
+        val ids = io.github.prithirajn.trackersync.sync.SpoilerCheck.waiting(state)
+        if (ids.isEmpty()) emptyList() else io.github.prithirajn.trackersync.sync.Highlights.all(state).associateBy { it.clip.id }.let { m -> ids.mapNotNull { m[it] } }
+    }
+    var checkingHighlights by remember { mutableStateOf(false) }
+    if (checkingHighlights) HighlightCheckSheet(vm, state) { checkingHighlights = false }
     var open by remember { mutableStateOf<String?>(null) }
     var tab by rememberSaveable { mutableStateOf(ReadStatus.READING) }
     var adding by remember { mutableStateOf(false) }
@@ -135,7 +142,15 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
             (p - start).coerceAtLeast(0)
         }
     }
-    val shown = remember(state.books, tab, sort, query) { Shelves.shown(all, tab, sort, query) }
+    val shown = remember(state.books, tab, sort, query, state.priceWatch) {
+        Shelves.shown(all, tab, sort, query).let { list ->
+            // Price drop: watched books with the biggest fall first (under your price before that), the rest after.
+            if (sort != Shelves.Sort.PRICE) list
+            else list.sortedWith(compareByDescending<io.github.prithirajn.trackersync.data.Book> { b ->
+                state.priceWatch[b.document]?.let { w -> w.target?.let { t -> (w.best?.price ?: Double.MAX_VALUE) <= t } } == true
+            }.thenByDescending { b -> state.priceWatch[b.document]?.drop ?: -2.0 }.thenByDescending { it.document in state.priceWatch })
+        }
+    }
     val dupe = remember(state.books) { Shelves.firstDuplicate(all) }
     val toRate = remember(state.books) { FinishFlow.toRate(all).firstOrNull() }
     // Paused trackers (switched off under Services) aren't shown on books; they get nothing.
@@ -341,6 +356,8 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
                         onShare = { sharingClip = it },
                         onSeeAll = { clipsShelf = true; clipBook = null },
                         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                        toCheck = toCheck,
+                        onCheck = { checkingHighlights = true },
                     )
                 }
             }
@@ -721,6 +738,8 @@ private fun BookRow(book: Book, state: Snapshot, linked: List<Tracker>, modifier
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AnimatedQuiet("${book.percent}% · ${book.status?.label ?: "Reading"} · ${ago(book.timestamp * 1000)}" + (where?.let { " · $it" } ?: ""), Modifier.weight(1f))
+                // A watched book's best price, green when it's come down.
+                state.priceWatch[book.document]?.let { HSpace(6); PriceTag(it) }
             }
             val targets = if (book.held) emptyList() else linked.filter { it.id != book.origin }
             if (book.held) {
@@ -1011,6 +1030,12 @@ private fun BookSheet(
                     // Finished: the book told in numbers, as a video or a carousel to post.
                     VSpace(12)
                     BigButton("\u2726 Book recap: video & carousel", { recap = true }, look = KeyKind.INK)
+                }
+                // Its price at the stores, for a book you haven't finished (or one you're already watching).
+                if ((book.status != io.github.prithirajn.trackersync.data.ReadStatus.FINISHED && book.status != io.github.prithirajn.trackersync.data.ReadStatus.DNF) || book.document in state.priceWatch) {
+                    BookSection("Price")
+                    VSpace(10)
+                    PriceSection(vm, state, book)
                 }
                     // Where the position comes from, how the reading went, and what's linked to it.
                 // Where this book's position is trusted from, and the others by rank.

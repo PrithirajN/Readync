@@ -123,6 +123,7 @@ object AccountData {
             clipPages = incoming.clipPages + current.clipPages,
             clipRemote = incoming.clipRemote + current.clipRemote,
             clipHidden = current.clipHidden + incoming.clipHidden,
+            clipChecked = incoming.clipChecked + current.clipChecked,
             sentClippings = current.sentClippings + incoming.sentClippings,
             seekquelRatings = incoming.seekquelRatings + current.seekquelRatings,
             seekquelDates = incoming.seekquelDates + current.seekquelDates,

@@ -11,6 +11,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
@@ -202,6 +203,16 @@ object Cp {
  */
 @Composable
 fun AccentTheme(seed: Int?, content: @Composable () -> Unit) {
+    // Handed down too, so a page that turns itself dark (the studios) can take the same colour in its dark form.
+    val outer = LocalAccentSeed.current
+    CompositionLocalProvider(LocalAccentSeed provides (seed ?: outer)) { AccentThemeInner(seed, content) }
+}
+
+/** The cover colour the accent was taken from, where one was (null keeps the orange). */
+val LocalAccentSeed = compositionLocalOf<Int?> { null }
+
+@Composable
+private fun AccentThemeInner(seed: Int?, content: @Composable () -> Unit) {
     val base = LocalCp.current
     val set = seed?.let { Palette.accentFrom(it, base.isDark) }
     val signal = seed?.let { Palette.signalFrom(it, base.isDark) }
@@ -235,7 +246,13 @@ fun TrackerSyncTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable
 /** Always the dark device, whatever the phone is set to: for the photo studio, where a dark room shows the picture best. */
 @Composable
 fun DarkGadget(content: @Composable () -> Unit) {
-    val c = Dark.copy(wall = LocalCp.current.wall)
+    // The book's colour, in its dark form, when the page was opened under one (else the orange).
+    val signal = LocalAccentSeed.current?.let { Palette.signalFrom(it, true) }
+    val c = if (signal == null) Dark.copy(wall = LocalCp.current.wall) else Dark.copy(
+        wall = LocalCp.current.wall,
+        accent = Color(signal.accent), accentText = Color(signal.text), accentTint = Color(signal.tint),
+        accentRing = Color(signal.ring), signalLedge = Color(Palette.deeper(signal.accent)),
+    )
     CompositionLocalProvider(LocalCp provides c) {
         MaterialTheme(colorScheme = darkColorScheme(primary = c.accent, background = c.page, surface = c.surface, onSurface = c.text, onBackground = c.text, error = c.error), content = content)
     }

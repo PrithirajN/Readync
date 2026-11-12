@@ -95,25 +95,35 @@ object Palette {
      * hardly any colour, which keeps the orange.
      */
     fun signalFrom(seed: Int, dark: Boolean): Accent? {
-        val (h, s0, _) = toHsl(seed)
+        val (h0, s0, _) = toHsl(seed)
         if (s0 < 0.14f) return null
-        val s = (s0 * 1.25f).coerceIn(0.62f, 0.92f)
-        // Yellows and greens read light, so they sit a little darker to keep white writing clear.
-        val l = when (h) {
-            in 40f..175f -> if (dark) 0.5f else 0.44f
-            else -> if (dark) 0.6f else 0.55f
-        }
+        // Lemon and lime yellows read as neon when lit: they lean toward amber and lose a little
+        // saturation, so a yellow cover gives a warm gold rather than a highlighter.
+        val yellow = h0 in 48f..80f
+        val h = if (yellow) 38f + (h0 - 38f) * 0.15f else h0
+        val s = (s0 * 1.25f).coerceIn(0.55f, if (yellow) 0.88f else 0.9f)
+        // As light as it can be while white writing stays clear on it: lowered until the colour's
+        // brightness (as the eye sees it) is under a cap, whatever the hue.
+        var l = if (dark) 0.58f else 0.52f
+        val cap = if (yellow) (if (dark) 0.25 else 0.2) else if (dark) 0.22 else 0.18
+        while (l > 0.3f && relativeLuminance(fromHsl(h, s, l)) > cap) l -= 0.01f
         return if (dark) Accent(
             accent = fromHsl(h, s, l),
-            text = fromHsl(h, s * 0.9f, 0.72f),
+            text = fromHsl(h, s * 0.85f, 0.7f),
             tint = fromHsl(h, s * 0.5f, 0.13f),
             ring = fromHsl(h, s * 0.6f, 0.3f),
         ) else Accent(
             accent = fromHsl(h, s, l),
-            text = fromHsl(h, s * 0.9f, 0.36f),
+            text = fromHsl(h, s * 0.9f, 0.34f),
             tint = fromHsl(h, s * 0.6f, 0.94f),
             ring = fromHsl(h, s * 0.6f, 0.78f),
         )
+    }
+
+    /** How bright a colour looks (WCAG relative luminance, 0 black to 1 white). */
+    fun relativeLuminance(argb: Int): Double {
+        fun ch(v: Int): Double { val c = v / 255.0; return if (c <= 0.03928) c / 12.92 else Math.pow((c + 0.055) / 1.055, 2.4) }
+        return 0.2126 * ch(argb shr 16 and 0xFF) + 0.7152 * ch(argb shr 8 and 0xFF) + 0.0722 * ch(argb and 0xFF)
     }
 
     /** The colour a little deeper, for the ledge under a signal key. */

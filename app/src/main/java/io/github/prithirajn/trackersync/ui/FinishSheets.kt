@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -673,6 +674,12 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
     var sharing by remember { mutableStateOf<String?>(null) }
     val canCatchUp = aiReady && book.status != io.github.prithirajn.trackersync.data.ReadStatus.FINISHED && book.percent in 1..97 && items.any { (it.clip.percent ?: 0.0) <= book.percentage + 0.005 }
     val withNotes = items.count { !it.clip.note.isNullOrBlank() }
+    // Waiting to be checked (with Check highlights before sending on).
+    val toCheck = remember(items, state.clipChecked, state.checkHighlights, state.sentClippings) {
+        io.github.prithirajn.trackersync.sync.SpoilerCheck.waiting(state).let { w -> items.count { it.clip.id in w } }
+    }
+    var checking by remember { mutableStateOf(false) }
+    if (checking) HighlightCheckSheet(vm, state, book.document) { checking = false }
 
     // Everything you can do with them comes first, on a little screen with the count, then the highlights.
     VSpace(16)
@@ -704,6 +711,7 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
         }
         VSpace(10)
         androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (toCheck > 0) PillButton("Check $toCheck before sending", { checking = true }, outlined = false)
             if (unsent.isNotEmpty()) PillButton("Send to trackers", { sending = true }, outlined = false)
             PillButton("Export", {
                 val md = Highlights.toMarkdown(book, items)
@@ -727,6 +735,7 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
             item, Modifier.riseIn(i + 1),
             onOpen = { open = item.clip.id },
             onShare = { sharing = item.clip.id },
+            check = { CheckChip(state, item.clip.id) { vm.markHighlights(listOf(item.clip.id), it, send = true) } },
         )
         VSpace(12)
     }
@@ -789,7 +798,7 @@ private fun SendHighlightsSheet(vm: AppViewModel, book: Book, targets: List<Pair
  * key shares it as an image.
  */
 @Composable
-private fun HighlightCard(item: Highlights.Item, modifier: Modifier, onOpen: () -> Unit, onShare: () -> Unit) {
+private fun HighlightCard(item: Highlights.Item, modifier: Modifier, onOpen: () -> Unit, onShare: () -> Unit, check: @Composable () -> Unit = {}) {
     val c = Cp.colors
     val isNote = io.github.prithirajn.trackersync.sync.KoHighlightSync.isNote(item.clip.id) || item.clip.text.isBlank()
     val where = io.github.prithirajn.trackersync.sync.HighlightPosition.label(item.clip)
@@ -807,6 +816,9 @@ private fun HighlightCard(item: Highlights.Item, modifier: Modifier, onOpen: () 
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 14.dp, top = 12.dp, bottom = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 DeviceLabel(listOfNotNull(where, date).joinToString("  /  "), color = c.quiet, modifier = Modifier.weight(1f))
+                // With Check highlights before sending: what it was checked as (tap to change).
+                check()
+                Spacer(Modifier.width(8.dp))
                 Key(onShare, Modifier.size(width = 34.dp, height = 34.dp), shape = CircleShape, ledge = 2.dp, label = "Share as a picture") {
                     LucideIcon(R.drawable.lucide_image, Modifier.size(15.dp), c.textMid)
                 }

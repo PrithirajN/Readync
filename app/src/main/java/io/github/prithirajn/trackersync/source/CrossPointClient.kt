@@ -49,6 +49,10 @@ data class Clipping(
     /** CrossPoint's exact place in the chapter (visible code points), when the server has it. Not kept. */
     val start: Int? = null,
     val end: Int? = null,
+    /** Marked a spoiler (by you, with Check highlights before sending): trackers with a spoiler setting get it on. Not kept. */
+    val spoiler: Boolean = false,
+    /** Going to a public tracker with no spoiler setting: a spoiler warning goes above the passage. Not kept. */
+    val spoilerWarning: Boolean = false,
 ) {
     /**
      * Its page in a copy of [total] pages: the print page when known, else worked out from its exact

@@ -273,11 +273,13 @@ class SyncEngine(private val store: Store) {
                     runCatching { refreshSerials() }
                     runCatching { publishedSerials() }
                     runCatching { findWebNovels() }
+                    // Books you've read (brought in from a history too): their genres, moods, series,
+                    // page counts and covers, a few each sync, for Wrapped, recaps and the shelf poster.
+                    runCatching { fillPastBooks() }
+                    // Prices of the books you're watching, a few each sync (each at most twice a day).
+                    runCatching { io.github.prithirajn.trackersync.source.BookPrices.refresh(store) }
                     runCatching { Releases.check(store) }
                     runCatching { SffRadar.refresh(store, force = false) }
-                    // A probe that came back while you were away has its briefing ready when you look.
-                    runCatching { SffRadar.claimProbe(store) }
-                    runCatching { val t = System.currentTimeMillis() / 1000; store.update { it.copy(sffSky = SffChart.tick(it, t)) } }
                     if (store.snapshot.pending.isNotEmpty()) runCatching { pushPending() }
                 }
                 runCatching { store.log(null, timingLine(mainMs) + timings["Extras"]?.takeIf { it >= 1000 }?.let { " (then extras ${Math.round(it / 1000.0)}s)" }.orEmpty()) }
@@ -1744,6 +1746,7 @@ class SyncEngine(private val store: Store) {
                     },
                     clipEdits = if (renamed.isEmpty()) s.clipEdits else s.clipEdits + s.clipEdits.mapNotNull { (k, v) -> renamed[k]?.let { it to v } },
                     clipHidden = if (renamed.isEmpty()) s.clipHidden else s.clipHidden + s.clipHidden.mapNotNull { renamed[it] },
+                    clipChecked = if (renamed.isEmpty()) s.clipChecked else s.clipChecked + s.clipChecked.mapNotNull { (k, v) -> renamed[k]?.let { it to v } },
                     kindleOkAt = now,
                     kindleError = null,
                     kindleSeen = s.kindleSeen + seenNow,
@@ -2593,10 +2596,33 @@ class SyncEngine(private val store: Store) {
         }
     }
 
+    /**
+     * Finished books (and ones put down) with no genres and moods yet, or no page count or cover:
+     * looked up a few at a time, the most recently finished first, so a history brought in fills
+     * in over a few syncs. Each book is asked at most as often as its own page would ask.
+     */
+    private fun fillPastBooks() {
+        val s0 = store.snapshot
+        val deadline = System.currentTimeMillis() + PAST_BOOKS_BUDGET_MS
+        val done = s0.books.values
+            .filter { (it.status == ReadStatus.FINISHED || it.status == ReadStatus.DNF) && it.title != null && !it.isMangaOrComic }
+            .sortedByDescending { it.finishedAt ?: it.timestamp }
+        val facts = done.filter { needsFacts(store.snapshot, it.document) }.take(PAST_BOOKS_PER_RUN)
+        for (b in facts) {
+            if (System.currentTimeMillis() > deadline) return
+            runCatching { loadFacts(store, b.document) }
+        }
+        val details = done.filter { (it.pageCount == null || it.coverUrl == null) && needsDetails(store.snapshot, it) }.take(PAST_BOOKS_PER_RUN)
+        for (b in details) {
+            if (System.currentTimeMillis() > deadline) return
+            runCatching { loadDetails(store, b.document) }
+        }
+    }
+
     /** Asks the server to look up covers for a few books that have none, newest first. */
     private fun fillCovers(client: CrossPointClient) {
         val missing = store.snapshot.books.values
-            .filter { (it.origin == null || it.origin in setOf("kindle", "libby", "audible", "seekquel", "mihon", "anilist", "logged")) && it.coverUrl == null && it.title != null && !it.detailsFetched && it.document !in coverTried }
+            .filter { (it.origin == null || it.origin in setOf("kindle", "libby", "audible", "seekquel", "mihon", "anilist", "logged") || it.origin?.startsWith(HistoryImport.ORIGIN_PREFIX) == true) && it.coverUrl == null && it.title != null && !it.detailsFetched && it.document !in coverTried }
             .sortedByDescending { it.timestamp }
             .take(COVER_LOOKUPS_PER_RUN)
         val sqSvc = store.snapshot.service("seekquel")
@@ -2807,6 +2833,8 @@ class SyncEngine(private val store: Store) {
         return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden && !KoHighlightSync.isNote(it.id) }
             .map { HighlightPosition.withPage(edited(it, s.clipEdits), s.books[it.document]) }
             .filter { val key = "${t.id}|${it.id}"; it.createdAt >= since && key !in s.sentClippings && key !in s.resend }
+            // Waiting to be checked, marked not to send, or a spoiler held back from this tracker.
+            .filter { !SpoilerCheck.blocked(s, it.id) && SpoilerCheck.prepare(t, s, it) != null }
     }
 
     private fun pushHighlights(onlyDocument: String? = null): Int {
@@ -2830,10 +2858,15 @@ class SyncEngine(private val store: Store) {
             val on = highlightsOn(t, store.snapshot)
             // CrossPoint's own highlights go from the server where it's linked there too (it has them; KOReader's and paper ones it doesn't).
             val cpIds = if (t.id in store.snapshot.serverLinked) store.snapshot.cpClips.map { it.id }.toSet() else emptySet()
+            val snap = store.snapshot
             val fresh = clips.filter {
                 val key = "${t.id}|${it.id}"
-                it.id !in cpIds && (key in store.snapshot.resend || (on && it.createdAt >= svc.highlightsSince && key !in store.snapshot.sentClippings))
+                it.id !in cpIds && (key in snap.resend || (on && it.createdAt >= svc.highlightsSince && key !in snap.sentClippings))
             }
+                // With Check highlights before sending: unchecked ones wait (one sent by hand goes anyway),
+                // "don't send" ones stay here, and spoilers go as this tracker can take them (or not at all).
+                .filter { "${t.id}|${it.id}" in snap.resend || !SpoilerCheck.blocked(snap, it.id) }
+                .mapNotNull { SpoilerCheck.prepare(t, snap, it) }
             if (fresh.isEmpty()) return@inParallel
             val session = Session(svc.credential).also { it.visibility = svc.visibility }
             try {
@@ -3546,6 +3579,9 @@ class SyncEngine(private val store: Store) {
         private val lock = ReentrantLock()
 
         private const val COVER_LOOKUPS_PER_RUN = 10
+        /** Past books looked up per sync (genres and moods, then page counts and covers), and the time allowed. */
+        private const val PAST_BOOKS_PER_RUN = 8
+        private const val PAST_BOOKS_BUDGET_MS = 60_000L
 
         /** Books whose cover was already looked up while the app has been running. */
         private val coverTried: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())

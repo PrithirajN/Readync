@@ -60,6 +60,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.github.prithirajn.trackersync.R
 import io.github.prithirajn.trackersync.data.ReadStatus
@@ -117,6 +118,10 @@ internal fun SffArticleReaderSheet(
     var liveWebViewMode by remember(currentItem.id) { mutableStateOf(false) }
     /** The page "Page View" shows: the story's own page, or a link tapped inside the reader. */
     var pageUrl by remember(currentItem.id) { mutableStateOf(currentItem.url) }
+    /** The reader's text size (Aa): a few steps, kept while the app is open. */
+    var fontStep by rememberSaveable { mutableIntStateOf(readerFontStep) }
+    val fontScale = READER_FONT_STEPS[fontStep.coerceIn(0, READER_FONT_STEPS.lastIndex)]
+    var aiMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(currentItem.id) {
         loadingArticle = true
@@ -143,55 +148,47 @@ internal fun SffArticleReaderSheet(
                 .background(c.page)
                 .windowInsetsPadding(WindowInsets.systemBars)
         ) {
-            // 1. Sticky Top Reader Bar: Source, Reading Time, View Mode Toggle & Done
+            // 1. The top bar: close, the outlet and how long it takes, text size, and the web page.
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(currentItem.source, style = CpType.bodyStrong, color = c.accentText, maxLines = 1)
-                    article?.let { a ->
-                        Quiet("${a.readingTimeMinutes} min read · ${String.format(Locale.getDefault(), "%,d", a.wordCount)} words" +
-                            (if (a.comments.isNotEmpty()) " · ${a.comments.size} replies" else ""))
-                    }
+                IconCircleButton(io.github.prithirajn.trackersync.R.drawable.lucide_x, "Close", { finishAndClose() }, tint = c.text)
+                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                    Text(currentItem.source.substringBefore(" ·"), style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    article?.let { a -> Quiet("${a.readingTimeMinutes} min read" + (if (a.comments.isNotEmpty()) " · ${a.comments.size} replies" else ""), maxLines = 1) }
                 }
-                if (!currentItem.url.isNullOrBlank()) {
-                    PillButton(
-                        text = if (liveWebViewMode) "Reader View" else "Page View",
-                        onClick = {
-                            if (!liveWebViewMode) pageUrl = currentItem.url
-                            liveWebViewMode = !liveWebViewMode
-                        },
-                    )
+                if (!liveWebViewMode) {
+                    Box(
+                        Modifier.size(40.dp).clip(CircleShape).background(c.divider)
+                            .bouncyClickable(CircleShape, pressedScale = 0.9f, onClickLabel = "Text size") {
+                                fontStep = (fontStep + 1) % READER_FONT_STEPS.size; readerFontStep = fontStep
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) { Text("Aa", style = CpType.label.copy(fontSize = (12 + fontStep * 2).sp), color = c.text) }
                     HSpace(8)
                 }
-                PillButton("Done", { finishAndClose() }, outlined = false)
+                if (!currentItem.url.isNullOrBlank()) {
+                    PillButton(if (liveWebViewMode) "Reader" else "Web page", {
+                        if (!liveWebViewMode) pageUrl = currentItem.url
+                        liveWebViewMode = !liveWebViewMode
+                    })
+                }
             }
 
-            // 2. Multi-Source Perspective Switcher (when 2+ sources are clubbed in this cluster)
+            // 2. When several outlets carry the story: which one you're reading.
             if (cluster.perspectives.size > 1) {
                 Row(
-                    Modifier
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     cluster.perspectives.forEachIndexed { idx, p ->
                         val on = idx == perspectiveIndex
                         Box(
-                            Modifier.bouncyClickable(CpShapes.pill, pressedScale = 0.94f) {
-                                perspectiveIndex = idx
-                                liveWebViewMode = false
-                            }
-                        ) {
-                            Chip(
-                                text = "${idx + 1}. ${p.source}",
-                                color = if (on) c.accentText else c.quiet,
-                                background = if (on) c.accentTint else c.divider,
-                            )
-                        }
+                            Modifier.clip(CpShapes.pill).background(if (on) c.text else c.divider)
+                                .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, onClickLabel = p.source) { perspectiveIndex = idx; liveWebViewMode = false }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        ) { Text(p.source.substringBefore(" ·"), style = CpType.small, color = if (on) c.page else c.textMid, maxLines = 1) }
                     }
                 }
             }
@@ -210,18 +207,6 @@ internal fun SffArticleReaderSheet(
                 // The ad-free reader, as Artifact showed a story: its topics, then the article on a card
                 // (lead image across the top, publisher, big headline, summary card, the text with its
                 // pictures and captions, replies on cards below), and the actions in a bar at the bottom.
-                if (cluster.canonicalTags.isNotEmpty()) {
-                    Row(
-                        Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        for (t in cluster.canonicalTags) {
-                            Box(Modifier.bouncyClickable(CpShapes.pill, pressedScale = 0.94f) { onSelectTag(t) }) {
-                                Chip("#$t", color = c.accentText, background = c.accentTint)
-                            }
-                        }
-                    }
-                }
                 val doc = SffArticleReader.buildArtifactReaderDocument(
                     article = readerArticle,
                     item = currentItem.copy(aiHeadline = headlineOverride),
@@ -235,6 +220,7 @@ internal fun SffArticleReaderSheet(
                     accentTintHex = c.accentTint.hex(),
                     borderHex = c.hairline.hex(),
                     aiBulletsFromModel = bulletsFromLlm,
+                    fontScale = fontScale,
                 )
                 ArtifactReaderWebView(
                     html = doc,
@@ -277,105 +263,60 @@ internal fun SffArticleReaderSheet(
                             Text(insight, style = CpType.small, color = c.text)
                         }
                     }
-                    // Reactions, as Artifact had them, and Save.
-                    val mine = state.sffSky.reactions[currentItem.id]
+                    // The bar: save, more or less like it, the AI's help, your shelf, share.
                     val isSaved = state.sffSky.saved.any { it.id == currentItem.id }
+                    val existing = libraryBaseTitles[Matcher.baseTitle(currentItem.title)]
+                    val shareUrl = readerArticle.originalUrl ?: currentItem.url
+                    fun runAi(title: String, call: ((String, Boolean) -> Unit) -> Unit) {
+                        if (runningExtraAi) return
+                        runningExtraAi = true
+                        call { text, fromLlm ->
+                            aiInsightTitle = if (fromLlm) "On-device AI · $title" else title
+                            aiInsightBody = text
+                            runningExtraAi = false
+                        }
+                    }
                     Row(
-                        Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 8.dp),
+                        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        for (e in SFF_REACTIONS) {
-                            val on = mine == e
-                            Box(
-                                Modifier.size(38.dp).clip(CircleShape).background(if (on) c.accentTint else c.page)
-                                    .border(1.dp, if (on) c.accentRing else c.hairline, CircleShape)
-                                    .bouncyClickable(CircleShape, pressedScale = 0.85f, onClickLabel = "React $e") { vm.sffReact(currentItem, e) },
-                                contentAlignment = Alignment.Center,
-                            ) { Text(e, style = CpType.body) }
-                        }
-                        Box(Modifier.weight(1f))
-                        PillButton(if (isSaved) "Saved" else "Save", { vm.sffSave(currentItem) }, outlined = !isSaved)
-                    }
-                    Row(
-                        Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        PillButton("👍", { vm.sffFeedback(cluster, true) })
-                        PillButton("👎", {
-                            vm.sffFeedback(cluster, false)
-                            finishAndClose()
-                        })
-                        PillButton(
-                            text = when {
-                                summarizing -> "Summarizing…"
-                                bullets.isNotEmpty() -> "↻ Summary"
-                                else -> "✨ Summarize"
-                            },
-                            onClick = {
-                                if (!summarizing) {
-                                    summarizing = true
-                                    vm.summarizeSffCluster(cluster, readerArticle.bodyMarkdown) { res, fromLlm ->
-                                        bullets = res
-                                        bulletsFromLlm = fromLlm
-                                        summarizing = false
+                        BarKey(io.github.prithirajn.trackersync.R.drawable.lucide_book_plus, if (isSaved) "Saved" else "Save", on = isSaved) { vm.sffSave(currentItem) }
+                        BarKey(null, "👍", label = "More like this") { vm.sffFeedback(cluster, true) }
+                        BarKey(null, "👎", label = "Less like this") { vm.sffFeedback(cluster, false); finishAndClose() }
+                        Box {
+                            BarKey(io.github.prithirajn.trackersync.R.drawable.lucide_sparkles, "AI", on = aiMenu) { aiMenu = true }
+                            androidx.compose.material3.DropdownMenu(aiMenu, { aiMenu = false }) {
+                                @Composable fun pick(text: String, act: () -> Unit) = androidx.compose.material3.DropdownMenuItem(text = { Text(text, style = CpType.body, color = c.text) }, onClick = { aiMenu = false; act() })
+                                pick(if (bullets.isNotEmpty()) "Sum it up again" else "Sum it up") {
+                                    if (!summarizing) {
+                                        summarizing = true
+                                        vm.summarizeSffCluster(cluster, readerArticle.bodyMarkdown) { res, fromLlm -> bullets = res; bulletsFromLlm = fromLlm; summarizing = false }
                                     }
                                 }
-                            },
-                            outlined = false,
-                        )
-                        PillButton(
-                            text = if (rewritingTitle) "Rewriting…" else if (headlineOverride != null) "Original title" else "✨ Rewrite title",
-                            onClick = {
-                                if (headlineOverride != null) headlineOverride = null
-                                else if (!rewritingTitle) {
-                                    rewritingTitle = true
-                                    vm.rewriteSffClickbait(currentItem, readerArticle.bodyMarkdown) { newTitle, _ ->
-                                        headlineOverride = newTitle
-                                        rewritingTitle = false
+                                pick(if (headlineOverride != null) "Original headline" else "Say what it's about (headline)") {
+                                    if (headlineOverride != null) headlineOverride = null
+                                    else if (!rewritingTitle) {
+                                        rewritingTitle = true
+                                        vm.rewriteSffClickbait(currentItem, readerArticle.bodyMarkdown) { newTitle, _ -> headlineOverride = newTitle; rewritingTitle = false }
                                     }
                                 }
-                            },
-                        )
-                        fun runAi(title: String, modelTitle: String, call: ((String, Boolean) -> Unit) -> Unit) {
-                            if (runningExtraAi) return
-                            runningExtraAi = true
-                            call { text, fromLlm ->
-                                aiInsightTitle = if (fromLlm) "On-device AI · $modelTitle" else title
-                                aiInsightBody = text
-                                runningExtraAi = false
+                                pick("Explain the background") { runAi("Background") { done -> vm.explainSffContext(cluster, readerArticle.bodyMarkdown, done) } }
+                                if (cluster.perspectives.size >= 2) pick("Compare the ${cluster.perspectives.size} outlets") { runAi("How the outlets compare") { done -> vm.compareSffPerspectives(cluster, readerArticle.bodyMarkdown, done) } }
+                                pick("Check for spoilers") { runAi("Spoiler check") { done -> vm.checkSffSpoilers(cluster, readerArticle.bodyMarkdown, done) } }
                             }
                         }
-                        PillButton("✨ Explain", {
-                            runAi("Background", "Background") { done -> vm.explainSffContext(cluster, readerArticle.bodyMarkdown, done) }
-                        })
-                        if (cluster.perspectives.size >= 2) {
-                            PillButton("✨ Compare ${cluster.perspectives.size} sources", {
-                                runAi("How the sources compare", "How the sources compare") { done -> vm.compareSffPerspectives(cluster, readerArticle.bodyMarkdown, done) }
-                            })
-                        }
-                        PillButton("🛡️ Spoiler check", {
-                            runAi("Spoiler check", "Spoiler check") { done -> vm.checkSffSpoilers(cluster, readerArticle.bodyMarkdown, done) }
-                        })
-                        val existing = libraryBaseTitles[Matcher.baseTitle(currentItem.title)]
-                        if (existing != null) {
-                            PillButton("In Library", {
-                                finishAndClose()
-                                AppActions.pending.value = AppAction.OpenBook(existing.document)
-                            })
-                        } else {
-                            PillButton("+ Want to Read", { vm.shelfSffItem(currentItem) })
-                        }
-                        val shareUrl = readerArticle.originalUrl ?: currentItem.url
+                        Box(Modifier.weight(1f))
+                        if (existing != null) PillButton("In library", { finishAndClose(); AppActions.pending.value = AppAction.OpenBook(existing.document) })
+                        else if (currentItem.category == "DISCOVERY" || currentItem.category == "SERIES_HORIZON") PillButton("+ Want to read", { vm.shelfSffItem(currentItem) })
                         if (!shareUrl.isNullOrBlank()) {
-                            PillButton("Share", {
+                            BarKey(io.github.prithirajn.trackersync.R.drawable.lucide_upload, null, label = "Share") {
                                 val send = android.content.Intent(android.content.Intent.ACTION_SEND)
                                     .setType("text/plain")
                                     .putExtra(android.content.Intent.EXTRA_SUBJECT, headlineOverride ?: currentItem.title)
                                     .putExtra(android.content.Intent.EXTRA_TEXT, "${headlineOverride ?: currentItem.title}\n$shareUrl")
                                 runCatching { context.startActivity(android.content.Intent.createChooser(send, "Share story")) }
-                            })
+                            }
                         }
                     }
                 }
@@ -660,8 +601,18 @@ private fun ArtifactReaderWebView(html: String, baseUrl: String?, background: Co
                         if (request?.isForMainFrame == true && (target.startsWith("http://") || target.startsWith("https://"))) openLink(target)
                         return true
                     }
-                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? =
-                        if (request != null && SffArticleReader.shouldBlockRequest(request)) SffArticleReader.emptyAdResponse() else null
+                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                        if (request == null) return null
+                        // The app's own fonts for the page (Lora to read in, Inter for the small print).
+                        SffArticleReader.fontFor(request.url.toString())?.let { id ->
+                            return runCatching {
+                                WebResourceResponse("font/ttf", null, ctx.resources.openRawResource(id)).apply {
+                                    responseHeaders = mapOf("Access-Control-Allow-Origin" to "*", "Cache-Control" to "max-age=31536000")
+                                }
+                            }.getOrNull()
+                        }
+                        return if (SffArticleReader.shouldBlockRequest(request)) SffArticleReader.emptyAdResponse() else null
+                    }
                 }
             }
         },
@@ -802,5 +753,25 @@ internal fun SocialFollowCard(
                 }
             }
         }
+    }
+}
+
+/** Text sizes for the reader's Aa, and the one last chosen (while the app is open). */
+private val READER_FONT_STEPS = listOf(0.9f, 1f, 1.12f, 1.25f)
+private var readerFontStep = 1
+
+/** A key in the reader's bar: an icon or a short word (or both), lit when it's on. */
+@Composable
+private fun BarKey(icon: Int?, text: String?, on: Boolean = false, label: String? = null, onClick: () -> Unit) {
+    val c = Cp.colors
+    Row(
+        Modifier.height(40.dp).clip(CpShapes.pill).background(if (on) c.accentTint else c.divider)
+            .bouncyClickable(CpShapes.pill, pressedScale = 0.92f, onClickLabel = label ?: text) { onClick() }
+            .padding(horizontal = if (text == null) 11.dp else 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        icon?.let { LucideIcon(it, Modifier.size(16.dp), if (on) c.accentText else c.text) }
+        if (icon != null && text != null) HSpace(6)
+        text?.let { Text(it, style = CpType.label, color = if (on) c.accentText else c.text) }
     }
 }

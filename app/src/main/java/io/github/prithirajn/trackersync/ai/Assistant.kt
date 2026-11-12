@@ -423,6 +423,33 @@ object Assistant {
     )
 
     /** One of [TOPICS] for [book], from its title, author and description; null when the answer isn't one of them. */
+    /**
+     * A reader persona for a stretch of reading: a two-to-four-word title ("Dark fantasy wanderer")
+     * and one warm sentence about the reader, from what they read. Null when what comes back doesn't
+     * keep to that.
+     */
+    fun readerPersona(m: TextModel, period: String, titles: List<String>, genres: List<String>, moods: List<String>, pace: String?, facts: List<String>): Pair<String, String>? {
+        val prompt = buildString {
+            appendLine("Here is someone's reading for $period.")
+            if (titles.isNotEmpty()) appendLine("Books: " + titles.take(14).joinToString("; ") { it.take(70) })
+            if (genres.isNotEmpty()) appendLine("Top genres: " + genres.joinToString(", "))
+            if (moods.isNotEmpty()) appendLine("Top moods: " + moods.joinToString(", "))
+            pace?.let { appendLine("Usual pace: $it") }
+            facts.forEach { appendLine(it) }
+            appendLine()
+            appendLine("Give them a playful reader persona, like a personality type for readers.")
+            appendLine("A title of two to four words (for example \"Cosy mystery binger\" or \"Dark fantasy wanderer\"), then one short, warm sentence about them as a reader (under 110 characters).")
+            appendLine("Don't name any book or author. No hashtags, no emoji.")
+            append("Reply exactly as: Title | sentence")
+        }
+        val reply = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null).lines().firstOrNull { "|" in it } ?: return null
+        val title = reply.substringBefore("|").trim().trim('"', '*', '.', ' ')
+        val line = reply.substringAfter("|").trim().trim('"', '*', ' ')
+        val words = title.split(Regex("\\s+")).size
+        if (words !in 2..5 || title.length > 40 || line.length !in 12..160) return null
+        return title.replaceFirstChar { it.uppercase() } to line
+    }
+
     fun pickTopic(m: TextModel, book: Book): String? {
         val prompt = buildString {
             appendLine("Book: \"${book.title ?: "?"}\"" + (book.author?.let { " by $it" } ?: ""))

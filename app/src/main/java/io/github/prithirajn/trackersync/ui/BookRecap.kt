@@ -823,16 +823,18 @@ fun BookRecapSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () ->
         value = withContext(Dispatchers.Default) { runCatching { BookRecap.slides(context, data, coverArt) }.getOrNull() }
     }
     var posting by remember { mutableStateOf(false) }
+    // Picking pictures for X (four to a post there), in the order tapped; null when not picking.
+    var xPick by remember { mutableStateOf<List<Int>?>(null) }
     val threadsOn = state.threadsToken != null && state.threadsUserId != null
 
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
         DarkGadget {
             val c = Cp.colors
-            Column(Modifier.fillMaxSize().background(c.page).windowInsetsPadding(WindowInsets.safeDrawing)) {
+            Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconCircleButton(io.github.prithirajn.trackersync.R.drawable.lucide_x, "Close", onClose, tint = c.text)
                     Text("Recap", style = CpType.section, color = c.text, modifier = Modifier.padding(start = 12.dp, end = 12.dp))
-                    Segmented(listOf("Video", "Carousel"), mode, { it }, { mode = it; said = null }, Modifier.weight(1f))
+                    Segmented(listOf("Video", "Carousel"), mode, { it }, { mode = it; said = null; xPick = null }, Modifier.weight(1f))
                 }
                 Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 12.dp).clip(RoundedCornerShape(20.dp)).background(c.screen).padding(10.dp)) {
                     Column(Modifier.fillMaxSize()) {
@@ -867,10 +869,27 @@ fun BookRecapSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () ->
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         itemsIndexed(list) { i, bmp ->
-                                            Image(
-                                                bmp.asImageBitmap(), "Picture ${i + 1} of ${list.size}", contentScale = ContentScale.Fit,
-                                                modifier = Modifier.fillMaxHeight(0.92f).aspectRatio(BookRecap.CW.toFloat() / BookRecap.CH).clip(RoundedCornerShape(14.dp)),
-                                            )
+                                            val picks = xPick
+                                            val n = picks?.indexOf(i)?.takeIf { it >= 0 }?.plus(1)
+                                            Box(
+                                                Modifier.fillMaxHeight(0.92f).aspectRatio(BookRecap.CW.toFloat() / BookRecap.CH)
+                                                    .then(if (picks != null) Modifier.bouncyClickable(RoundedCornerShape(14.dp), onClickLabel = if (n != null) "Leave out" else "Pick for X") {
+                                                        Haptics.tick(view)
+                                                        xPick = if (n != null) picks - i else if (picks.size < XPost.MAX_PICTURES) picks + i else picks
+                                                    } else Modifier),
+                                            ) {
+                                                Image(
+                                                    bmp.asImageBitmap(), "Picture ${i + 1} of ${list.size}", contentScale = ContentScale.Fit,
+                                                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
+                                                        .then(if (picks != null && n == null) Modifier.background(androidx.compose.ui.graphics.Color.Black) else Modifier),
+                                                    alpha = if (picks != null && n == null) 0.4f else 1f,
+                                                )
+                                                if (picks != null) Box(
+                                                    Modifier.align(Alignment.TopEnd).padding(8.dp).size(30.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                                                        .background(if (n != null) c.accent else androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f)),
+                                                    contentAlignment = Alignment.Center,
+                                                ) { Text(n?.toString() ?: "", style = CpType.bodyStrong, color = androidx.compose.ui.graphics.Color.White) }
+                                            }
                                         }
                                     }
                                 }
@@ -878,7 +897,11 @@ fun BookRecapSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () ->
                         }
                         if (mode == "Carousel" && slides != null) {
                             Spacer(Modifier.height(8.dp))
-                            Text("${slides?.size ?: 0} pictures, one stat each. Swipe to see them; they post together, in this order.", style = CpType.small, color = c.screenDim)
+                            Text(
+                                if (xPick != null) "X takes ${XPost.MAX_PICTURES} pictures a post. Tap to pick them, in the order they'll go: ${xPick!!.size} of ${XPost.MAX_PICTURES}."
+                                else "${slides?.size ?: 0} pictures, one stat each. Swipe to see them; they post together, in this order.",
+                                style = CpType.small, color = if (xPick != null) c.accent else c.screenDim,
+                            )
                         }
                     }
                 }
@@ -904,16 +927,33 @@ fun BookRecapSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () ->
                             }, enabled = film != null)
                         } else {
                             BigButton("Again", { made = null }, Modifier.weight(0.8f), filled = false)
-                            BigButton("Save", { said = if (QuoteVideo.save(context, file)) "Saved to Movies › ${io.github.prithirajn.trackersync.Edition.name}." else "Couldn't save here; use Share instead." }, Modifier.weight(1f), filled = false)
-                            BigButton("Share", { runCatching { QuoteVideo.share(context, file, caption) } }, Modifier.weight(1.3f))
+                            BigButton("Save", { said = if (QuoteVideo.save(context, file)) "Saved to Movies › ${io.github.prithirajn.trackersync.Edition.name}." else "Couldn't save here; use Share instead." }, Modifier.weight(0.9f), filled = false)
+                            BigButton("X", { said = XPost.said(XPost.video(context, file, caption), "the video") }, Modifier.weight(0.6f), look = KeyKind.INK)
+                            BigButton("Share", { runCatching { QuoteVideo.share(context, file, caption) } }, Modifier.weight(1f))
                         }
+                    } else if (xPick != null) {
+                        val list = slides
+                        val picks = xPick.orEmpty()
+                        BigButton("Cancel", { xPick = null }, Modifier.weight(0.8f), filled = false)
+                        BigButton(if (picks.isEmpty()) "Pick pictures" else "Post ${picks.size} to X", {
+                            val all = list ?: return@BigButton
+                            if (picks.isEmpty()) return@BigButton
+                            said = XPost.said(XPost.pictures(context, picks.mapNotNull { all.getOrNull(it) }, caption), if (picks.size == 1) "the picture" else "the ${picks.size} pictures")
+                            xPick = null
+                        }, Modifier.weight(1.4f), look = KeyKind.INK, enabled = list != null && picks.isNotEmpty())
                     } else {
                         val list = slides
                         BigButton("Save all", {
                             list?.let { all -> val ok = all.all { QuoteCard.save(context, it) }; said = if (ok) "Saved ${all.size} pictures to Pictures" else "Couldn't save here; use Share instead." }
-                        }, Modifier.weight(1f), filled = false, enabled = list != null)
-                        BigButton("Share", { list?.let { runCatching { BookRecap.shareAll(context, it, caption) } } }, Modifier.weight(1f), filled = false, enabled = list != null)
-                        BigButton(if (posting) "Posting…" else "Post to Threads", {
+                        }, Modifier.weight(0.9f), filled = false, enabled = list != null)
+                        BigButton("Share", { list?.let { runCatching { BookRecap.shareAll(context, it, caption) } } }, Modifier.weight(0.8f), filled = false, enabled = list != null)
+                        BigButton("X", {
+                            val all = list ?: return@BigButton
+                            // Four or fewer go straight; more, and you pick which four (the cover and the first three to start).
+                            if (all.size <= XPost.MAX_PICTURES) said = XPost.said(XPost.pictures(context, all, caption), "the pictures")
+                            else { xPick = (0 until XPost.MAX_PICTURES).toList(); said = null }
+                        }, Modifier.weight(0.6f), look = KeyKind.INK, enabled = list != null)
+                        BigButton(if (posting) "Posting…" else "Threads", {
                             val all = list ?: return@BigButton
                             if (posting) return@BigButton
                             if (!threadsOn) {
@@ -926,7 +966,7 @@ fun BookRecapSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () ->
                                 said = err ?: "Posted to Threads"
                                 if (err == null) Haptics.confirm(view)
                             }
-                        }, Modifier.weight(1.4f), look = KeyKind.INK, enabled = list != null)
+                        }, Modifier.weight(1.1f), look = KeyKind.INK, enabled = list != null)
                     }
                 }
             }

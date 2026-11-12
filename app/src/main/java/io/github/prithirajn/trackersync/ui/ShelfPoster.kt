@@ -192,10 +192,10 @@ fun ShelfPosterSheet(state: Snapshot, onClose: () -> Unit) {
         value = null
         value = withContext(Dispatchers.Default) { runCatching { ShelfPoster.draw(context, books, year, style, w, h) }.getOrNull() }
     }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
         DarkGadget {
             val c = Cp.colors
-            Column(Modifier.fillMaxSize().background(c.page).windowInsetsPadding(WindowInsets.safeDrawing)) {
+            Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconCircleButton(io.github.prithirajn.trackersync.R.drawable.lucide_x, "Close", onClose, tint = c.text)
                     Text("Shelf poster", style = CpType.section, color = c.text, modifier = Modifier.padding(start = 12.dp).weight(1f))
@@ -226,7 +226,11 @@ fun ShelfPosterSheet(state: Snapshot, onClose: () -> Unit) {
                         BigButton("Save", {
                             poster?.let { said = if (QuoteCard.save(context, it)) "Saved to Pictures. Set it as your wallpaper from your gallery." else "Couldn't save here; use Share instead." }
                         }, Modifier.weight(1f), filled = false, enabled = poster != null)
-                        BigButton("Share", { poster?.let { runCatching { QuoteCard.share(context, it, "My $year shelf: ${books.size} books") } } }, Modifier.weight(1.4f), enabled = poster != null)
+                        BigButton("Threads", {
+                            poster?.let { said = when (QuoteCard.postToThreads(context, it, "My $year shelf: ${books.size} books")) { "app" -> "Opened in Threads"; "web" -> "Threads opened in the browser"; else -> "Couldn't open Threads" } }
+                        }, Modifier.weight(1f), look = KeyKind.INK, enabled = poster != null)
+                        BigButton("X", { poster?.let { said = XPost.said(XPost.pictures(context, listOf(it), "My $year shelf: ${books.size} books"), "the poster") } }, Modifier.weight(0.7f), look = KeyKind.INK, enabled = poster != null)
+                        BigButton("Share", { poster?.let { runCatching { QuoteCard.share(context, it, "My $year shelf: ${books.size} books") } } }, Modifier.weight(1.1f), enabled = poster != null)
                     }
                 }
             }
