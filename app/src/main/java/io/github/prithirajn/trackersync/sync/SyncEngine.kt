@@ -1245,6 +1245,26 @@ class SyncEngine(private val store: Store) {
      * placed in their chapter, each once. What each was already sent to counts for the copy on
      * CrossPoint as well, so it isn't sent to your trackers a second time when it comes back.
      */
+    /**
+     * Up to [max] sentences mentioning [term] from the chapters before [upTo] (0–1) of [document]'s
+     * EPUB, nearest your place first; empty when the book's file isn't on this phone.
+     */
+    internal fun sentencesBefore(s: Snapshot, document: String, term: String, upTo: Double, max: Int = 24): List<String> {
+        val epub = koEpub(s, document)?.first ?: return emptyList()
+        val last = (epub.size * upTo).toInt().coerceIn(0, epub.size)
+        val needle = term.lowercase()
+        val out = ArrayList<String>()
+        for (i in last - 1 downTo 0) {
+            val ch = epub.chapter(i) ?: continue
+            val txt = ch.textOf(0, ch.length)
+            if (!txt.lowercase().contains(needle)) continue
+            val found = Regex("""[^.!?\n]*[.!?]""").findAll(txt).map { it.value.trim() }
+                .filter { it.lowercase().contains(needle) && it.length in 20..400 }.toList().asReversed()
+            for (x in found) { out += x; if (out.size >= max) return out }
+        }
+        return out
+    }
+
     /** The EPUB of [document] from KOReader's books folder on this device, opened, or null. */
     private fun koEpub(s: Snapshot, document: String): Pair<io.github.prithirajn.trackersync.source.EpubText.Book, Boolean>? {
         val found = KoPlacement.bookFor(s, document) ?: return null

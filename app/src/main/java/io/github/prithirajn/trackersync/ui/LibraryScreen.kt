@@ -1,6 +1,8 @@
 package io.github.prithirajn.trackersync.ui
 
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.border
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -200,21 +202,30 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
     }
     LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
         item {
-            Row(PagePadding.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Eyebrow(greeting())
-                    PageTitle("Your library")
-                    AnimatedQuiet(
-                        if (state.running) state.syncStep?.let { "Syncing \u00B7 $it…" } ?: "Syncing…"
-                        else "${all.size} book${if (all.size == 1) "" else "s"} · synced ${ago(state.lastRun)}"
-                    )
+            Column(PagePadding.fillMaxWidth()) {
+                // The greeting with the page's keys beside it, so the title has the full width below.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { Eyebrow(greeting()) }
+                    // The keys sit together on a little tray, spaced so each reads as its own key.
+                    Row(
+                        Modifier.clip(CpShapes.pill).background(c.surface.copy(alpha = if (c.isDark) 0.55f else 0.7f))
+                            .border(1.dp, c.hairline, CpShapes.pill).padding(horizontal = 5.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // With an on-device model: ask about your reading.
+                        if (aiReady) IconCircleButton(R.drawable.lucide_sparkles, "Ask about your reading", { asking = true }, tint = c.textMid)
+                        IconCircleButton(R.drawable.lucide_search, "Search", { searching = !searching; if (!searching) query = "" }, tint = if (searching) c.accentText else c.textMid)
+                        // a physical book: added from Hardcover or Seekquel, updated by photo or page.
+                        IconCircleButton(R.drawable.lucide_plus, "Add a book", { addQuery = ""; adding = true }, tint = c.textMid)
+                        IconCircleButton(R.drawable.ic_ribbon_sync, if (state.running) "Syncing" else "Sync now", { vm.syncNow() }, busy = state.running)
+                    }
                 }
-                // With an on-device model: ask about your reading.
-                if (aiReady) IconCircleButton(R.drawable.lucide_sparkles, "Ask about your reading", { asking = true }, tint = c.textMid)
-                IconCircleButton(R.drawable.lucide_search, "Search", { searching = !searching; if (!searching) query = "" }, tint = if (searching) c.accentText else c.textMid)
-                // a physical book: added from Hardcover or Seekquel, updated by photo or page.
-                IconCircleButton(R.drawable.lucide_plus, "Add a book", { addQuery = ""; adding = true }, tint = c.textMid)
-                IconCircleButton(R.drawable.ic_ribbon_sync, if (state.running) "Syncing" else "Sync now", { vm.syncNow() }, busy = state.running)
+                PageTitle("Your library")
+                AnimatedQuiet(
+                    if (state.running) state.syncStep?.let { "Syncing \u00B7 $it…" } ?: "Syncing…"
+                    else "${all.size} book${if (all.size == 1) "" else "s"} · synced ${ago(state.lastRun)}"
+                )
             }
         }
         if (searching) {
@@ -816,6 +827,8 @@ private fun BookSheet(
     // The AI helpers are offered when an on-device model is set up.
     val aiReady = remember { vm.aiReady() }
     var tidying by remember { mutableStateOf(false) }
+    var timing by remember { mutableStateOf(false) }
+    var whoIs by remember { mutableStateOf(false) }
     val openHistory = remember { androidx.compose.runtime.mutableStateListOf<String>() }
     // A book brought in from a tracker or Kindle goes to the others, not back to where it came from.
     val origin = book.origin?.let { Trackers.byId(it) }
@@ -835,9 +848,11 @@ private fun BookSheet(
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
+        // Always the full height of the screen, so switching pages or loading never resizes the sheet.
         Column(
             Modifier
                 .fillMaxWidth()
+                .fillMaxHeight()
                 .verticalScroll(rememberScrollState())
                 .padding(bottom = 32.dp)
         ) {
@@ -960,11 +975,17 @@ private fun BookSheet(
                 runCatching { io.github.prithirajn.trackersync.sync.Highlights.forBook(state, book.document).size }.getOrDefault(0)
             }
             val needsSync = linked.any { t -> state.link(t.id, book.document)?.let { it.externalId != null && !it.confirmed && it.source != LinkSource.NONE } == true }
-            var tab by rememberSaveable(book.document) { mutableStateOf(if (needsSync) 3 else 0) }
+            var tab by rememberSaveable(book.document) { mutableStateOf(0) }
             VSpace(18)
-            PageTabs(listOf("About", "Highlights" + (if (clipCount > 0) " $clipCount" else ""), "Reading", "Sync" + if (needsSync) " \u2022" else ""), tab) { tab = it }
-            when (tab) {
-                0 -> {
+            PageTabs(listOf("Book" + if (needsSync) " \u2022" else "", "Highlights" + (if (clipCount > 0) " $clipCount" else "")), tab) { tab = it }
+            // The two pages fade across; the sheet stays its full height, so nothing jumps.
+            androidx.compose.animation.Crossfade(tab, animationSpec = androidx.compose.animation.core.tween(220), label = "bookTab") { t ->
+            Column(Modifier.fillMaxWidth()) {
+            if (t == 1) {
+                    HighlightsSection(vm, state, book)
+                    if (clipCount == 0) { VSpace(16); Quiet("No highlights yet. Snap page adds one from a photo of the page.", color = c.faint) }
+                
+            } else {
                     // What the book is about, and how it reads.
                     Description(
                         book, state.detailsLooked[book.document],
@@ -972,12 +993,16 @@ private fun BookSheet(
                         onTidy = if (aiReady) ({ tidying = true }) else null,
                     )
                     FeelCard(state.facts[book.document])
+                
+                BookSection("Reading")
+                // A reading session with the timer, and (with the on-device model) who's who so far.
+                if (book.status != io.github.prithirajn.trackersync.data.ReadStatus.FINISHED) {
+                    VSpace(12)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        BigButton("\u23F1 Start a reading session", { timing = true }, Modifier.weight(1.4f), look = KeyKind.INK)
+                        if (aiReady && book.percent in 1..99) BigButton("Who's this?", { whoIs = true }, Modifier.weight(1f), filled = false)
+                    }
                 }
-                1 -> {
-                    HighlightsSection(vm, state, book)
-                    if (clipCount == 0) { VSpace(16); Quiet("No highlights yet. Snap page adds one from a photo of the page.", color = c.faint) }
-                }
-                2 -> {
                     // Where the position comes from, how the reading went, and what's linked to it.
                 // Where this book's position is trusted from, and the others by rank.
                 if (!ManualBooks.isManual(book)) {
@@ -988,8 +1013,8 @@ private fun BookSheet(
                     DayByDayCard(state.readingDays[book.document])
                     if (!book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
                     AudiobookCard(vm, state, book)
-                }
-                else -> {
+                
+                BookSection("Sync")
                     ThreadsBookCard(vm, state, book) { postingReview = true }
                 // Right under the book, where it's reachable without scrolling past every tracker.
                 if (book.held) {
@@ -1099,10 +1124,12 @@ private fun BookSheet(
                         }
                     }
                 }
-                }
+                
+            }
+            }
             }
             // A web novel being linked from the pill shows straight away, whatever the tab.
-            if (storyLink && tab != 2 && !book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
+            if (storyLink && tab != 0 && !book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
             }
         }
     }
@@ -1117,6 +1144,8 @@ private fun BookSheet(
     if (comparing) CompareSheet(vm, state, book) { comparing = false }
     if (highlighting) PaperHighlightSheet(vm, state, book) { highlighting = false }
     if (tidying) AiDescriptionSheet(vm, book) { tidying = false }
+    if (timing) ReadingTimerSheet(vm, book) { timing = false }
+    if (whoIs) WhoIsSheet(vm, book) { whoIs = false }
     if (updating) UpdateProgressSheet(vm, book) { updating = false }
     addingTo?.let { first -> AddToTrackerSheet(vm, book, first) { addingTo = null } }
     bookAction?.let { a ->
@@ -1300,50 +1329,43 @@ internal fun looksLikeWebNovel(book: io.github.prithirajn.trackersync.data.Book)
 internal fun PageTabs(tabs: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     val c = Cp.colors
     val view = androidx.compose.ui.platform.LocalView.current
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val xs = remember { androidx.compose.runtime.mutableStateMapOf<Int, Pair<Float, Float>>() }
-    val target = xs[selected]
-    val x by androidx.compose.animation.core.animateFloatAsState(target?.first ?: 0f, androidx.compose.animation.core.spring(dampingRatio = 0.7f, stiffness = 420f), label = "tabX")
-    val w by androidx.compose.animation.core.animateFloatAsState(target?.second ?: 0f, androidx.compose.animation.core.spring(dampingRatio = 0.7f, stiffness = 420f), label = "tabW")
-    val scroll = rememberScrollState()
+    // The tabs share the whole width equally; the chosen one sits under a lit orange pill that slides across.
+    val at by androidx.compose.animation.core.animateFloatAsState(selected.toFloat(), androidx.compose.animation.core.spring(dampingRatio = 0.72f, stiffness = 420f), label = "tabAt")
     Box(
         Modifier
             .fillMaxWidth()
             .padding(top = 4.dp)
             .clip(CpShapes.pill)
             .background(c.field)
-            .drawBehind { drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.07f), androidx.compose.ui.graphics.Color.Transparent), endY = 5.dp.toPx())) }
-            .horizontalScroll(scroll)
+            .drawBehind { drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(androidx.compose.ui.graphics.Color.Black.copy(alpha = if (c.isDark) 0.35f else 0.07f), androidx.compose.ui.graphics.Color.Transparent), endY = 5.dp.toPx())) }
             .padding(4.dp),
     ) {
-        if (target != null) {
-            Box(
-                Modifier
-                    .offset(x = with(density) { x.toDp() })
-                    .width(with(density) { w.toDp() })
-                    .height(34.dp)
-                    .shadow(3.dp, CpShapes.pill)
-                    .clip(CpShapes.pill)
-                    .background(c.ink),
-            )
-        }
-        Row {
+        Box(
+            Modifier
+                .fillMaxWidth(1f / tabs.size.coerceAtLeast(1))
+                .height(38.dp)
+                .graphicsLayer { translationX = at * size.width }
+                .shadow(6.dp, CpShapes.pill, ambientColor = c.accent, spotColor = c.accent)
+                .clip(CpShapes.pill)
+                .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(lerpColor(c.accent, androidx.compose.ui.graphics.Color.White, 0.15f), c.accent))),
+        )
+        Row(Modifier.fillMaxWidth()) {
             tabs.forEachIndexed { i, t ->
                 val on = i == selected
-                val tint by androidx.compose.animation.animateColorAsState(if (on) c.onInk else c.quiet, Motion.medium(), label = "tabTint")
+                val tint by androidx.compose.animation.animateColorAsState(if (on) androidx.compose.ui.graphics.Color.White else c.textMid, Motion.medium(), label = "tabTint")
                 Box(
                     Modifier
-                        .height(34.dp)
-                        .onGloballyPositioned { xs[i] = it.positionInParent().x to it.size.width.toFloat() }
+                        .weight(1f)
+                        .height(38.dp)
                         .clip(CpShapes.pill)
                         .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, role = androidx.compose.ui.semantics.Role.Tab) {
                             if (!on) Haptics.tick(view)
                             onSelect(i)
                         }
-                        .padding(horizontal = 15.dp),
+                        .padding(horizontal = 6.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(t, style = CpType.label, color = tint, maxLines = 1)
+                    Text(t, style = if (on) CpType.bodyStrong else CpType.label, color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 }
             }
         }
@@ -1361,5 +1383,16 @@ private fun DeviceKey(icon: Int, label: String, modifier: Modifier = Modifier, s
             VSpace(4)
             Text(label, style = CpType.small.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), color = keyText(kind), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+    }
+}
+
+/** A heading between the parts of a book's page: a small label with a rule running off to the side. */
+@Composable
+private fun BookSection(title: String) {
+    val c = Cp.colors
+    VSpace(26)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        DeviceLabel(title, color = c.quiet)
+        Box(Modifier.padding(start = 10.dp).weight(1f).height(1.dp).background(c.divider))
     }
 }

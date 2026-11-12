@@ -47,6 +47,16 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.animateContentSize
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.Canvas
 import io.github.prithirajn.trackersync.R
 import io.github.prithirajn.trackersync.data.Book
 import io.github.prithirajn.trackersync.data.LinkSource
@@ -74,6 +84,8 @@ private fun FlowSheet(title: String, onClose: () -> Unit, content: @Composable (
         Column(
             Modifier
                 .fillMaxWidth()
+                // When what's in it changes size (a list arriving), the sheet glides to the new height.
+                .animateContentSize(androidx.compose.animation.core.spring(dampingRatio = 1f, stiffness = 260f))
                 .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, bottom = 32.dp)
@@ -337,7 +349,22 @@ fun CompareSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> U
         VSpace(14)
         val list = rows
         if (list == null) {
-            Centered { CircularProgressIndicator(Modifier.size(24.dp), color = c.faint) }
+            // A row standing in for each tracker while they're asked, so the sheet is near its size from the start.
+            val n = Trackers.all.count { state.service(it.id).linked }.coerceIn(1, 8)
+            val pulse = androidx.compose.animation.core.rememberInfiniteTransition(label = "wait")
+            val a by pulse.animateFloat(0.35f, 0.8f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(700), androidx.compose.animation.core.RepeatMode.Reverse), label = "waitA")
+            CpCard {
+                repeat(n) { i ->
+                    if (i > 0) RowDivider()
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Box(Modifier.width(110.dp).height(12.dp).clip(CpShapes.pill).background(c.track.copy(alpha = a)))
+                        VSpace(8)
+                        Box(Modifier.fillMaxWidth(0.7f).height(10.dp).clip(CpShapes.pill).background(c.track.copy(alpha = a * 0.7f)))
+                        VSpace(6)
+                        Box(Modifier.fillMaxWidth(0.5f).height(10.dp).clip(CpShapes.pill).background(c.track.copy(alpha = a * 0.7f)))
+                    }
+                }
+            }
             return@FlowSheet
         }
         if (list.isEmpty()) {
@@ -606,13 +633,13 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
  * them, with where each went. Tapping one opens it to edit and send again.
  */
 @Composable
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
     val c = Cp.colors
     val items = remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.sentClippings, state.resend, state.clipHidden, book.document) {
         Highlights.forBook(state, book.document)
     }
     var open by remember { mutableStateOf<String?>(null) }
-    var showAll by remember { mutableStateOf(false) }
     var summing by remember { mutableStateOf(false) }
     var catchingUp by remember { mutableStateOf(false) }
     val aiReady = remember { vm.aiReady() }
@@ -629,77 +656,74 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
     }
     if (items.isEmpty()) return
     val context = androidx.compose.ui.platform.LocalContext.current
-    VSpace(20)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        // The count sits with the title; the buttons get the rest of the row.
-        Text("Highlights & notes · ${items.size}", style = CpType.bodyStrong, color = c.text, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-        PillButton("Export", {
-            val md = Highlights.toMarkdown(book, items)
-            val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(android.content.Intent.EXTRA_SUBJECT, "Highlights from ${book.displayTitle}")
-                putExtra(android.content.Intent.EXTRA_TEXT, md)
-            }
-            context.startActivity(android.content.Intent.createChooser(sendIntent, "Export highlights"))
-        }, outlined = true)
-        // With an on-device model: what these highlights add up to, and their themes.
-        if (aiReady && items.size >= 2) {
-            HSpace(6)
-            PillButton("Sum up", { summing = true })
-        }
-    }
-    VSpace(8)
-    CpCard {
-        val shown = if (showAll) items else items.take(3)
-        shown.forEachIndexed { i, item ->
-            if (i > 0) RowDivider()
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .bouncyClickable(RectangleShape, pressedScale = 0.99f) { open = item.clip.id }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Box(Modifier.size(width = 3.dp, height = 36.dp).background(if (item.edited) c.accent else c.divider, CpShapes.pill))
-                HSpace(10)
+    val unsent = remember(items, state.sentClippings, state.resend, state.links, state.services) { vm.unsentHighlights(book.document) }
+    var sending by remember { mutableStateOf(false) }
+    var sharing by remember { mutableStateOf<String?>(null) }
+    val canCatchUp = aiReady && book.status != io.github.prithirajn.trackersync.data.ReadStatus.FINISHED && book.percent in 1..97 && items.any { (it.clip.percent ?: 0.0) <= book.percentage + 0.005 }
+    val withNotes = items.count { !it.clip.note.isNullOrBlank() }
+
+    // Everything you can do with them comes first, on a little screen with the count, then the highlights.
+    VSpace(16)
+    Column(
+        Modifier.riseIn(0).fillMaxWidth()
+            .shadow(14.dp, RoundedCornerShape(26.dp), ambientColor = c.shade, spotColor = c.shade)
+            .clip(RoundedCornerShape(26.dp)).background(c.surface).padding(10.dp),
+    ) {
+        Screen(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.Bottom) {
                 Column(Modifier.weight(1f)) {
-                    Text(io.github.prithirajn.trackersync.trackers.quoted(item.clip.text), style = CpType.body, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    item.clip.note?.let { Text(it, style = CpType.small, color = c.textMid, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-                    VSpace(2)
-                    Quiet(highlightLine(item), color = c.faint, maxLines = 1)
+                    DeviceLabel("Highlights & notes", color = c.screenDim)
+                    RollingNumber(items.size, CpType.screenNumber.copy(fontSize = 40.sp, lineHeight = 40.sp), c.screenText)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    DeviceLabel("$withNotes with notes", color = c.screenDim)
+                    VSpace(4)
+                    DeviceLabel(if (unsent.isEmpty()) "All sent" else "${unsent.maxOf { it.second }} not sent", color = if (unsent.isEmpty()) c.screenDim else c.accent)
                 }
             }
+            VSpace(10)
+            // Where in the book they are: a mark for each along the length of it.
+            Canvas(Modifier.fillMaxWidth().height(10.dp)) {
+                drawRoundRect(c.screenOff, size = androidx.compose.ui.geometry.Size(size.width, 3.dp.toPx()), topLeft = Offset(0f, size.height / 2 - 1.5.dp.toPx()), cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f))
+                val read = (book.percentage).toFloat().coerceIn(0f, 1f)
+                drawRoundRect(c.screenDim.copy(alpha = 0.5f), size = androidx.compose.ui.geometry.Size(size.width * read, 3.dp.toPx()), topLeft = Offset(0f, size.height / 2 - 1.5.dp.toPx()), cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f))
+                for (it in items) it.clip.percent?.let { p -> drawCircle(c.accent, 3.dp.toPx(), Offset(size.width * p.toFloat().coerceIn(0f, 1f), size.height / 2)) }
+            }
         }
-        if (items.size > 3) {
-            RowDivider()
-            Box(
-                Modifier.fillMaxWidth().bouncyClickable(RectangleShape, pressedScale = 0.99f) { showAll = !showAll }
-                    .padding(vertical = 10.dp),
-                contentAlignment = Alignment.Center,
-            ) { Text(if (showAll) "Show fewer" else "Show all ${items.size}", style = CpType.small, color = c.accent) }
+        VSpace(10)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (unsent.isNotEmpty()) PillButton("Send to trackers", { sending = true }, outlined = false)
+            PillButton("Export", {
+                val md = Highlights.toMarkdown(book, items)
+                val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(android.content.Intent.EXTRA_SUBJECT, "Highlights from ${book.displayTitle}")
+                    putExtra(android.content.Intent.EXTRA_TEXT, md)
+                }
+                context.startActivity(android.content.Intent.createChooser(sendIntent, "Export highlights"))
+            })
+            // With an on-device model: what they add up to, and where you were.
+            if (aiReady && items.size >= 2) PillButton("Sum up", { summing = true })
+            if (canCatchUp) PillButton("Catch me up", { catchingUp = true })
         }
+    }
+
+    // Every highlight in full, in order through the book.
+    VSpace(18)
+    items.forEachIndexed { i, item ->
+        HighlightCard(
+            item, Modifier.riseIn(i + 1),
+            onOpen = { open = item.clip.id },
+            onShare = { sharing = item.clip.id },
+        )
+        VSpace(12)
     }
     open?.let { id ->
         items.firstOrNull { it.clip.id == id }?.let { EditHighlightSheet(vm, state, it) { open = null } }
     }
-    // With an on-device model: back to a book you're reading, where you were (from your highlights so far).
-    if (aiReady && book.status != io.github.prithirajn.trackersync.data.ReadStatus.FINISHED && book.percent in 1..97 && items.any { (it.clip.percent ?: 0.0) <= book.percentage + 0.005 }) {
-        VSpace(8)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            PillButton("Catch me up", { catchingUp = true })
-            HSpace(8)
-            Quiet("Where you were, from your highlights so far.", color = c.faint)
-        }
-    }
-    // Highlights the trackers haven't had (older ones aren't sent by themselves): sent from here when you choose.
-    val unsent = remember(items, state.sentClippings, state.resend, state.links, state.services) { vm.unsentHighlights(book.document) }
-    var sending by remember { mutableStateOf(false) }
-    if (unsent.isNotEmpty()) {
-        VSpace(8)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            PillButton("Send to trackers", { sending = true })
-            HSpace(8)
-            Quiet("${unsent.maxOf { it.second }} not sent yet.", color = c.faint)
+    sharing?.let { id ->
+        items.firstOrNull { it.clip.id == id }?.let { item ->
+            QuoteShareSheet(item.clip, state.books[item.clip.document], others = BookShot.othersFor(state, item.clip), pageText = state.clipPages[item.clip.id], onPageText = { vm.setClipPage(item.clip.id, it) }, sectors = BookShot.sectorsFor(state, state.books[item.clip.document])) { sharing = null }
         }
     }
     if (sending) SendHighlightsSheet(vm, book, unsent) { sending = false }
@@ -743,6 +767,73 @@ private fun SendHighlightsSheet(vm: AppViewModel, book: Book, targets: List<Pair
                 { vm.sendBookHighlights(book.document, chosen.map { it.first.id }); onClose() },
                 enabled = chosen.isNotEmpty(),
             )
+        }
+    }
+}
+
+/**
+ * One highlight in full: where it is and when, the passage in the reading face under a big quote
+ * mark, your note in your own hand beneath it, and where it's been sent. Tap to edit; the picture
+ * key shares it as an image.
+ */
+@Composable
+private fun HighlightCard(item: Highlights.Item, modifier: Modifier, onOpen: () -> Unit, onShare: () -> Unit) {
+    val c = Cp.colors
+    val isNote = io.github.prithirajn.trackersync.sync.KoHighlightSync.isNote(item.clip.id) || item.clip.text.isBlank()
+    val where = io.github.prithirajn.trackersync.sync.HighlightPosition.label(item.clip)
+    val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(item.clip.createdAt * 1000))
+    Box(
+        modifier.fillMaxWidth()
+            .shadow(8.dp, RoundedCornerShape(22.dp), ambientColor = c.shade, spotColor = c.shade)
+            .clip(RoundedCornerShape(22.dp))
+            .background(c.surface)
+            .border(1.dp, c.hairline, RoundedCornerShape(22.dp))
+            .bouncyClickable(RoundedCornerShape(22.dp), pressedScale = 0.985f, onClickLabel = "Edit highlight") { onOpen() },
+    ) {
+        // The spine: orange for one you've edited, the book's ink otherwise.
+        Box(Modifier.align(Alignment.CenterStart).width(4.dp).height(48.dp).clip(CpShapes.pill).background(if (item.edited) c.accent else c.track))
+        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 14.dp, top = 12.dp, bottom = 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                DeviceLabel(listOfNotNull(where, date).joinToString("  /  "), color = c.quiet, modifier = Modifier.weight(1f))
+                Key(onShare, Modifier.size(width = 34.dp, height = 34.dp), shape = CircleShape, ledge = 2.dp, label = "Share as a picture") {
+                    LucideIcon(R.drawable.lucide_image, Modifier.size(15.dp), c.textMid)
+                }
+            }
+            if (!isNote) {
+                Box {
+                    Text("\u201C", style = CpType.reading.copy(fontSize = 54.sp, lineHeight = 54.sp), color = c.accent.copy(alpha = 0.28f), modifier = Modifier.offset(x = (-4).dp, y = (-6).dp))
+                    Text(
+                        item.clip.text.trim(),
+                        style = CpType.reading.copy(fontSize = 17.sp, lineHeight = 27.sp),
+                        color = c.text,
+                        modifier = Modifier.padding(top = 18.dp),
+                    )
+                }
+            }
+            item.clip.note?.takeIf { it.isNotBlank() }?.let { note ->
+                VSpace(if (isNote) 10 else 12)
+                // Your note, in your hand, on a tinted slip with a pen mark.
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.accentTint).padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text("\u270E", style = CpType.label, color = c.accentText, modifier = Modifier.padding(top = 3.dp, end = 8.dp))
+                    Text(note.trim(), style = CpType.eyebrow.copy(fontSize = 21.sp, lineHeight = 25.sp), color = c.accentText)
+                }
+            }
+            VSpace(12)
+            // Where it came from, and the trackers that have it (a badge each).
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(item.from + if (item.edited) " · edited" else "", style = CpType.small, color = c.faint, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                when {
+                    io.github.prithirajn.trackersync.sync.KoHighlightSync.isNote(item.clip.id) -> Chip("Kept here")
+                    item.resending.isNotEmpty() -> Chip("Sending again", color = c.accentText)
+                    item.sentTo.isEmpty() -> Chip("Not sent yet", color = c.accentText)
+                    else -> Row(horizontalArrangement = Arrangement.spacedBy((-5).dp)) {
+                        for (id in item.sentTo.take(6)) Box(Modifier.border(1.5.dp, c.surface, RoundedCornerShape(7.dp))) { ServiceTile(Trackers.byId(id)?.name ?: id, 20.dp) }
+                    }
+                }
+            }
         }
     }
 }

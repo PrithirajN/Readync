@@ -46,7 +46,7 @@ private fun ExportStatus(state: Snapshot, name: String, connected: String) {
 }
 
 @Composable
-private fun ReadwiseExport(vm: AppViewModel, state: Snapshot) {
+internal fun ReadwiseExport(vm: AppViewModel, state: Snapshot) {
     val c = Cp.colors
     var token by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -72,7 +72,7 @@ private fun ReadwiseExport(vm: AppViewModel, state: Snapshot) {
 }
 
 @Composable
-private fun NotionExport(vm: AppViewModel, state: Snapshot) {
+internal fun NotionExport(vm: AppViewModel, state: Snapshot) {
     val c = Cp.colors
     var token by remember { mutableStateOf("") }
     var link by remember { mutableStateOf("") }
@@ -103,7 +103,7 @@ private fun NotionExport(vm: AppViewModel, state: Snapshot) {
 }
 
 @Composable
-private fun ObsidianExport(vm: AppViewModel, state: Snapshot) {
+internal fun ObsidianExport(vm: AppViewModel, state: Snapshot) {
     val c = Cp.colors
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { vm.setObsidianFolder(it) } }
     CpCard {
@@ -128,3 +128,34 @@ private fun ObsidianExport(vm: AppViewModel, state: Snapshot) {
 
 private fun folderName(uri: String?): String =
     uri?.let { android.net.Uri.decode(it).substringAfterLast(':').substringAfterLast('/').ifBlank { null } }?.let { "“$it”" } ?: "your folder"
+
+/**
+ * One export's own page: what it does, its connection (or how to connect), and, once it's on,
+ * sending what's new right away.
+ */
+@Composable
+fun ExportPage(vm: AppViewModel, state: Snapshot, name: String) {
+    val c = Cp.colors
+    var busy by remember { mutableStateOf(false) }
+    val on = when (name) { "readwise" -> state.readwiseToken != null; "notion" -> state.notionToken != null; else -> state.obsidianFolder != null }
+    Quiet(
+        when (name) {
+            "readwise" -> "Every highlight, quote and note goes into your Readwise library after each sync, with your note on it, from every book and every source. It's then in Readwise's daily review, in Reader, and in Readwise's own exports."
+            "notion" -> "Every highlight, quote and note goes onto a page for its book after each sync, with the book's cover, under a page of yours. New ones are added at the bottom."
+            else -> "Every highlight, quote and note goes into a Markdown note for its book after each sync. Anything you write in the note yourself stays."
+        },
+        color = c.faint,
+    )
+    VSpace(14)
+    when (name) {
+        "readwise" -> ReadwiseExport(vm, state)
+        "notion" -> NotionExport(vm, state)
+        else -> ObsidianExport(vm, state)
+    }
+    if (on) {
+        VSpace(14)
+        BigButton("Send what's new now", { busy = true; vm.exportNow { busy = false } }, busy = busy)
+        VSpace(8)
+        Quiet("Otherwise it goes on by itself after each sync. Your trackers aren't involved.", color = c.faint)
+    }
+}

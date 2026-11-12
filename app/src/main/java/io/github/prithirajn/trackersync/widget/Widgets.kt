@@ -30,6 +30,8 @@ object Widgets {
         SyncWidget.refresh(context)
         RingWidget.refresh(context)
         ShelfWidget.refresh(context)
+        DeviceWidget.refresh(context)
+        HighlightWidget.refresh(context)
     }
 
     internal fun openApp(context: Context): PendingIntent = PendingIntent.getActivity(

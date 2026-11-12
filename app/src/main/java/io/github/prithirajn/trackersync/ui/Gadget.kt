@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
@@ -287,6 +288,9 @@ fun Wallpaper(modifier: Modifier = Modifier, height: Dp = 340.dp, color: Color =
         modifier
             .fillMaxWidth()
             .height(height)
+            // The blooms are bigger than the box: keep them inside it, so the colour ends in the fade
+            // instead of carrying on below it in a hard line.
+            .clipToBounds()
             .drawBehind {
                 val w = size.width
                 val h = size.height
@@ -295,7 +299,8 @@ fun Wallpaper(modifier: Modifier = Modifier, height: Dp = 340.dp, color: Color =
                 bloom(w * (0.25f + 0.08f * kotlin.math.cos(t)), h * (0.18f + 0.06f * kotlin.math.sin(t)), w * 0.95f, color, glow)
                 bloom(w * (0.85f - 0.07f * kotlin.math.sin(t)), h * (0.45f + 0.05f * kotlin.math.cos(t)), w * 0.8f, second, glow * 0.8f)
                 // Fades into the page at the bottom.
-                drawRect(Brush.verticalGradient(listOf(Color.Transparent, c.page), startY = h * 0.55f, endY = h))
+                drawRect(Brush.verticalGradient(listOf(Color.Transparent, c.page.copy(alpha = 0.55f), c.page), startY = h * 0.3f, endY = h * 0.96f))
+                drawRect(c.page, topLeft = Offset(0f, h * 0.96f))
             },
     )
 }
@@ -471,14 +476,14 @@ fun <T> Segmented(
                 .fillMaxWidth(1f / options.size)
                 .fillMaxHeight()
                 .graphicsLayer { translationX = at * size.width }
-                .shadow(2.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.dp))
+                .shadow(5.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.dp), ambientColor = c.accent, spotColor = c.accent)
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.dp))
-                .background(c.ink),
+                .background(Brush.verticalGradient(listOf(lerpColor(c.accent, Color.White, 0.15f), c.accent))),
         )
         Row(Modifier.fillMaxSize()) {
             options.forEachIndexed { i, o ->
                 val on = i == index
-                val fg by androidx.compose.animation.animateColorAsState(if (on) c.onInk else c.textMid, tween(180), label = "segText")
+                val fg by androidx.compose.animation.animateColorAsState(if (on) Color.White else c.textMid, tween(180), label = "segText")
                 Row(
                     Modifier
                         .weight(1f)
@@ -491,9 +496,32 @@ fun <T> Segmented(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     leading?.let { it(o, on); Spacer(Modifier.width(6.dp)) }
-                    Text(label(o), style = CpType.label, color = fg, maxLines = 1)
+                    Text(label(o), style = if (on) CpType.bodyStrong else CpType.label, color = fg, maxLines = 1)
                 }
             }
         }
+    }
+}
+
+/**
+ * The light that marks what's chosen, as under the dock's tabs: a short orange bar with a glow,
+ * growing out from its middle when chosen and shrinking away when not.
+ */
+@Composable
+fun GlowBar(on: Boolean, modifier: Modifier = Modifier, width: Dp = 24.dp) {
+    val c = Cp.colors
+    val grow by animateFloatAsState(if (on) 1f else 0f, spring(dampingRatio = 0.55f, stiffness = 520f), label = "glowBar")
+    Box(modifier.width(width).height(4.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .width(width * grow.coerceAtLeast(0f))
+                .height(4.dp)
+                .drawBehind {
+                    if (grow > 0.01f) drawRoundRect(c.accent.copy(alpha = 0.35f * grow.coerceAtMost(1f)), topLeft = Offset(-5.dp.toPx(), -3.dp.toPx()),
+                        size = Size(size.width + 10.dp.toPx(), size.height + 6.dp.toPx()), cornerRadius = CornerRadius(6.dp.toPx()))
+                }
+                .clip(CpShapes.pill)
+                .background(c.accent),
+        )
     }
 }

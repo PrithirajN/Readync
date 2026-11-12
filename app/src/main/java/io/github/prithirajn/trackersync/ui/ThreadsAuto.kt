@@ -138,6 +138,23 @@ object ThreadsAuto {
         return QuoteCard.render(context, content, style.look, cover, seed, mark = BookShot.markOn(context), size = QuoteCard.Size.POST, variant = style.variant)
     }
 
+    /**
+     * The picture put up for Threads to copy, and the style it was drawn in. Always a picture: if
+     * [first] can't be drawn (out of memory on a big cover, say), another layout is tried, then the
+     * plain Spotlight. A failed upload throws, so the highlight waits for the next try.
+     */
+    private fun pictureUrl(context: Context, s: Snapshot, i: Highlights.Item, book: Book, first: Style, styles: List<Style>, noteOnCard: Boolean = false): Pair<String, Style> {
+        val order = (listOf(first) + styles.filter { it != first }.shuffled().take(2) + Style(QuoteCard.Look.SPOTLIGHT)).distinct()
+        var last: Throwable? = null
+        for (style in order) {
+            val bmp = try { picture(context, s, i, book, style, noteOnCard) } catch (t: Throwable) { last = t; continue }
+            val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+            bmp.recycle()
+            return ThreadsClient.upload(png) to style
+        }
+        throw Exception("Couldn't draw the picture" + (last?.message?.let { ": $it" } ?: ""))
+    }
+
     // ---- reading sessions ----
 
     /** One book's highlights from one sitting, posted together. */
@@ -365,21 +382,16 @@ object ThreadsAuto {
         val styles = stylesFor(st, x.book)
         return try {
             val user = st.threadsUserId ?: return "Connect Threads first."
-            val tries = ids.maxOf { st.threadsFails[it] ?: 0 }
             val usedKey: String
             if (x.items.size == 1) {
                 val item = x.items[0]
-                val look = (styles.filter { it.key != st.threadsLastLook }.ifEmpty { styles }).random()
-                val imageUrl = if (tries < MAX_TRIES - 1) {
-                    val bmp = picture(context, st, item, x.book, look)
-                    val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-                    bmp.recycle()
-                    ThreadsClient.upload(png)
-                } else null
+                val wanted = (styles.filter { it.key != st.threadsLastLook }.ifEmpty { styles }).random()
+                // Always with its picture (never the words alone).
+                val (imageUrl, look) = pictureUrl(context, st, item, x.book, wanted, styles)
                 // Your note stays your words; without one, the model's line when you've asked for it.
-                val words = if (imageUrl != null && item.clip.note.isNullOrBlank() && !isNote(item.clip.id))
+                val words = if (item.clip.note.isNullOrBlank() && !isNote(item.clip.id))
                     aiCaption(st, x.book, listOf(item.clip.text))?.let { it + "\n\n" + bookLine(x.book) } ?: postText(item, x.book, st.threadsWithNote, picture = true)
-                    else postText(item, x.book, st.threadsWithNote, picture = imageUrl != null)
+                    else postText(item, x.book, st.threadsWithNote, picture = true)
                 ThreadsClient.post(user, token, words, imageUrl, altText(item, x.book), topic(store, x.book), spoils(st, x.book, listOf(item.clip.text)))
                 usedKey = look.key
             } else {
@@ -387,10 +399,7 @@ object ThreadsAuto {
                 val order = styles.filter { it.key != st.threadsLastLook }.shuffled().let { l -> (l + styles.shuffled()).take(x.items.size) }
                 // One after another, in the order they were made, so the cards keep it.
                 val images = x.items.mapIndexed { k, item ->
-                    val bmp = picture(context, st, item, x.book, order[k], noteOnCard = true)
-                    val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-                    bmp.recycle()
-                    ThreadsClient.upload(png) to altText(item, x.book)
+                    pictureUrl(context, st, item, x.book, order[k], styles, noteOnCard = true).first to altText(item, x.book)
                 }
                 val passages = x.items.map { it.clip.text }
                 val words = aiCaption(st, x.book, passages)?.let { it + "\n\n" + bookLine(x.book) } ?: sessionText(x)
@@ -468,17 +477,12 @@ object ThreadsAuto {
                 val st = store.snapshot
                 // A style picked at random, never the one used last.
                 val styles = stylesFor(st, book)
-                val look = (styles.filter { it.key != st.threadsLastLook }.ifEmpty { styles }).random()
+                var look = (styles.filter { it.key != st.threadsLastLook }.ifEmpty { styles }).random()
                 try {
-                    val tries = st.threadsFails[id] ?: 0
-                    // The picture; after two failed tries, the words alone.
-                    val imageUrl = if (tries < MAX_TRIES - 1) {
-                        val bmp = picture(context, st, item, book, look)
-                        val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-                        bmp.recycle()
-                        ThreadsClient.upload(png)
-                    } else null
-                    ThreadsClient.post(st.threadsUserId!!, token, postText(item, book, st.threadsWithNote, picture = imageUrl != null), imageUrl, altText(item, book), topic(store, book), spoils(st, book, listOf(item.clip.text)))
+                    // Always with its picture (never the words alone).
+                    val (imageUrl, drawn) = pictureUrl(context, st, item, book, look, styles)
+                    look = drawn
+                    ThreadsClient.post(st.threadsUserId!!, token, postText(item, book, st.threadsWithNote, picture = true), imageUrl, altText(item, book), topic(store, book), spoils(st, book, listOf(item.clip.text)))
                     posted++
                     store.update { x ->
                         x.copy(

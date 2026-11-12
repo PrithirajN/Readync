@@ -4,6 +4,10 @@
     <string name="widget_shelf_name">Readync · Shelf</string>
     <string name="ring_widget_description">Your current book\'s progress as a ring.</string>
     <string name="shelf_widget_description">Covers of the books you\'re reading.</string>
+    <string name="widget_device_name">Readync · Device</string>
+    <string name="device_widget_description">Your current book on a little reading device: its percentage in pixel digits and a bar that fills.</string>
+    <string name="widget_highlight_name">Readync · Highlight of the day</string>
+    <string name="highlight_widget_description">One of your highlights each day, on the device\'s screen.</string>
     <string name="share_add_book">Add to Readync</string>
     <string name="tile_sync">Readync</string>
     <string name="shortcut_add">Add a book</string>

@@ -38,6 +38,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import io.github.prithirajn.trackersync.R
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.graphicsLayer
@@ -71,6 +74,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 /**
  * Share a highlight as a picture: a live preview, the looks, your note on or off (and reworded for
@@ -187,7 +191,8 @@ fun QuoteShareSheet(
         ) {
             Text(if (standalone) "Share this note" else "Share this passage", style = CpType.section, color = c.text, modifier = Modifier.riseIn(0))
             VSpace(14)
-            val looks = QuoteCard.Look.entries
+            // The Book photo has its own tile and studio, so it isn't one of the looks to flick through.
+            val looks = QuoteCard.Look.entries.filter { it != QuoteCard.Look.PAGE }
             // Which way the last change of look went, so the picture slides the same way.
             var dir by remember { mutableStateOf(1) }
             fun pick(l: QuoteCard.Look) {
@@ -221,7 +226,7 @@ fun QuoteShareSheet(
                                         onDragStart = { drag = 0f },
                                         onHorizontalDrag = { ch, d -> ch.consume(); drag += d },
                                         onDragEnd = {
-                                            val i = look.ordinal
+                                            val i = looks.indexOf(look).coerceAtLeast(0)
                                             if (drag < -60f) pick(looks[(i + 1) % looks.size])
                                             else if (drag > 60f) pick(looks[(i - 1 + looks.size) % looks.size])
                                         },
@@ -274,13 +279,18 @@ fun QuoteShareSheet(
                         Segmented(QuoteCard.Size.entries, size, { it.label }, { size = it }) { z, on ->
                             val h = when (z) { QuoteCard.Size.POST -> 12.dp; QuoteCard.Size.SQUARE -> 10.dp; QuoteCard.Size.STORY -> 15.dp }
                             val w = when (z) { QuoteCard.Size.POST -> 10.dp; QuoteCard.Size.SQUARE -> 10.dp; QuoteCard.Size.STORY -> 8.dp }
-                            Box(Modifier.size(w, h).border(1.5.dp, if (on) c.onInk else c.textMid, RoundedCornerShape(2.dp)))
+                            Box(Modifier.size(w, h).border(1.5.dp, if (on) Color.White else c.textMid, RoundedCornerShape(2.dp)))
                         }
                     }
                 }
             }
             if (failed && bmp != null) { VSpace(6); AnimatedQuiet("Couldn't draw that one; this is the last picture. Try another look or shape.", color = c.faint) }
             VSpace(14)
+            // The Book photo studio, offered on its own above the looks, with this very passage in it.
+            run {
+                BookPhotoTile(shotContent, Modifier.riseIn(2), onOpen = { studio = true }, onFromPhoto = onFromPhoto)
+                VSpace(14)
+            }
             // The looks as a row of keys, each with a swatch of itself; the chosen one stays pressed in, lit.
             val lookScroll = rememberScrollState()
             val keyStep = with(LocalDensity.current) { 84.dp.toPx() }
@@ -370,6 +380,32 @@ fun QuoteShareSheet(
             }, look = KeyKind.INK, enabled = bmp != null)
             Confetti(burst, Modifier.matchParentSize())
             }
+            // The passage as a short video: it types itself onto a page under its cover.
+            VSpace(8)
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+            var making by remember { mutableStateOf<Float?>(null) }
+            var video by remember(content.text, content.note, size) { mutableStateOf<java.io.File?>(null) }
+            if (video == null) {
+                BigButton(making?.let { "Making the video\u2026 ${(it * 100).toInt()}%" } ?: "\u25B6 Make it a video", {
+                    if (making == null) scope.launch {
+                        making = 0f
+                        val made = withContext(Dispatchers.Default) {
+                            runCatching {
+                                val cover = book?.coverUrl?.let { u -> runCatching { CoverCache.load(context, u, 1200) }.getOrNull() }
+                                QuoteVideo.make(context, QuoteVideo.Input(content.text, content.note, content.title, content.author, content.where, cover, story = size == QuoteCard.Size.STORY)) { p -> making = p }
+                            }.getOrNull()
+                        }
+                        making = null
+                        video = made
+                        said = if (made == null) "Couldn't make a video on this phone." else "Your video is ready."
+                    }
+                }, filled = false, busy = false)
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BigButton("Share video", { video?.let { runCatching { QuoteVideo.share(context, it, plain) } } }, Modifier.weight(1f), look = KeyKind.INK)
+                    BigButton("Save video", { video?.let { said = if (QuoteVideo.save(context, it)) "Saved to Movies \u203A ${io.github.prithirajn.trackersync.Edition.name}." else "Couldn't save here; use Share instead." } }, Modifier.weight(1f), filled = false)
+                }
+            }
             said?.let { VSpace(8); AnimatedQuiet(it, color = c.faint) }
             VSpace(12)
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -395,7 +431,7 @@ fun QuoteShareSheet(
     }
 }
 
-/** One look as a key: a little swatch of what it draws, its name, and a light when it's the one. */
+/** One look as a key: a little swatch of what it draws, its name, and the dock's orange light under it when it's the one. */
 @Composable
 private fun LookKey(l: QuoteCard.Look, on: Boolean, onClick: () -> Unit) {
     val c = Cp.colors
@@ -403,11 +439,13 @@ private fun LookKey(l: QuoteCard.Look, on: Boolean, onClick: () -> Unit) {
     Key(onClick, Modifier.size(width = 76.dp, height = 88.dp).offset(y = sink), shape = RoundedCornerShape(14.dp), ledge = if (on) 1.dp else 3.dp, role = Role.RadioButton, label = l.label) {
         Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.SpaceBetween) {
             Box(Modifier.fillMaxWidth().height(38.dp).clip(RoundedCornerShape(6.dp)).drawBehind { lookSwatch(l) })
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(l.label, style = CpType.small, color = c.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(l.label, style = CpType.small, color = if (on) c.text else c.textMid, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                Spacer(Modifier.height(5.dp))
+                // The chosen one is lit like the dock's tabs.
+                GlowBar(on)
             }
         }
-        Led(on, Modifier.align(Alignment.TopEnd).padding(5.dp), size = 6.dp)
     }
 }
 
@@ -428,5 +466,71 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.lookSwatch(l: Quote
         QuoteCard.Look.WORDPRINT -> { drawRect(Color(0xFF14213D)); for (i in 0 until 24) { val a = i / 24f * 6.283f; val r = h * (0.18f + (i * 37 % 11) / 40f); drawLine(Color(0xFFFFC46B), Offset(w / 2, h / 2), Offset(w / 2 + kotlin.math.cos(a) * r, h / 2 + kotlin.math.sin(a) * r), 1.5f) } }
         QuoteCard.Look.SYSTEM -> { drawRect(Color(0xFF0B1630)); drawRect(Color(0xFF44AADD), Offset(3f, 3f), Size(w - 6f, h - 6f), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5f)); drawRect(Color(0xFF44AADD), Offset(w * 0.15f, h * 0.7f), Size(w * 0.5f, 3f)); lines(Color(0xFFBFE6FF), w * 0.15f, h * 0.3f, 2, 6f) }
         QuoteCard.Look.BOOK -> { drawRect(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Color(0xFFFFCF9C), Color(0xFFFF9A6B)))); drawRect(Color(0xFF3A2A40), Offset(w * 0.12f, h * 0.15f), Size(w * 0.22f, h * 0.7f)); lines(Color(0xFF2A1A10), w * 0.42f, h * 0.3f, 3, 6f, w * 0.45f) }
+    }
+}
+
+/**
+ * The way into the Book photo studio: a small live preview of this passage as a photo of a real
+ * book, tilted on the tile, with what it is beside it. Tapping anywhere opens the studio.
+ */
+@Composable
+private fun BookPhotoTile(content: BookShot.Content, modifier: Modifier, onOpen: () -> Unit, onFromPhoto: (() -> Unit)?) {
+    val c = Cp.colors
+    val context = LocalContext.current
+    // Drawn once in the background, small, with the studio's last scene (no grain or blur, to be quick).
+    val thumb by androidx.compose.runtime.produceState<Bitmap?>(null, content.text, content.note) {
+        value = withContext(Dispatchers.Default) {
+            runCatching {
+                val o = BookShot.saved(context).let { it.copy(filmGrain = 0f, focus = 0f, format = BookShot.Format.POST) }
+                val full = BookShot.render(context, content, o)
+                val w = 300
+                Bitmap.createScaledBitmap(full, w, (w.toFloat() * full.height / full.width).toInt().coerceAtLeast(1), true).also { if (it !== full) full.recycle() }
+            }.getOrNull()
+        }
+    }
+    val wait = androidx.compose.animation.core.rememberInfiniteTransition(label = "thumbWait")
+    val shimmer by wait.animateFloat(0.3f, 0.7f, androidx.compose.animation.core.infiniteRepeatable(tween(800), androidx.compose.animation.core.RepeatMode.Reverse), label = "thumbA")
+    Column(modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth()
+                .shadow(14.dp, RoundedCornerShape(24.dp), ambientColor = c.shade, spotColor = c.shade)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Brush.linearGradient(listOf(lerpColor(c.surface, c.accent, 0.10f), c.surface)))
+                .border(1.dp, c.accent.copy(alpha = 0.35f), RoundedCornerShape(24.dp))
+                .bouncyClickable(RoundedCornerShape(24.dp), pressedScale = 0.98f, onClickLabel = "Open the Book photo studio") { onOpen() }
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // The preview, like a print laid on the tile.
+            Box(
+                Modifier.size(width = 86.dp, height = 106.dp)
+                    .graphicsLayer { rotationZ = -4f }
+                    .shadow(8.dp, RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(c.track.copy(alpha = if (thumb == null) shimmer else 1f)),
+            ) {
+                androidx.compose.animation.AnimatedVisibility(thumb != null, enter = fadeIn(tween(400)) + scaleIn(initialScale = 1.08f)) {
+                    thumb?.let { Image(it.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+                }
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Make it a photo of the book", style = CpType.bodyStrong, color = c.text)
+                Spacer(Modifier.height(3.dp))
+                Text("Your passage on a real-looking page: light, desk, paper, type and your own pen marks.", style = CpType.small, color = c.quiet, maxLines = 3)
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Open the studio", style = CpType.label, color = c.accentText)
+                    Spacer(Modifier.width(4.dp))
+                    LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(14.dp), c.accentText)
+                }
+            }
+        }
+        onFromPhoto?.let { go ->
+            VSpace(8)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                PillButton("\uD83D\uDCF7 Or start from a photo of the page", go)
+            }
+        }
     }
 }

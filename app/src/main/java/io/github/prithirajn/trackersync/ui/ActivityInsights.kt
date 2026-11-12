@@ -53,8 +53,13 @@ private fun openBook(document: String) { AppActions.pending.value = AppAction.Op
 
 /** The reading half of the Activity page, as list items. */
 fun LazyListScope.activityInsights(vm: AppViewModel, state: Snapshot) {
+    // Today, this week and your streak on the device's screen, first.
+    item(key = "today") { Box(Modifier.riseIn(0)) { TodayPanel(state) } }
     item(key = "needs") { NeedsCard(state) }
-    item(key = "week") { WeekCard(state) }
+    // The things made from your reading: Wrapped, today's review, the shelf poster.
+    item(key = "tools") { Box(Modifier.riseIn(1)) { ReadingToolsRow(vm, state) } }
+    item(key = "soon") { FinishingSoonCard(state) }
+    item(key = "heat") { HeatmapCard(state) }
     item(key = "year") { YearCard(vm, state) }
     item(key = "lately") { LatelyCard(state) }
 }

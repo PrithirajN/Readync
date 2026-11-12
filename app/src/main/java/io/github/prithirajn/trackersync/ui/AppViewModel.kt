@@ -3011,6 +3011,60 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         withModel("The model couldn't put that together", { m -> io.github.prithirajn.trackersync.ai.Assistant.catchUp(m, b, clips, days) }, done)
     }
 
+    /**
+     * Who or what [term] is in a book, from only what comes before where you are: your highlights
+     * and notes up to your place, and (when the book's EPUB is on this phone) the sentences that
+     * mention it in the chapters you've read. So nothing ahead is given away.
+     */
+    fun aiWhoIs(document: String, term: String, done: (String?, String?) -> Unit) {
+        val st = store.snapshot
+        val b = st.books[document] ?: return
+        val t = term.trim()
+        if (t.length < 2) { done(null, "Type a name or a word from the book"); return }
+        val clips = io.github.prithirajn.trackersync.sync.Highlights.forBook(st, document).map { it.clip }
+            .filter { (it.percent ?: 0.0) <= b.percentage + 0.005 }
+        viewModelScope.launch {
+            val passages = io { runCatching { SyncEngine(store).sentencesBefore(st, document, t, b.percentage) }.getOrDefault(emptyList()) }
+            withModel("The model couldn't answer that", { m -> io.github.prithirajn.trackersync.ai.Assistant.whoIs(m, b, t, clips, passages) }, done)
+        }
+    }
+
+    /**
+     * A timed reading session from the reading timer: its minutes and pages go into the day's
+     * reading (and your streak), and the book moves to the page you stopped on.
+     */
+    fun logTimedSession(document: String, minutes: Int, startPage: Int, endPage: Int, done: (String?) -> Unit) {
+        val st = store.snapshot
+        val b = st.books[document] ?: run { done("That book isn't here any more"); return }
+        val pages = (endPage - startPage).coerceAtLeast(0)
+        viewModelScope.launch {
+            io {
+                val day = java.time.LocalDate.now().toString()
+                store.update { s ->
+                    val days = s.readingDays[document].orEmpty()
+                    val prev = days[day]
+                    val next = io.github.prithirajn.trackersync.data.ReadDay(
+                        pages = ((prev?.pages ?: 0) + pages).takeIf { it > 0 },
+                        minutes = ((prev?.minutes ?: 0) + minutes).takeIf { it > 0 },
+                        reached = b.pageCount?.takeIf { it > 0 && endPage > 0 }?.let { (endPage.toDouble() / it).coerceIn(0.0, 1.0) } ?: prev?.reached,
+                        source = "timer",
+                    )
+                    s.copy(
+                        readingDays = s.readingDays + (document to (days + (day to next))),
+                        pagesByDay = if (pages > 0) s.pagesByDay + (day to ((s.pagesByDay[day] ?: 0) + pages)) else s.pagesByDay,
+                    )
+                }
+            }
+            val moved = endPage > startPage && endPage > 0
+            when {
+                !moved -> { notify("Session saved", "$minutes min"); done(null) }
+                ManualBooks.isManual(b) -> setPage(document, endPage) { e -> done(e) }
+                b.pageCount != null -> overrideProgress(document, null, endPage, null) { e -> done(e) }
+                else -> { notify("Session saved", "$minutes min, $pages pages"); done(null) }
+            }
+        }
+    }
+
     /** This month in reading, as a few sentences to share. */
     fun aiMonthRecap(done: (String?, String?) -> Unit) {
         val s = store.snapshot

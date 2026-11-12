@@ -218,7 +218,7 @@ fun PillButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
 /** A small round key with an icon (sync now, settings, matches): sinks with a click. */
 @Composable
 fun IconCircleButton(res: Int, label: String, onClick: () -> Unit, busy: Boolean = false, tint: Color = Cp.colors.textMid) {
-    Key(onClick, Modifier.size(width = 40.dp, height = 42.dp), shape = CircleShape, ledge = 2.dp, enabled = !busy, label = label) {
+    Key(onClick, Modifier.size(width = 38.dp, height = 40.dp), shape = CircleShape, ledge = 2.dp, enabled = !busy, label = label) {
         // The sync ribbon moves its arrows while busy; any other icon turns.
         if (res == io.github.prithirajn.trackersync.R.drawable.ic_ribbon_sync) SyncRibbon(18.dp, if (busy) Cp.colors.accent else tint, moving = busy)
         else if (busy) SpinningIcon(res, 16.dp, Cp.colors.accent)
@@ -363,7 +363,9 @@ fun serviceColor(name: String): Color = when (name.lowercase().substringBefore('
     "fable" -> Color(0xFF9BC53D)
     "pagebound" -> Color(0xFFE0703B)
     "seekquel" -> Color(0xFF9A3D2A)
-    "readwise" -> Color(0xFF2A2A2A)
+    "readwise" -> Color(0xFFC9A227)
+    "notion" -> Color(0xFF6E6E6B)
+    "obsidian" -> Color(0xFF7C3AED)
     "bookfusion" -> Color(0xFF2E6FD8)
     "audiobookshelf" -> Color(0xFFB38A2E)
     "jellyfin" -> Color(0xFF8E5BE0)

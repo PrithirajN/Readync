@@ -59,6 +59,15 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 - **Barcode scanning** adds a book from its ISBN.
 - **Web novels and fan fiction**: Royal Road, AO3, Scribble Hub, Wattpad and more. The story is linked from the link inside your EPUB (FanFicFare, WebToEpub and similar save it) when Readync can see the file (KOReader's folder on your phone, or your books on WebDAV), or found by title. While you read one, **new chapters are checked for every few hours** through the story's feed (Royal Road, Scribble Hub; others daily) with an alert, the book page shows which chapter you're on and how many are out past your copy, a copy downloaded again with new chapters stays the same book, and a story also published as books shows how many are out and when the next one comes (from Hardcover).
 
+### 🎁 Made from your reading
+- **Wrapped**: your month or year in reading as story slides to tap through: pages and reading days, your longest streak and your reading day, the books you finished, the one you flew through, your passage of the month, and everything on one card. Save them, share one, or post it to Threads.
+- **Moving quotes**: any highlight as a short video for Reels, Stories or Threads. The cover drops in, the passage types itself onto the page, your note is written in by hand, and the title fades up. Made on your phone as an MP4.
+- **Shelf poster**: a year's finished books as spines on wooden shelves (each the colour of its cover, as thick as the book is long) or as a wall of covers, sized for your phone's wallpaper or for a post.
+- **Daily review**: five of your older highlights each day to keep, let go of or edit, with a streak for the days you look back.
+- **Reading timer**: a full-screen session for paper books with a big timer and a page counter to tap as you turn pages. The minutes and pages count toward your day and streak, and the book moves to your page.
+- **Who's this?** (with the on-device AI): a reminder of who a character is, or what a place or word is, using only what comes before your place in the book.
+- **Widgets**: your current book on a little reading device (its percentage in pixel digits and a bar that fills), and a highlight of the day.
+
 ### ✨ And more
 - An **SFF news tab** for science fiction and fantasy readers.
 - **Home-screen widgets**: a sync card, a progress ring and a shelf of the books you're reading.

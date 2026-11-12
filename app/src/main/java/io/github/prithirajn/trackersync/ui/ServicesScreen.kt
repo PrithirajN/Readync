@@ -1,5 +1,7 @@
 package io.github.prithirajn.trackersync.ui
 
+import androidx.compose.foundation.layout.height
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.togetherWith
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.CircleShape
@@ -119,6 +121,8 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     var page by remember { mutableStateOf<String?>(null) }
     var appSettings by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf(false) }
+    // Which kind the Add sheet is for: book trackers, or reading apps and servers.
+    var addingApps by remember { mutableStateOf(false) }
     var servicesTab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
     // Opened from elsewhere (the KOReader card on Reading, a book's page).
     val pendingAction by AppActions.pending.collectAsState()
@@ -128,6 +132,10 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     val c = Cp.colors
     val linked = Trackers.all.filter { state.service(it.id).linked }
     val more = Trackers.all.filter { !state.service(it.id).linked }
+    val linkedTrackers = linked.filter { isBookTracker(it) }
+    val linkedApps = linked.filter { !isBookTracker(it) }
+    val moreTrackers = more.filter { isBookTracker(it) }
+    val moreApps = more.filter { !isBookTracker(it) }
     val context = LocalContext.current
     val appVersion = remember(context) { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
 
@@ -168,7 +176,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     )
                 }
             }
-            PageTabs(listOf("Sends to", "Reads from", "Share & export"), servicesTab) { servicesTab = it }
+            PageTabs(listOf("Trackers", "Reading apps", "Share & export"), servicesTab) { servicesTab = it }
             // The tab's page slides in from the side you moved toward.
             androidx.compose.animation.AnimatedContent(
                 servicesTab,
@@ -182,19 +190,19 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
             ) { tab -> Column(Modifier.fillMaxWidth()) {
             when (tab) {
                 0 -> {
-                if (linked.isNotEmpty()) {
+                if (linkedTrackers.isNotEmpty()) {
                     VSpace(16)
                     CpCard {
-                        linked.forEachIndexed { i, t ->
+                        linkedTrackers.forEachIndexed { i, t ->
                             if (i > 0) RowDivider()
                             Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
                         }
                     }
                 }
-                    // Everything not linked yet waits in the Add sheet, grouped, instead of a long list here.
-                    if (more.isNotEmpty()) {
+                    // Everything not linked yet waits in the Add sheet instead of a long list here.
+                    if (moreTrackers.isNotEmpty()) {
                         VSpace(12)
-                        AddServiceRow(if (linked.isEmpty()) "Link a tracker or reading app" else "Add a tracker or reading app") { adding = true }
+                        AddServiceRow(if (linkedTrackers.isEmpty()) "Link a book tracker" else "Add a book tracker") { addingApps = false; adding = true }
                     }
                 }
                 1 -> {
@@ -270,6 +278,20 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                         trailing = { Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } } },
                     ) { page = "moon" }
                 }
+                // Reading apps and servers linked here: most go both ways, a few only bring your place in.
+                if (linkedApps.isNotEmpty()) {
+                    VSpace(16)
+                    CpCard {
+                        linkedApps.forEachIndexed { i, t ->
+                            if (i > 0) RowDivider()
+                            Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
+                        }
+                    }
+                }
+                if (moreApps.isNotEmpty()) {
+                    VSpace(12)
+                    AddServiceRow("Add a reading app or server") { addingApps = true; adding = true }
+                }
                 }
                 else -> {
                     VSpace(16)
@@ -282,16 +304,26 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                             else -> "@${state.threadsUser ?: "you"} · posting off"
                         },
                     ) { page = "threads" }
-                    RowDivider()
-                    val outs = listOfNotNull("Readwise".takeIf { state.readwiseToken != null }, "Notion".takeIf { state.notionToken != null }, "Obsidian".takeIf { state.obsidianFolder != null })
-                    NavRow(
-                        R.drawable.lucide_highlighter, "Export highlights",
-                        if (outs.isEmpty()) "To Readwise, Notion or Obsidian" else outs.joinToString(" · ") + (if (state.exportErrors.isNotEmpty()) " · needs a look" else ""),
-                        summaryWarn = state.exportErrors.isNotEmpty(),
-                    ) { page = "exports" }
                     }
-                    VSpace(10)
-                    Quiet("Your highlights out to Threads as pictures, and to Readwise, Notion or Obsidian as text.", Modifier.padding(horizontal = 4.dp), color = c.faint)
+                    // Each place your highlights can go as text, with its own page of options.
+                    VSpace(14)
+                    DeviceLabel("Highlights as text", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
+                    CpCard {
+                        ExportRow(state, "readwise", "Readwise", state.readwiseToken != null,
+                            if (state.readwiseToken != null) "${state.readwiseDone.size} sent" else "Daily review, and Readwise's own exports") { page = "readwise" }
+                        RowDivider()
+                        ExportRow(state, "notion", "Notion", state.notionToken != null,
+                            if (state.notionToken != null) "${state.notionPages.size} book page${if (state.notionPages.size == 1) "" else "s"} · ${state.notionDone.size} highlights" else "A page per book, inside a page of yours") { page = "notion" }
+                        RowDivider()
+                        ExportRow(state, "obsidian", "Obsidian", state.obsidianFolder != null,
+                            if (state.obsidianFolder != null) "${state.obsidianHashes.size} book note${if (state.obsidianHashes.size == 1) "" else "s"} in your vault" else "A Markdown note per book in your vault") { page = "obsidian" }
+                    }
+                    // Your own copy of everything: backups, moving phones, and history from other apps.
+                    VSpace(14)
+                    DeviceLabel("Your data", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
+                    CpCard {
+                        NavRow(R.drawable.lucide_download, "Backup & import", "Back up, move to a new phone, or bring in history from Goodreads, StoryGraph, Hardcover or KOReader") { page = "backup" }
+                    }
                 }
             }
             } }
@@ -315,8 +347,6 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     model?.first?.substringBeforeLast('.')?.let { "$it · on this phone" } ?: "Off · add a model to try it",
                 ) { appSettings = false; page = "ai" }
                 RowDivider()
-                NavRow(R.drawable.lucide_download, "Backup & import", "Backups, reading data, history from other apps") { appSettings = false; page = "backup" }
-                RowDivider()
                 NavRow(R.drawable.lucide_refresh_cw, "App update", if (appVersion.isNotEmpty()) "Version $appVersion" else null) { appSettings = false; page = "update" }
             }
             VSpace(24)
@@ -334,22 +364,18 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
         }
     }
     if (adding) {
-        SettingsSheet("Add a service", onClose = { adding = false }) {
-            val trackerIds = setOf("hardcover", "fable", "pagebound", "storygraph", "goodreads", "seekquel")
-            for ((title, group) in listOf(
-                "Book trackers" to more.filter { it.id in trackerIds },
-                "Reading apps and servers" to more.filter { it.id !in trackerIds },
-            )) {
-                if (group.isEmpty()) continue
-                Text(title, style = CpType.label, color = c.textMid, modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 8.dp))
-                CpCard {
-                    group.forEachIndexed { i, t ->
-                        if (i > 0) RowDivider()
-                        AvailableRow(t, onServer = t.id in state.serverLinked, onLink = { adding = false; signingIn = t })
-                    }
-                }
-                VSpace(14)
+        SettingsSheet(if (addingApps) "Add a reading app or server" else "Add a book tracker", onClose = { adding = false }) {
+            val group = if (addingApps) moreApps else moreTrackers
+            if (addingApps) {
+                Quiet("Two-way ones take your progress and send their own place back. Ones that read only bring your place in.", Modifier.padding(start = 4.dp, bottom = 10.dp), color = c.faint)
             }
+            CpCard {
+                group.forEachIndexed { i, t ->
+                    if (i > 0) RowDivider()
+                    AvailableRow(t, onServer = t.id in state.serverLinked, onLink = { adding = false; signingIn = t })
+                }
+            }
+            VSpace(14)
         }
     }
 
@@ -357,7 +383,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
         SettingsSheet(
             when (p) {
                 "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"; "kohl" -> "KOReader highlights"
-                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "exports" -> "Export highlights"; else -> "App update"
+                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "exports" -> "Export highlights"; "readwise" -> "Readwise"; "notion" -> "Notion"; "obsidian" -> "Obsidian"; else -> "App update"
             },
             onClose = { page = null },
         ) {
@@ -393,6 +419,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 "kohl" -> KoHlCard(vm, state, onAdd = { addingKoHl = true }, onRemove = { page = null; removingKoHl = true })
                 "threads" -> ThreadsCard(vm, state)
                 "exports" -> ExportsCard(vm, state)
+                "readwise", "notion", "obsidian" -> ExportPage(vm, state, p)
                 "moon" -> MoonCard(vm, state, onAdd = { addingMoon = true }, onGuide = { moonGuide = true }, onRemove = { page = null; removingMoon = true })
                 "sync" -> SyncSettingsCard(vm, state)
                 "ai" -> OnDeviceAiCard(vm, state)
@@ -541,6 +568,7 @@ private fun SettingsSheet(title: String, onClose: () -> Unit, content: @Composab
         Column(
             Modifier
                 .fillMaxWidth()
+                .animateContentSize(androidx.compose.animation.core.spring(dampingRatio = 1f, stiffness = 260f))
                 .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, bottom = 32.dp)
@@ -572,10 +600,27 @@ private fun summary(state: Snapshot, t: Tracker): Pair<String, Boolean> {
 
 @Composable
 private fun TrackerName(t: Tracker) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(t.name, style = CpType.bodyStrong, color = Cp.colors.text)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(t.name, style = CpType.bodyStrong, color = Cp.colors.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        if (!isBookTracker(t)) DirectionTag(t)
         if (isBeta(t)) Chip("Beta")
     }
+}
+
+/** Book trackers (and Micro.blog's shelves) only take your reading; everything else is a reading app or server. */
+private val BOOK_TRACKERS = setOf("hardcover", "fable", "pagebound", "storygraph", "goodreads", "seekquel", "microblog")
+private fun isBookTracker(t: Tracker) = t.id in BOOK_TRACKERS
+
+/** Which way a reading app goes: both ways, or only bringing your place in. */
+@Composable
+private fun DirectionTag(t: Tracker) {
+    val c = Cp.colors
+    val (text, col) = when {
+        t.writes && t.bringsPositions -> "\u21C4 Two-way" to c.accentText
+        !t.writes -> "\u2190 Reads" to c.textMid
+        else -> "\u2192 Sends" to c.textMid
+    }
+    Chip(text, color = col)
 }
 
 @Composable
@@ -3494,125 +3539,84 @@ private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
                 }
             }
             if (state.threadsToken != null && !showHow) {
-                VSpace(12)
-                RowDivider()
-                VSpace(12)
-                Text("Which books", style = CpType.body, color = c.text)
-                Quiet(
-                    (if (state.threadsBooks.isEmpty()) "None yet. " else "${state.threadsBooks.count { it in state.books }} book${if (state.threadsBooks.size == 1) "" else "s"} on. ") +
-                        "Turn it on for a book on its page (Post to Threads): each new highlight, quote and note from it then goes up after a sync, as a Book card in one of its 15 layouts. Only ones that come in after you turn it on. " +
-                        "When you finish a book (or don't), you're offered to post your rating and review.",
-                    color = c.faint,
+                val waiting = remember(state) { ThreadsAuto.waiting(state).size }
+                val today = state.threadsPostLog.count { it > System.currentTimeMillis() / 1000 - 86_400 }
+                VSpace(14)
+                // How it's going, at a glance.
+                Screen(Modifier.fillMaxWidth()) {
+                    Row {
+                        for ((label, n, hot) in listOf(
+                            Triple("Posted", state.threadsPosted.size, false),
+                            Triple("Today", today, false),
+                            Triple("Waiting", waiting, waiting > 0),
+                        )) Column(Modifier.weight(1f)) {
+                            DeviceLabel(label, color = c.screenDim)
+                            RollingNumber(n, CpType.screenSmall.copy(fontSize = 26.sp, lineHeight = 28.sp), if (hot) c.accent else c.screenText)
+                        }
+                    }
+                }
+                state.threadsError?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
+
+                ThreadsSection("Posting")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Posts a day", style = CpType.body, color = c.text)
+                        Text("Never in your quiet hours", style = CpType.small, color = c.quiet)
+                    }
+                    Stepper(state.threadsPerDay, onMinus = { vm.setThreadsOptions(perDay = state.threadsPerDay - 1) }, onPlus = { vm.setThreadsOptions(perDay = state.threadsPerDay + 1) })
+                }
+                ThreadsSwitch("One post per reading session", "Highlights from one sitting go up together, a card each", state.threadsPerSession) { vm.setThreadsOptions(perSession = it) }
+                Text("Turn posting on for a book from its page (Post to Threads). Only highlights made after that go up.", style = CpType.small, color = c.faint, modifier = Modifier.padding(top = 4.dp))
+
+                ThreadsSection("On the card")
+                Segmented(listOf(false, true), state.threadsAnyLook, { if (it) "Any look" else "Book card" }, { vm.setThreadsOptions(anyLook = it) })
+                Text(
+                    if (state.threadsAnyLook) "The Book card and the other looks, mixed at random." else "The book's cover with your passage, in one of 15 layouts.",
+                    style = CpType.small, color = c.quiet, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp),
                 )
-                VSpace(10)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                        Text("At most ", style = CpType.body, color = c.text)
-                        RollingNumber(state.threadsPerDay, CpType.bodyStrong, c.accentText, countUp = false)
-                        Text(" a day", style = CpType.body, color = c.text)
-                    }
-                    PillButton("\u2212", { vm.setThreadsOptions(perDay = state.threadsPerDay - 1) })
-                    HSpace(6)
-                    PillButton("+", { vm.setThreadsOptions(perDay = state.threadsPerDay + 1) })
-                }
-                Quiet("Posts, not highlights: a reading session is one post. More than that waits for the next day, and nothing goes up in your quiet hours (Sync settings).", color = c.faint)
-                VSpace(8)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text("One post per reading session", style = CpType.body, color = c.text)
-                        Quiet(
-                            if (state.threadsPerSession) "Highlights from one sitting (less than two hours apart) go up together half an hour after the last: a card each to swipe through, your notes on their cards. One alone is a single card with your note as its words."
-                            else "Each highlight is its own post, a few minutes after it comes in.",
-                            color = c.faint,
-                        )
-                    }
-                    CpToggle(state.threadsPerSession, { vm.setThreadsOptions(perSession = it) }, "One post per reading session")
-                }
+                ThreadsSwitch("Show my note", "With its passage, on the card or as the post's words", state.threadsWithNote) { vm.setThreadsOptions(withNote = it) }
+                ThreadsSwitch("Post notes without a passage", "A note on a bookmark goes up as a handwritten card", state.threadsNotes) { vm.setThreadsOptions(notes = it) }
+
                 VSpace(6)
                 RowDivider()
                 // The finer choices, folded away until wanted.
-                MoreOptions("Topic, AI and looks", summary = listOf(
-                    when (state.threadsTopic) { "genre" -> "Topic by genre"; "" -> "No topic"; else -> "Topic: ${state.threadsTopic}" },
-                    if (state.threadsAnyLook) "any look" else "Book card",
-                ).joinToString(" · ")) {
-                    VSpace(10)
-                    Text("Topic tag", style = CpType.body, color = c.text)
-                    Quiet("Threads shows one topic with each post, so people following it find yours.", color = c.faint)
-                    VSpace(6)
-                    var customTopic by remember { mutableStateOf(state.threadsTopic.takeIf { it != "genre" }.orEmpty()) }
-                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for ((label, value) in listOf("By the book's genre" to "genre", "Books" to "Books", "BookThreads" to "BookThreads", "None" to "")) {
-                            val on = state.threadsTopic == value
-                            PillButton(label, { vm.setThreadsOptions(topic = value) }, outlined = !on)
-                        }
-                    }
-                    VSpace(6)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { CpTextField(customTopic, { customTopic = it.take(50) }, "Your own topic", placeholder = "e.g. Dungeon Crawler Carl") }
-                        HSpace(8)
-                        PillButton("Use", { if (customTopic.isNotBlank()) vm.setThreadsOptions(topic = customTopic.trim()) }, outlined = state.threadsTopic != customTopic.trim() || customTopic.isBlank())
-                    }
-                    Quiet(
-                        when (state.threadsTopic) {
-                            "genre" -> "LitRPG, Fantasy, Science Fiction, Horror or Web Novels from what the book is; Books otherwise. Reviews get it too."
-                            "" -> "No topic."
-                            else -> "Every post: ${state.threadsTopic}."
-                        },
-                        color = c.faint,
-                    )
-                    // The on-device model's help, when one is set up.
-                    val aiOn = remember { vm.aiReady() }
-                    VSpace(14)
-                    Text("On-device AI", style = CpType.body, color = c.text)
-                    if (!aiOn) Quiet("Add a model (Services \u203A On-device AI) and it can keep spoilers hidden, pick topics, and write opening lines. It runs on your phone; nothing is sent anywhere.", color = c.faint)
-                    else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                Text("Hide spoilers, pick topics", style = CpType.body, color = c.text)
-                                Quiet("Highlights or a review that give the story away go up behind Threads' tap-to-reveal. Books outside the genres above get a fitting topic (Romance, Thriller, Memoir…).", color = c.faint)
-                            }
-                            CpToggle(state.threadsAi, { vm.setThreadsOptions(ai = it) }, "Hide spoilers and pick topics with on-device AI")
-                        }
-                        VSpace(6)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                Text("Write the opening line", style = CpType.body, color = c.text)
-                                Quiet("A short line in your voice above a session's cards, or a highlight without a note (your own notes are never replaced). Checked: no hashtags, no quoting, nothing about the plot; else the usual wording.", color = c.faint)
-                            }
-                            CpToggle(state.threadsAiCaptions, { vm.setThreadsOptions(aiCaptions = it) }, "Write opening lines with on-device AI")
-                        }
-                    }
+                MoreOptions("Topic tag", summary = when (state.threadsTopic) { "genre" -> "By the book's genre"; "" -> "None"; else -> state.threadsTopic }) {
+                    Text("Threads shows one topic with each post, so people following it find yours.", style = CpType.small, color = c.quiet)
                     VSpace(8)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Notes on their own too", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
-                        CpToggle(state.threadsNotes, { vm.setThreadsOptions(notes = it) }, "Post notes on their own")
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Your note with its passage", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
-                        CpToggle(state.threadsWithNote, { vm.setThreadsOptions(withNote = it) }, "Your note with its passage")
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Any look, not just the Book card", style = CpType.body, color = c.text)
-                            Quiet("The Book card (the book's cover with the passage) comes in 15 layouts, picked at random. Turn this on to mix in the other looks too.", color = c.faint)
+                    var customTopic by remember { mutableStateOf(state.threadsTopic.takeIf { it != "genre" && it != "Books" && it != "BookThreads" }.orEmpty()) }
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for ((label, value) in listOf("By genre" to "genre", "Books" to "Books", "BookThreads" to "BookThreads", "None" to "")) {
+                            PillButton(label, { vm.setThreadsOptions(topic = value) }, outlined = state.threadsTopic != value)
                         }
-                        CpToggle(state.threadsAnyLook, { vm.setThreadsOptions(anyLook = it) }, "Any look")
+                    }
+                    VSpace(10)
+                    CpTextField(customTopic, { customTopic = it.take(50) }, "Or your own", placeholder = "e.g. Dungeon Crawler Carl",
+                        trailing = { if (customTopic.isNotBlank()) PillButton("Use", { vm.setThreadsOptions(topic = customTopic.trim()) }, outlined = state.threadsTopic != customTopic.trim()) })
+                    VSpace(6)
+                    Text(if (state.threadsTopic == "genre") "LitRPG, Fantasy, Science Fiction, Horror or Web Novels from what the book is; Books otherwise." else if (state.threadsTopic.isEmpty()) "No topic." else "Every post: ${state.threadsTopic}.", style = CpType.small, color = c.faint)
+                    VSpace(6)
+                }
+                RowDivider()
+                val aiOn = remember { vm.aiReady() }
+                MoreOptions("On-device AI", summary = if (!aiOn) "Add a model to use it" else listOfNotNull("spoilers hidden".takeIf { state.threadsAi }, "opening lines".takeIf { state.threadsAiCaptions }).joinToString(", ").ifEmpty { "Off" }.replaceFirstChar { it.uppercase() }) {
+                    if (!aiOn) Text("Add a model under Settings \u203A On-device AI. It runs on your phone; nothing is sent anywhere.", style = CpType.small, color = c.quiet, modifier = Modifier.padding(bottom = 8.dp))
+                    else {
+                        ThreadsSwitch("Hide spoilers, pick topics", "Spoilers go behind tap-to-reveal; other genres get a fitting topic", state.threadsAi) { vm.setThreadsOptions(ai = it) }
+                        ThreadsSwitch("Write an opening line", "A short line in your voice when a highlight has no note", state.threadsAiCaptions) { vm.setThreadsOptions(aiCaptions = it) }
                     }
                 }
                 RowDivider()
-                val waiting = remember(state) { ThreadsAuto.waiting(state).size }
-                val today = state.threadsPostLog.count { it > System.currentTimeMillis() / 1000 - 86_400 }
+
+                msg?.let { VSpace(8); Quiet(it, color = c.faint) }
+                VSpace(14)
+                BigButton(if (busy) "Posting\u2026" else "Post my newest now", { if (!busy) { busy = true; msg = null; vm.postNewestToThreads { m -> busy = false; msg = m } } }, busy = busy)
                 VSpace(8)
-                Quiet("${state.threadsPosted.size} highlights posted so far · $today post${if (today == 1) "" else "s"} today" + (if (waiting > 0) " · $waiting waiting" else ""), color = c.faint)
-                state.threadsError?.let { VSpace(4); Text(it, style = CpType.small, color = c.errorText) }
-                msg?.let { VSpace(4); Quiet(it, color = c.faint) }
-                VSpace(10)
-                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PillButton(if (busy) "Posting\u2026" else "Post my newest now", { if (!busy) { busy = true; msg = null; vm.postNewestToThreads { m -> busy = false; msg = m } } })
-                    PillButton("New token", { showHow = true })
-                    PillButton("Disconnect", { vm.disconnectThreads() }, danger = true)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BigButton("New token", { showHow = true }, Modifier.weight(1f), filled = false)
+                    BigButton("Disconnect", { vm.disconnectThreads() }, Modifier.weight(1f), filled = false, danger = true)
                 }
-                Quiet("Pictures go up for a short while on a public file host (Litterbox, else Uguu or tmpfiles.org), for Threads to copy; Threads only takes pictures from a web address.", color = c.faint)
+                VSpace(10)
+                Text("Pictures go up briefly on a public file host (Litterbox, Uguu or tmpfiles.org) for Threads to copy.", style = CpType.small, color = c.faint)
             } else msg?.let { VSpace(6); Text(it, style = CpType.small, color = c.errorText) }
         }
     }
@@ -3644,5 +3648,76 @@ private fun AddServiceRow(text: String, onClick: () -> Unit) {
         }
         HSpace(12)
         Text(text, style = CpType.bodyStrong, color = c.text)
+    }
+}
+
+/** One place highlights can go as text: its badge, how it's doing, and a light when it's on. */
+@Composable
+private fun ExportRow(state: Snapshot, key: String, name: String, on: Boolean, summary: String, onClick: () -> Unit) {
+    val c = Cp.colors
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val err = state.exportErrors[key]
+    Row(
+        Modifier.fillMaxWidth().pressRow(source, name, onClick).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.graphicsLayer { alpha = if (on) 1f else 0.55f }) { ServiceTile(name) }
+        HSpace(12)
+        Column(Modifier.weight(1f)) {
+            Text(name, style = CpType.bodyStrong, color = c.text)
+            Text(
+                err?.let { "Needs a look · $it" } ?: if (on) summary + (state.exportOkAt[key]?.let { " · ${ago(it * 1000)}" } ?: "") else summary,
+                style = CpType.small, color = if (err != null) c.errorText else c.quiet, maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+        if (on) { Led(err == null, color = if (err != null) c.error else Color(0xFF4ADE80), size = 7.dp); HSpace(10) }
+        else { Chip("Set up"); HSpace(6) }
+        LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(16.dp), c.faint)
+    }
+}
+
+/** A heading inside the Threads settings: a small label with a rule. */
+@Composable
+private fun ThreadsSection(title: String) {
+    val c = Cp.colors
+    VSpace(22)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        DeviceLabel(title, color = c.quiet)
+        Box(Modifier.padding(start = 10.dp).weight(1f).height(1.dp).background(c.divider))
+    }
+    VSpace(10)
+}
+
+/** One switch: a title, one short line under it, the switch beside it; the whole row flips it. */
+@Composable
+private fun ThreadsSwitch(title: String, line: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val c = Cp.colors
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    Row(
+        Modifier.fillMaxWidth().clip(CpShapes.control).pressRow(source, title, { onChange(!checked) }).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 14.dp)) {
+            Text(title, style = CpType.body, color = c.text)
+            line?.let { Text(it, style = CpType.small, color = c.quiet) }
+        }
+        CpToggle(checked, onChange, title)
+    }
+}
+
+/** − n + : two small keys with the number rolling between them. */
+@Composable
+private fun Stepper(value: Int, onMinus: () -> Unit, onPlus: () -> Unit) {
+    val c = Cp.colors
+    Row(
+        Modifier.clip(CpShapes.pill).background(c.field).padding(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Key(onMinus, Modifier.size(34.dp, 36.dp), shape = CircleShape, ledge = 2.dp, label = "Fewer") { Text("\u2212", style = CpType.bodyStrong, color = c.text) }
+        Box(Modifier.width(40.dp), contentAlignment = Alignment.Center) {
+            RollingNumber(value, CpType.screenSmall.copy(fontSize = 20.sp, lineHeight = 22.sp), c.accentText, countUp = false)
+        }
+        Key(onPlus, Modifier.size(34.dp, 36.dp), shape = CircleShape, ledge = 2.dp, label = "More") { Text("+", style = CpType.bodyStrong, color = c.text) }
     }
 }

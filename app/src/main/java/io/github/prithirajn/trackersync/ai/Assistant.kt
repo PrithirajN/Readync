@@ -539,6 +539,31 @@ object Assistant {
         return out.takeIf { it.length in 30..1500 }
     }
 
+    // ---- Who's this? ----
+
+    /**
+     * A short, spoiler-free reminder of who or what [term] is in [book], from only the passages
+     * given (your highlights up to your place, and sentences from the chapters you've read). Says
+     * so when they don't tell.
+     */
+    fun whoIs(m: TextModel, book: Book, term: String, clips: List<Clipping>, passages: List<String>): String? {
+        val hl = clips.filter { it.text.contains(term, ignoreCase = true) || it.note?.contains(term, ignoreCase = true) == true }
+            .ifEmpty { clips.takeLast(8) }
+            .map { "- \"${it.text.trim()}\"" + (it.note?.takeIf { n -> n.isNotBlank() }?.let { n -> " (my note: ${n.trim()})" } ?: "") }
+        val from = fit(passages.map { "- $it" } + hl, MAX_PROMPT_CHARS - 1400)
+        if (from.isEmpty()) return null
+        val prompt = buildString {
+            appendLine("I'm reading \"${book.displayTitle}\"" + (book.author?.let { " by $it" } ?: "") + " and I'm ${book.percent}% through.")
+            appendLine("Here is everything from the book up to where I am that might mention \"$term\":")
+            from.forEach { appendLine(it) }
+            appendLine()
+            appendLine("Using only these lines, remind me in 2 or 3 sentences who or what \"$term\" is and what has happened with them so far. Don't use anything you know about the book beyond these lines and don't guess what happens later. If the lines don't say, reply exactly: Not clear from what you've read so far.")
+            append("Reply with the sentences only.")
+        }
+        val out = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null)
+        return out.takeIf { it.length in 10..1200 }
+    }
+
     // ---- 10. Your month in reading ----
 
     /**

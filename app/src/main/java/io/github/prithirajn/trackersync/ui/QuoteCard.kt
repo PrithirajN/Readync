@@ -490,7 +490,7 @@ object QuoteCard {
 
     /** The Book card's layouts by name, in order. */
     val BOOK_LAYOUT_NAMES = listOf(
-        "Cover colour", "Over the cover", "On paper", "Spine column", "Polaroid", "Magazine", "Bookmark", "Night minimal",
+        "Cover colour", "Over the cover", "On paper", "E-reader", "Polaroid", "Magazine", "Bookmark", "Night minimal",
         "Duotone", "Postcard", "Shelf", "Big mark", "Framed", "Ticket", "Now reading",
     )
 
@@ -624,7 +624,7 @@ object QuoteCard {
                 listOfNotNull(series, where).firstOrNull()?.let { l -> cv.drawText(fitLabel(sp, textW.toFloat(), l.uppercase()), left, y + 34f, sp) }
                 if (showMark) brand(cv, f, left, h - 50f, 0xCCFFFFFF.toInt(), lighten(deep, 0.3f), rightAligned = false)
             }
-            3 -> spineColumn(cv, c, cover, seed, f, h, name, series, where)
+            3 -> eReader(cv, c, cover, seed, f, h, name, series, where)
             4 -> polaroid(cv, c, cover, seed, f, h, name, series, where)
             5 -> magazine(cv, c, cover, seed, f, h, name, series)
             6 -> bookmark(cv, c, cover, seed, f, h, name, series, where)
@@ -904,22 +904,64 @@ object QuoteCard {
 
     private fun pctOf(c: Content) = c.percent?.let { "${Math.round(it * 100)}%" }
 
-    /** 4. The cover as a column down the left; the passage on paper beside it. */
-    private fun spineColumn(cv: Canvas, c: Content, cover: Bitmap?, seed: Int, f: Fonts, h: Int, name: String, series: String?, where: String?) {
-        cv.drawColor(0xFFF4EFE6.toInt())
-        val cw = 330f
-        coverFill(cv, cover, RectF(0f, 0f, cw, h.toFloat()), seed)
-        cv.drawRect(cw - 60f, 0f, cw, h.toFloat(), Paint().apply { shader = LinearGradient(cw - 60f, 0f, cw, 0f, 0x00000000, 0x59000000, Shader.TileMode.CLAMP) })
-        val deep = deepOf(seed, 90f)
-        val x = cw + 70f
-        val w = W - cw - 140f
-        line(cv, "FROM", x, 140f, f.interBold, 22f, deep, w, spacing = 0.24f)
-        val nh = nameBlock(cv, name, x, 160f, w.toInt(), f.loraBold, 44f, 0xFF1F1B17.toInt())
-        line(cv, c.author, x, 160f + nh + 40f, f.inter, 30f, 0xFF6B6359.toInt(), w)
-        val barY = 160f + nh + 86f
-        cv.drawRect(x, barY, x + 60f, barY + 5f, Paint().apply { color = deep })
-        quoteIn(cv, c, f, RectF(x, barY + 40f, x + w, h - 170f), f.lora, 0xFF1F1B17.toInt(), deep, 80f, v = 0.35f)
-        line(cv, listOfNotNull(series, where).joinToString(" · ").uppercase(), x, h - 90f, f.interBold, 19f, 0xFF8A8176.toInt(), w, spacing = 0.14f)
+    /**
+     * 4. The passage on an e-reader: the book's cover blurred behind, and in front a small reading
+     * device whose grey e-ink screen shows your passage, with the book and how far in along its
+     * top and a progress line at its foot.
+     */
+    private fun eReader(cv: Canvas, c: Content, cover: Bitmap?, seed: Int, f: Fonts, h: Int, name: String, series: String?, where: String?) {
+        val full = RectF(0f, 0f, W.toFloat(), h.toFloat())
+        if (cover != null) drawCover(cv, soften(cover), full) else cv.drawColor(shade(seed, 0.45f))
+        cv.drawRect(full, Paint().apply {
+            shader = LinearGradient(0f, 0f, 0f, h.toFloat(), intArrayOf(0x59000000, 0x8C000000.toInt(), 0xCC000000.toInt()), floatArrayOf(0f, 0.6f, 1f), Shader.TileMode.CLAMP)
+        })
+        val story = h > 1500
+        val square = h < 1200
+        // The device: a graphite body with rounded corners and a soft shadow under it.
+        val margin = if (square) 120f else 110f
+        val top = if (story) 240f else if (square) 70f else 90f
+        val bottom = h - (if (story) 300f else if (square) 150f else 190f)
+        val body = RectF(margin, top, W - margin, bottom)
+        cv.drawRoundRect(RectF(body.left + 10f, body.top + 26f, body.right + 10f, body.bottom + 26f), 56f, 56f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x99000000.toInt(); maskFilter = android.graphics.BlurMaskFilter(40f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+        })
+        cv.drawRoundRect(body, 56f, 56f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(0f, body.top, 0f, body.bottom, 0xFF34322F.toInt(), 0xFF1E1D1B.toInt(), Shader.TileMode.CLAMP)
+        })
+        cv.drawRoundRect(body, 56f, 56f, Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = 0x33FFFFFF })
+        // The screen: warm grey e-ink paper, with a faint grain.
+        val bez = 46f
+        val chin = if (square) 70f else 96f
+        val scr = RectF(body.left + bez, body.top + bez, body.right - bez, body.bottom - chin)
+        cv.drawRoundRect(scr, 14f, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFE9E6DD.toInt() })
+        cv.drawRoundRect(scr, 14f, 14f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(scr.left, scr.top, scr.right, scr.bottom, intArrayOf(0x14FFFFFF, 0x00000000, 0x12000000), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+        })
+        val ink = 0xFF26241F.toInt()
+        val dim = 0xFF8B867B.toInt()
+        val pad = 44f
+        val x = scr.left + pad
+        val w = scr.width() - 2 * pad
+        // The screen's top line: the book on the left, how far in on the right.
+        val pct = pctOf(c)
+        val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = f.inter; textSize = 22f; color = dim; letterSpacing = 0.04f }
+        val pctW = pct?.let { sp.measureText(it) + 20f } ?: 0f
+        cv.drawText(TextUtils.ellipsize(name, TextPaint(sp), w - pctW, TextUtils.TruncateAt.END).toString(), x, scr.top + 50f, sp)
+        pct?.let { sp.textAlign = Paint.Align.RIGHT; cv.drawText(it, scr.right - pad, scr.top + 50f, sp); sp.textAlign = Paint.Align.LEFT }
+        cv.drawLine(x, scr.top + 72f, scr.right - pad, scr.top + 72f, Paint().apply { color = 0x22000000; strokeWidth = 2f })
+        // The passage, set like a page of the book.
+        quoteIn(cv, c, f, RectF(x, scr.top + 104f, x + w, scr.bottom - 96f), f.lora, ink, 0xFF5A5247.toInt(), 64f, v = 0.4f, spacing = 1.36f)
+        // Where it is, and a progress line along the foot of the screen.
+        line(cv, where, x, scr.bottom - 54f, f.inter, 22f, dim, w)
+        val barY = scr.bottom - 30f
+        cv.drawRoundRect(RectF(x, barY, x + w, barY + 6f), 3f, 3f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x22000000 })
+        c.percent?.let { p -> cv.drawRoundRect(RectF(x, barY, x + w * p.toFloat().coerceIn(0f, 1f), barY + 6f), 3f, 3f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ink }) }
+        // A little power light on the chin.
+        cv.drawCircle(body.centerX(), body.bottom - chin / 2f, 7f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = lighten(seed, 0.55f); setShadowLayer(10f, 0f, 0f, lighten(seed, 0.55f)) })
+        // Under the device: the book, its author and series, in white.
+        val ty = bottom + (if (square) 70f else 90f)
+        line(cv, name, W / 2f, ty, f.interBold, 36f, 0xFFFFFFFF.toInt(), W - 2 * margin, Paint.Align.CENTER)
+        line(cv, listOfNotNull(c.author, series).joinToString("  \u00B7  "), W / 2f, ty + 48f, f.inter, 26f, 0xB3FFFFFF.toInt(), W - 2 * margin, Paint.Align.CENTER)
     }
 
     /** 5. A polaroid of the cover, taped on; the passage under it. */

@@ -38,7 +38,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
 /** A bottom sheet for the AI helpers, in the app's style. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AiSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
+internal fun AiSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
@@ -76,7 +76,7 @@ fun AiThinking(text: String = "Thinking on this phone…") {
 
 /** An answer in a card, with what can be done with it. */
 @Composable
-private fun AiResult(label: String, text: String, actions: @Composable () -> Unit) {
+internal fun AiResult(label: String, text: String, actions: @Composable () -> Unit) {
     val c = Cp.colors
     CpCard {
         Column(Modifier.padding(14.dp)) {

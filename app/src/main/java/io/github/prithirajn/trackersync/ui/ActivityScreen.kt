@@ -71,12 +71,12 @@ fun ActivityScreen(vm: AppViewModel, state: Snapshot) {
         item {
             Column(PagePadding) {
                 PageTitle("Activity")
-                Quiet("Your reading lately, and what ${io.github.prithirajn.trackersync.Edition.name} did.")
+                Quiet("Your reading in numbers, and what ${io.github.prithirajn.trackersync.Edition.name} did.")
             }
         }
-        // What's new in your series: first, since it's the news.
-        item(key = "releases") { VSpace(8); ReleasesCard(vm, state) }
         activityInsights(vm, state)
+        // What's new in your series.
+        item(key = "releases") { VSpace(8); ReleasesCard(vm, state) }
         item(key = "log-head") {
             // Kinds of problem, not every repeat of one (the same failure on each sync counts once),
             // and being offline isn't one.
