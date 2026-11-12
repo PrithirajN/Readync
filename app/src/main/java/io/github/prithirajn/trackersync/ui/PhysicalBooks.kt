@@ -51,6 +51,7 @@ import java.io.File
 private fun Sheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,

@@ -47,6 +47,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
@@ -111,8 +116,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             .fillMaxSize()
             .background(Cp.colors.page)
     ) {
-        // Soft glows in the book's colour drift behind every screen.
-        AmbientBackground(Modifier.fillMaxSize())
+        // The wallpaper behind the device: blooms in the colour of the book you're reading, drifting.
+        Wallpaper(Modifier.align(Alignment.TopCenter), height = 380.dp)
         Crossfade(state.account == null, animationSpec = Motion.medium(), label = "signedIn") { signedOut ->
             if (signedOut) {
                 SignInScreen(vm)
@@ -182,43 +187,59 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     }
 }
 
+/**
+ * The dock: a dark bar floating over the bottom of the screen. The chosen tab's label lights up
+ * white and an orange light slides under it to the next one, with a click.
+ */
 @Composable
 private fun TabBar(current: Tab, onSelect: (Tab) -> Unit) {
     val c = Cp.colors
-    Column {
-        RowDivider()
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(c.page.copy(alpha = 0.88f))
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    val index = Tab.entries.indexOf(current)
+    // The light travels between tabs on a spring.
+    val pos by animateFloatAsState(index.toFloat(), spring(dampingRatio = 0.62f, stiffness = 380f), label = "dockLight")
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 10.dp)
+            .shadow(14.dp, RoundedCornerShape(24.dp), ambientColor = c.shade, spotColor = c.shade)
+            .clip(RoundedCornerShape(24.dp))
+            .background(if (c.isDark) Color(0xFF232220) else c.ink)
+            .height(62.dp),
+    ) {
+        // The sliding light, under the chosen tab.
+        androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+            val slot = maxWidth / Tab.entries.size
+            Box(
+                Modifier
+                    .offset(x = slot * pos + slot / 2 - 14.dp, y = 50.dp)
+                    .size(width = 28.dp, height = 4.dp)
+                    .drawBehind {
+                        drawRoundRect(c.accent.copy(alpha = 0.35f), topLeft = androidx.compose.ui.geometry.Offset(-6.dp.toPx(), -3.dp.toPx()),
+                            size = androidx.compose.ui.geometry.Size(size.width + 12.dp.toPx(), size.height + 6.dp.toPx()), cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx()))
+                    }
+                    .clip(CpShapes.pill)
+                    .background(c.accent),
+            )
+        }
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
             for (t in Tab.entries) {
                 val on = t == current
-                val iconTint by animateColorAsState(if (on) c.accentText else c.faint, Motion.medium(), label = "tint")
-                val labelTint by animateColorAsState(if (on) c.accentText else c.quiet, Motion.medium(), label = "label")
-                val pill by animateColorAsState(if (on) c.accentTint else c.accentTint.copy(alpha = 0f), Motion.medium(), label = "pill")
-                val pillWidth by animateDpAsState(if (on) 56.dp else 28.dp, Motion.bouncy(), label = "pillWidth")
-                val lift by animateFloatAsState(if (on) 1.08f else 1f, Motion.bouncy(), label = "lift")
+                val tint by animateColorAsState(if (on) Color.White else Color.White.copy(alpha = 0.5f), Motion.medium(), label = "tint")
+                val lift by animateFloatAsState(if (on) 1f else 0f, Motion.bouncy(), label = "lift")
                 Column(
                     Modifier
                         .weight(1f)
-                        .bouncyClickable(CpShapes.control, pressedScale = 0.92f) { onSelect(t) }
-                        .padding(vertical = 6.dp),
+                        .fillMaxHeight()
+                        .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) {
+                            if (!on) Haptics.tick(view)
+                            onSelect(t)
+                        },
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
                 ) {
-                    Box(
-                        Modifier
-                            .height(28.dp)
-                            .width(pillWidth)
-                            .clip(CpShapes.pill)
-                            .background(pill),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        LucideIcon(t.icon, Modifier.size(20.dp).graphicsLayer { scaleX = lift; scaleY = lift }, iconTint)
-                    }
-                    Text(t.label, style = CpType.chip.copy(fontSize = CpType.small.fontSize), color = labelTint, modifier = Modifier.padding(top = 2.dp))
+                    LucideIcon(t.icon, Modifier.size(19.dp).graphicsLayer { translationY = -3.dp.toPx() * lift; scaleX = 1f + 0.1f * lift; scaleY = 1f + 0.1f * lift }, tint)
+                    Text(t.label, style = CpType.chip.copy(fontSize = CpType.small.fontSize), color = tint, modifier = Modifier.padding(top = 3.dp).graphicsLayer { translationY = -2.dp.toPx() * lift })
                 }
             }
         }

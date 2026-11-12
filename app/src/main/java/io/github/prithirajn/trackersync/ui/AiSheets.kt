@@ -41,6 +41,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
 private fun AiSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,

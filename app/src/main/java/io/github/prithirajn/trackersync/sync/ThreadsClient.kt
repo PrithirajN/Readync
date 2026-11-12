@@ -51,26 +51,63 @@ object ThreadsClient {
         call("GET", "/refresh_access_token", mapOf("grant_type" to "th_refresh_token", "access_token" to token))
             .optString("access_token").takeIf { it.isNotBlank() } ?: throw ThreadsException("Threads didn't renew the token")
 
-    /** Puts [png] up at a public address for a day, for Threads to copy. Returns that address. */
-    fun upload(png: ByteArray): String {
+    /** A short-lived public file host: its name, and how to put a PNG up there (returns its address, or throws). */
+    private class Host(val name: String, val put: (ByteArray) -> String)
+
+    private fun multipart(url: String, fields: Map<String, String>, fileField: String, png: ByteArray): io.github.prithirajn.trackersync.net.HttpResponse {
         val boundary = "----readync" + System.nanoTime()
         val out = java.io.ByteArrayOutputStream()
-        fun field(name: String, value: String) {
-            out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray())
-        }
-        field("reqtype", "fileupload")
-        field("time", "24h")
-        out.write("--$boundary\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"quote.png\"\r\nContent-Type: image/png\r\n\r\n".toByteArray())
+        for ((k, v) in fields) out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$k\"\r\n\r\n$v\r\n".toByteArray())
+        out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$fileField\"; filename=\"quote.png\"\r\nContent-Type: image/png\r\n\r\n".toByteArray())
         out.write(png)
         out.write("\r\n--$boundary--\r\n".toByteArray())
-        val r = Http.request(
-            "POST", imageHost,
-            mapOf("Content-Type" to "multipart/form-data; boundary=$boundary", "User-Agent" to Http.defaultUserAgent),
+        return Http.request(
+            "POST", url,
+            mapOf("Content-Type" to "multipart/form-data; boundary=$boundary", "User-Agent" to "Readync/1.0 (Android)", "Accept" to "*/*"),
             raw = out.toByteArray(), timeoutMs = 90_000,
         )
-        val url = r.body.trim()
-        if (!r.ok || !url.startsWith("https://")) throw ThreadsException("Couldn't put the picture up for Threads (HTTP ${r.code})")
-        return url
+    }
+
+    private fun failed(name: String, r: io.github.prithirajn.trackersync.net.HttpResponse): Nothing =
+        throw ThreadsException("$name answered HTTP ${r.code}" + (r.body.trim().take(80).takeIf { it.isNotEmpty() && !it.startsWith("<") }?.let { " ($it)" } ?: ""))
+
+    /**
+     * Where pictures can go, in order: Litterbox (catbox.moe, a day), Uguu (3 hours), tmpfiles.org
+     * (an hour). Threads copies a picture within a minute, so any of them is long enough. Some
+     * networks or regions get refused by one (an HTTP 403), so the next is tried.
+     */
+    private val hosts = listOf(
+        Host("Litterbox") { png ->
+            val r = multipart(imageHost, mapOf("reqtype" to "fileupload", "time" to "24h"), "fileToUpload", png)
+            r.body.trim().takeIf { r.ok && it.startsWith("https://") } ?: failed("Litterbox", r)
+        },
+        Host("Uguu") { png ->
+            val r = multipart("https://uguu.se/upload", emptyMap(), "files[]", png)
+            val url = runCatching { JSONObject(r.body).optJSONArray("files")?.optJSONObject(0)?.optString("url") }.getOrNull()
+            url?.takeIf { r.ok && it.startsWith("https://") } ?: failed("Uguu", r)
+        },
+        Host("tmpfiles.org") { png ->
+            val r = multipart("https://tmpfiles.org/api/v1/upload", emptyMap(), "file", png)
+            val url = runCatching { JSONObject(r.body).optJSONObject("data")?.optString("url") }.getOrNull()
+            // Its page address; the file itself is under /dl/.
+            url?.takeIf { r.ok && it.contains("tmpfiles.org/") }?.replace("http://", "https://")?.replaceFirst("tmpfiles.org/", "tmpfiles.org/dl/") ?: failed("tmpfiles.org", r)
+        },
+    )
+
+    /** The host that worked last, tried first next time. */
+    @Volatile private var lastGood = 0
+
+    /** Puts [png] up at a public address for a while, for Threads to copy. Returns that address. */
+    fun upload(png: ByteArray): String {
+        val errors = ArrayList<String>()
+        for (i in hosts.indices.sortedBy { if (it == lastGood) -1 else it }) {
+            try {
+                return hosts[i].put(png).also { lastGood = i }
+            } catch (e: Exception) {
+                errors += e.message ?: hosts[i].name
+            }
+        }
+        throw ThreadsException("Couldn't put the picture up for Threads: " + errors.joinToString("; "))
     }
 
     /** Waits until Threads has fetched a picture for [container] (up to about a minute). */

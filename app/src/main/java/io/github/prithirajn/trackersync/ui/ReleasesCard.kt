@@ -163,6 +163,7 @@ private fun ReleaseSettingsSheet(vm: AppViewModel, state: Snapshot, onClose: () 
         }
     }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,

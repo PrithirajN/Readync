@@ -641,7 +641,7 @@ private fun NewBadge(modifier: Modifier = Modifier) {
 private fun StoryMenu(vm: AppViewModel, state: Snapshot, s: SffFeed.Story, onClose: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
-    ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), shape = CpShapes.sheet, containerColor = c.page) {
+    ModalBottomSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), shape = CpShapes.sheet, containerColor = c.page) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
             Text(s.lead.aiHeadline ?: s.lead.title, style = CpType.bodyStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Quiet(s.lead.source.substringBefore(" ·"))

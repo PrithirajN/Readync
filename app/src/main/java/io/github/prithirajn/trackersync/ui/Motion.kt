@@ -13,6 +13,7 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.runtime.LaunchedEffect
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
@@ -29,6 +30,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -76,18 +78,32 @@ fun Modifier.bouncyClickable(
 ): Modifier {
     val source = remember { MutableInteractionSource() }
     val scale = remember { Animatable(1f) }
+    // A soft wash of ink that comes up under the finger and fades as it lifts, in place of the
+    // stock ripple: quieter, and it reads as the surface being pushed rather than splashed.
+    val wash = remember { Animatable(0f) }
+    val ink = Cp.colors.text
     val view = androidx.compose.ui.platform.LocalView.current
     // Sink under the finger, then spring back past full size and settle. A quick tap still
     // gets the whole dip and bounce, so every press feels answered.
     LaunchedEffect(source, enabled) {
         source.interactions.collectLatest { i ->
             when (i) {
-                is PressInteraction.Press -> if (enabled) scale.animateTo(pressedScale, spring(dampingRatio = 1f, stiffness = Spring.StiffnessHigh))
+                is PressInteraction.Press -> if (enabled) {
+                    // Felt on the way down, like a real switch, not after the finger has gone.
+                    view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                    kotlinx.coroutines.coroutineScope {
+                        launch { wash.animateTo(1f, tween(durationMillis = 90)) }
+                        scale.animateTo(pressedScale, spring(dampingRatio = 1f, stiffness = Spring.StiffnessHigh))
+                    }
+                }
                 is PressInteraction.Release, is PressInteraction.Cancel -> {
                     if (enabled && i is PressInteraction.Release && scale.value > pressedScale + 0.005f) {
                         scale.animateTo(pressedScale, tween(durationMillis = 70))
                     }
-                    scale.animateTo(1f, Motion.bouncy())
+                    kotlinx.coroutines.coroutineScope {
+                        launch { wash.animateTo(0f, tween(durationMillis = 380)) }
+                        scale.animateTo(1f, Motion.bouncy())
+                    }
                 }
             }
         }
@@ -98,17 +114,17 @@ fun Modifier.bouncyClickable(
             scaleY = scale.value
         }
         .clip(shape)
+        .drawWithContent {
+            drawContent()
+            if (wash.value > 0f) drawRect(ink.copy(alpha = 0.07f * wash.value))
+        }
         .clickable(
             interactionSource = source,
-            indication = LocalIndication.current,
+            indication = null,
             enabled = enabled,
             onClickLabel = onClickLabel,
             role = role,
-            onClick = {
-                // A light tick under the finger (follows the phone's touch-feedback setting).
-                view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
-                onClick()
-            },
+            onClick = onClick,
         )
 }
 
@@ -182,7 +198,21 @@ fun HealthLight(status: Health.Status, onClick: () -> Unit) {
         } else if (level == Health.Level.GOOD) {
             Box(Modifier.size(18.dp).clip(CircleShape).background(color.copy(alpha = 0.18f)))
         }
-        Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+        // An LED in a little bezel: a dark rim, the coloured lens, and a hot spot where it's lit.
+        Box(
+            Modifier
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(c.keyLedge)
+                .padding(1.5.dp)
+                .clip(CircleShape)
+                .background(
+                    androidx.compose.ui.graphics.Brush.radialGradient(
+                        if (level == Health.Level.OFF) listOf(color, color)
+                        else listOf(androidx.compose.ui.graphics.lerp(color, Color.White, 0.65f), color, androidx.compose.ui.graphics.lerp(color, Color.Black, 0.25f)),
+                    )
+                )
+        )
     }
 }
 

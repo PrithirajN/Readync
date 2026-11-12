@@ -186,6 +186,7 @@ private fun PagesPerSheet(vm: AppViewModel, state: Snapshot, key: String, comic:
     val c = Cp.colors
     var pages by remember { mutableStateOf(state.pagesPer[key]?.toString() ?: "") }
     androidx.compose.material3.ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = io.github.prithirajn.trackersync.ui.theme.CpShapes.sheet,
@@ -220,6 +221,7 @@ private fun IssueDaysSheet(vm: AppViewModel, series: String, comic: Boolean, n: 
     var error by remember { mutableStateOf<String?>(null) }
     val label = io.github.prithirajn.trackersync.sync.ComicIssues.label(n)
     androidx.compose.material3.ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = io.github.prithirajn.trackersync.ui.theme.CpShapes.sheet,
@@ -265,6 +267,7 @@ private fun VolumeRangeSheet(vm: AppViewModel, state: Snapshot, key: String, vol
     var error by remember { mutableStateOf<String?>(null) }
     val word = if (comic) "issue" else "chapter"
     androidx.compose.material3.ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = io.github.prithirajn.trackersync.ui.theme.CpShapes.sheet,

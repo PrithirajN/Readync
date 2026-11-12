@@ -1,5 +1,13 @@
 package io.github.prithirajn.trackersync.ui
 
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
@@ -50,6 +58,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.border
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -108,6 +117,9 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     var removingAudible by remember { mutableStateOf(false) }
     var removingLibby by remember { mutableStateOf(false) }
     var page by remember { mutableStateOf<String?>(null) }
+    var appSettings by remember { mutableStateOf(false) }
+    var adding by remember { mutableStateOf(false) }
+    var servicesTab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
     // Opened from elsewhere (the KOReader card on Reading, a book's page).
     val pendingAction by AppActions.pending.collectAsState()
     LaunchedEffect(pendingAction) {
@@ -128,138 +140,184 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
             .padding(bottom = 32.dp)
     ) {
         Column(PagePadding) {
-            PageTitle("Services")
-            Quiet("Where your reading progress goes.")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    PageTitle("Services")
+                    Quiet("Where your reading goes, and where it comes from.")
+                }
+                // The app's own settings (sync, AI, backup, updates) behind the gear.
+                IconCircleButton(R.drawable.lucide_settings, "Settings", { appSettings = true })
+            }
         }
         Column(Modifier.padding(horizontal = 16.dp)) {
             if (linked.isNotEmpty()) {
+                // A glance before anything else: how many are on, how many want you, and a light each.
+                val lights = linked.map { t ->
+                    val svc = state.service(t.id)
+                    val wants = svc.needsReauth || svc.lastError != null || summary(state, t).second
+                    t.name to when { !svc.enabled -> 0; wants -> 2; else -> 1 }
+                }
+                val last = linked.maxOf { state.service(it.id).lastSync }
+                Box(Modifier.riseIn(0).padding(bottom = 16.dp).shadow(14.dp, RoundedCornerShape(26.dp), ambientColor = c.shade, spotColor = c.shade).clip(RoundedCornerShape(26.dp)).background(c.surface).padding(10.dp)) {
+                    ServicesScreenStrip(
+                        lights,
+                        on = lights.count { it.second > 0 },
+                        needYou = lights.count { it.second == 2 },
+                        lastSync = if (last > 0) "Synced ${ago(last)}" else "Not synced yet",
+                        running = state.running,
+                    )
+                }
+            }
+            PageTabs(listOf("Sends to", "Reads from", "Share & export"), servicesTab) { servicesTab = it }
+            // The tab's page slides in from the side you moved toward.
+            androidx.compose.animation.AnimatedContent(
+                servicesTab,
+                transitionSpec = {
+                    val dir = if (targetState > initialState) 1 else -1
+                    (androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.spring(dampingRatio = 0.86f, stiffness = 420f)) { it / 5 * dir } + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(220)))
+                        .togetherWith(androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(180)) { -it / 6 * dir } + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(140)))
+                        .using(androidx.compose.animation.SizeTransform(clip = false))
+                },
+                label = "servicesTab",
+            ) { tab -> Column(Modifier.fillMaxWidth()) {
+            when (tab) {
+                0 -> {
+                if (linked.isNotEmpty()) {
+                    VSpace(16)
+                    CpCard {
+                        linked.forEachIndexed { i, t ->
+                            if (i > 0) RowDivider()
+                            Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
+                        }
+                    }
+                }
+                    // Everything not linked yet waits in the Add sheet, grouped, instead of a long list here.
+                    if (more.isNotEmpty()) {
+                        VSpace(12)
+                        AddServiceRow(if (linked.isEmpty()) "Link a tracker or reading app" else "Add a tracker or reading app") { adding = true }
+                    }
+                }
+                1 -> {
+                // Everything else as one short list of rows, each opening its own sheet, so the page
+                // stays a glance instead of a long scroll.
                 VSpace(16)
                 CpCard {
-                    linked.forEachIndexed { i, t ->
-                        if (i > 0) RowDivider()
-                        LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t })
+                    NavRow(
+                        R.drawable.lucide_library_big, "CrossPoint",
+                        listOfNotNull(state.account?.username, state.sourceOkAt.takeIf { it > 0 }?.let { "reached ${ago(it)}" }).joinToString(" · ").ifEmpty { null },
+                        trailing = { Health.source(state)?.let { h -> HealthLight(h) { vm.checkCrossPoint() } } },
+                    ) { page = "crosspoint" }
+                    RowDivider()
+                    // Kindle, Libby and Audible: only in the full edition (the shared one leaves them out).
+                    if (io.github.prithirajn.trackersync.Edition.full) {
+                        NavRow(
+                            R.drawable.lucide_book_open, "Amazon Kindle",
+                            when {
+                                state.kindle == null -> "Not linked"
+                                state.kindleError != null -> "Needs you to sign in again"
+                                else -> state.kindleOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
+                            },
+                            summaryWarn = state.kindle != null && state.kindleError != null,
+                            trailing = { Health.kindle(state)?.let { h -> HealthLight(h) { vm.checkKindle() } } },
+                        ) { page = "kindle" }
+                        RowDivider()
+                        NavRow(
+                            R.drawable.lucide_library_big, "Libby",
+                            when {
+                                state.libby == null -> "Not linked · or open a Reading Journey"
+                                state.libbyError != null -> "Needs you to link again"
+                                else -> state.libbyOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
+                            },
+                            summaryWarn = state.libby != null && state.libbyError != null,
+                            trailing = { Health.libby(state)?.let { h -> HealthLight(h) { vm.checkLibby() } } },
+                        ) { page = "libby" }
+                        RowDivider()
+                        NavRow(
+                            R.drawable.lucide_headphones, "Audible",
+                            when {
+                                state.audible == null -> "Not linked"
+                                state.audibleError != null -> "Needs you to sign in again"
+                                else -> state.audibleOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
+                            },
+                            summaryWarn = state.audible != null && state.audibleError != null,
+                            trailing = { Health.audible(state)?.let { h -> HealthLight(h) { vm.checkAudible() } } },
+                        ) { page = "audible" }
+                        RowDivider()
                     }
+                    NavRow(
+                        R.drawable.lucide_book_open, "Manga & comics",
+                        when {
+                            state.mihon == null && state.anilist == null -> "Not set up"
+                            state.mihonError != null || state.anilistError != null -> "Needs attention"
+                            else -> listOfNotNull(state.mihon?.let { "Mihon" }, state.anilist?.let { "AniList" }).joinToString(" + ")
+                        },
+                        summaryWarn = (state.mihon != null && state.mihonError != null) || (state.anilist != null && state.anilistError != null),
+                        trailing = {
+                            (Health.mihon(state)?.takeIf { it.level == Health.Level.BAD } ?: Health.anilist(state)?.takeIf { it.level == Health.Level.BAD } ?: Health.mihon(state) ?: Health.anilist(state))
+                                ?.let { h -> HealthLight(h) { vm.checkMihon() } }
+                        },
+                    ) { page = "mihon" }
+                    RowDivider()
+                    NavRow(
+                        R.drawable.lucide_server, "KOSync server",
+                        state.kosync?.let { k -> k.username + " · " + k.server.substringAfter("://") } ?: "Not set up",
+                        trailing = { Health.kosync(state)?.let { h -> HealthLight(h) { vm.checkKosync() } } },
+                    ) { page = "kosync" }
+                    RowDivider()
+                    NavRow(
+                        R.drawable.lucide_moon, "Moon+ Reader",
+                        state.moon?.let { m -> m.username + " · " + m.server.substringAfter("://").substringBefore('/') } ?: "Not set up",
+                        trailing = { Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } } },
+                    ) { page = "moon" }
+                }
+                }
+                else -> {
+                    VSpace(16)
+                    CpCard {
+                    NavRow(
+                        R.drawable.lucide_upload, "Threads",
+                        when {
+                            state.threadsToken == null -> "Post new highlights there by themselves"
+                            state.threadsBooks.isNotEmpty() -> "@${state.threadsUser ?: "you"} · ${state.threadsBooks.size} book${if (state.threadsBooks.size == 1) "" else "s"} posting"
+                            else -> "@${state.threadsUser ?: "you"} · posting off"
+                        },
+                    ) { page = "threads" }
+                    RowDivider()
+                    val outs = listOfNotNull("Readwise".takeIf { state.readwiseToken != null }, "Notion".takeIf { state.notionToken != null }, "Obsidian".takeIf { state.obsidianFolder != null })
+                    NavRow(
+                        R.drawable.lucide_highlighter, "Export highlights",
+                        if (outs.isEmpty()) "To Readwise, Notion or Obsidian" else outs.joinToString(" · ") + (if (state.exportErrors.isNotEmpty()) " · needs a look" else ""),
+                        summaryWarn = state.exportErrors.isNotEmpty(),
+                    ) { page = "exports" }
+                    }
+                    VSpace(10)
+                    Quiet("Your highlights out to Threads as pictures, and to Readwise, Notion or Obsidian as text.", Modifier.padding(horizontal = 4.dp), color = c.faint)
                 }
             }
-            if (more.isNotEmpty()) {
-                SectionTitle(if (linked.isEmpty()) "Link a tracker or reading app" else "More trackers and reading apps")
-                VSpace(12)
-                CpCard {
-                    more.forEachIndexed { i, t ->
-                        if (i > 0) RowDivider()
-                        AvailableRow(t, onServer = t.id in state.serverLinked, onLink = { signingIn = t })
-                    }
-                }
-            }
+            } }
+        }
+    }
 
-            // Everything else as one short list of rows, each opening its own sheet, so the page
-            // stays a glance instead of a long scroll.
-            SectionTitle("Reading from")
-            VSpace(12)
+    if (appSettings) {
+        SettingsSheet("Settings", onClose = { appSettings = false }) {
             CpCard {
-                NavRow(
-                    R.drawable.lucide_library_big, "CrossPoint",
-                    listOfNotNull(state.account?.username, state.sourceOkAt.takeIf { it > 0 }?.let { "reached ${ago(it)}" }).joinToString(" · ").ifEmpty { null },
-                    trailing = { Health.source(state)?.let { h -> HealthLight(h) { vm.checkCrossPoint() } } },
-                ) { page = "crosspoint" }
-                RowDivider()
-                // Kindle, Libby and Audible: only in the full edition (the shared one leaves them out).
-                if (io.github.prithirajn.trackersync.Edition.full) {
-                    NavRow(
-                        R.drawable.lucide_book_open, "Amazon Kindle",
-                        when {
-                            state.kindle == null -> "Not linked"
-                            state.kindleError != null -> "Needs you to sign in again"
-                            else -> state.kindleOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
-                        },
-                        summaryWarn = state.kindle != null && state.kindleError != null,
-                        trailing = { Health.kindle(state)?.let { h -> HealthLight(h) { vm.checkKindle() } } },
-                    ) { page = "kindle" }
-                    RowDivider()
-                    NavRow(
-                        R.drawable.lucide_library_big, "Libby",
-                        when {
-                            state.libby == null -> "Not linked · or open a Reading Journey"
-                            state.libbyError != null -> "Needs you to link again"
-                            else -> state.libbyOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
-                        },
-                        summaryWarn = state.libby != null && state.libbyError != null,
-                        trailing = { Health.libby(state)?.let { h -> HealthLight(h) { vm.checkLibby() } } },
-                    ) { page = "libby" }
-                    RowDivider()
-                    NavRow(
-                        R.drawable.lucide_headphones, "Audible",
-                        when {
-                            state.audible == null -> "Not linked"
-                            state.audibleError != null -> "Needs you to sign in again"
-                            else -> state.audibleOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
-                        },
-                        summaryWarn = state.audible != null && state.audibleError != null,
-                        trailing = { Health.audible(state)?.let { h -> HealthLight(h) { vm.checkAudible() } } },
-                    ) { page = "audible" }
-                    RowDivider()
-                }
-                NavRow(
-                    R.drawable.lucide_book_open, "Manga & comics",
-                    when {
-                        state.mihon == null && state.anilist == null -> "Not set up"
-                        state.mihonError != null || state.anilistError != null -> "Needs attention"
-                        else -> listOfNotNull(state.mihon?.let { "Mihon" }, state.anilist?.let { "AniList" }).joinToString(" + ")
-                    },
-                    summaryWarn = (state.mihon != null && state.mihonError != null) || (state.anilist != null && state.anilistError != null),
-                    trailing = {
-                        (Health.mihon(state)?.takeIf { it.level == Health.Level.BAD } ?: Health.anilist(state)?.takeIf { it.level == Health.Level.BAD } ?: Health.mihon(state) ?: Health.anilist(state))
-                            ?.let { h -> HealthLight(h) { vm.checkMihon() } }
-                    },
-                ) { page = "mihon" }
-                RowDivider()
-                NavRow(
-                    R.drawable.lucide_server, "KOSync server",
-                    state.kosync?.let { k -> k.username + " · " + k.server.substringAfter("://") } ?: "Not set up",
-                    trailing = { Health.kosync(state)?.let { h -> HealthLight(h) { vm.checkKosync() } } },
-                ) { page = "kosync" }
-                RowDivider()
-                NavRow(
-                    R.drawable.lucide_moon, "Moon+ Reader",
-                    state.moon?.let { m -> m.username + " · " + m.server.substringAfter("://").substringBefore('/') } ?: "Not set up",
-                    trailing = { Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } } },
-                ) { page = "moon" }
-            }
-            SectionTitle("App")
-            VSpace(12)
-            CpCard {
+
                 val s0 = state.settings
                 val every = s0.intervalMinutes.let { m -> if (m < 60) "every $m min" else if (m == 60) "every hour" else "every ${m / 60} hours" }
                 NavRow(
                     R.drawable.lucide_settings, "Sync settings",
                     "Syncs $every" + (if (s0.wifiOnly) " on Wi-Fi" else "") + (if (s0.quietFrom >= 0) " · quiet at night" else ""),
-                ) { page = "sync" }
+                ) { appSettings = false; page = "sync" }
                 RowDivider()
                 val model = remember(state.settings) { vm.aiModel() }
                 NavRow(
                     R.drawable.lucide_sparkles, "On-device AI",
                     model?.first?.substringBeforeLast('.')?.let { "$it · on this phone" } ?: "Off · add a model to try it",
-                ) { page = "ai" }
+                ) { appSettings = false; page = "ai" }
                 RowDivider()
-                NavRow(R.drawable.lucide_download, "Backup & import", "Backups, reading data, history from other apps") { page = "backup" }
+                NavRow(R.drawable.lucide_download, "Backup & import", "Backups, reading data, history from other apps") { appSettings = false; page = "backup" }
                 RowDivider()
-                NavRow(
-                    R.drawable.lucide_upload, "Threads",
-                    when {
-                        state.threadsToken == null -> "Post new highlights there by themselves"
-                        state.threadsBooks.isNotEmpty() -> "@${state.threadsUser ?: "you"} · ${state.threadsBooks.size} book${if (state.threadsBooks.size == 1) "" else "s"} posting"
-                        else -> "@${state.threadsUser ?: "you"} · posting off"
-                    },
-                ) { page = "threads" }
-                RowDivider()
-                val outs = listOfNotNull("Readwise".takeIf { state.readwiseToken != null }, "Notion".takeIf { state.notionToken != null }, "Obsidian".takeIf { state.obsidianFolder != null })
-                NavRow(
-                    R.drawable.lucide_highlighter, "Export highlights",
-                    if (outs.isEmpty()) "To Readwise, Notion or Obsidian" else outs.joinToString(" · ") + (if (state.exportErrors.isNotEmpty()) " · needs a look" else ""),
-                    summaryWarn = state.exportErrors.isNotEmpty(),
-                ) { page = "exports" }
-                RowDivider()
-                NavRow(R.drawable.lucide_refresh_cw, "App update", if (appVersion.isNotEmpty()) "Version $appVersion" else null) { page = "update" }
+                NavRow(R.drawable.lucide_refresh_cw, "App update", if (appVersion.isNotEmpty()) "Version $appVersion" else null) { appSettings = false; page = "update" }
             }
             VSpace(24)
             Text(
@@ -272,6 +330,26 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
             VSpace(10)
             val links = androidx.compose.ui.platform.LocalUriHandler.current
             PillButton("\u2615 Buy me a coffee", { runCatching { links.openUri("https://buymeacoffee.com/prithi") } })
+
+        }
+    }
+    if (adding) {
+        SettingsSheet("Add a service", onClose = { adding = false }) {
+            val trackerIds = setOf("hardcover", "fable", "pagebound", "storygraph", "goodreads", "seekquel")
+            for ((title, group) in listOf(
+                "Book trackers" to more.filter { it.id in trackerIds },
+                "Reading apps and servers" to more.filter { it.id !in trackerIds },
+            )) {
+                if (group.isEmpty()) continue
+                Text(title, style = CpType.label, color = c.textMid, modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 8.dp))
+                CpCard {
+                    group.forEachIndexed { i, t ->
+                        if (i > 0) RowDivider()
+                        AvailableRow(t, onServer = t.id in state.serverLinked, onLink = { adding = false; signingIn = t })
+                    }
+                }
+                VSpace(14)
+            }
         }
     }
 
@@ -454,6 +532,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
 private fun SettingsSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -466,9 +545,9 @@ private fun SettingsSheet(title: String, onClose: () -> Unit, content: @Composab
                 .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, bottom = 32.dp)
         ) {
-            Text(title, style = CpType.section, color = c.text)
+            Text(title, style = CpType.section, color = c.text, modifier = Modifier.riseIn(0))
             VSpace(14)
-            content()
+            Column(Modifier.riseIn(1)) { content() }
         }
     }
 }
@@ -511,7 +590,12 @@ private fun LinkedRow(vm: AppViewModel, state: Snapshot, t: Tracker, onOpen: () 
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ServiceTile(t.name)
+        val dim by androidx.compose.animation.core.animateFloatAsState(if (svc.enabled) 1f else 0.4f, Motion.medium(), label = "paused")
+        val shake = remember { androidx.compose.animation.core.Animatable(0f) }
+        LaunchedEffect(svc.needsReauth) {
+            if (svc.needsReauth) for (x in listOf(6f, -5f, 4f, -2f, 0f)) shake.animateTo(x, androidx.compose.animation.core.tween(55))
+        }
+        Box(Modifier.graphicsLayer { alpha = dim; translationX = shake.value * density; rotationZ = shake.value * 0.8f }) { ServiceTile(t.name) }
         HSpace(12)
         Column(Modifier.weight(1f)) {
             TrackerName(t)
@@ -556,6 +640,7 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
     val failed = state.pending.values.count { it.service == t.id && it.tries > 0 }
     val review = state.links.values.count { it.service == t.id && ((it.externalId == null && it.note == "Needs a match") || (it.externalId != null && !it.confirmed && it.source != io.github.prithirajn.trackersync.data.LinkSource.NONE)) }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -957,6 +1042,7 @@ private fun BackupCard(vm: AppViewModel) {
         var merging by remember(read) { mutableStateOf(false) }
         var mergeError by remember(read) { mutableStateOf<String?>(null) }
         ModalBottomSheet(
+            dragHandle = { SheetGrip() },
             onDismissRequest = { incoming = null },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             shape = CpShapes.sheet,
@@ -1040,6 +1126,7 @@ private fun HistoryImportCard(vm: AppViewModel) {
         var applying by remember(p) { mutableStateOf(false) }
         var applyError by remember(p) { mutableStateOf<String?>(null) }
         ModalBottomSheet(
+            dragHandle = { SheetGrip() },
             onDismissRequest = { plan = null },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             shape = CpShapes.sheet,
@@ -1335,6 +1422,7 @@ private fun BackupPasswordSheet(vm: AppViewModel, saving: Boolean, uri: Uri, onC
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -1439,6 +1527,7 @@ private fun KindleSignInSheet(vm: AppViewModel, onClose: () -> Unit) {
         return
     }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -1660,6 +1749,7 @@ private fun LibbySignInSheet(vm: AppViewModel, onClose: () -> Unit) {
     }
 
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -1869,6 +1959,7 @@ private fun AudibleSignInSheet(vm: AppViewModel, onClose: () -> Unit) {
         return
     }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -2177,6 +2268,7 @@ internal fun ComicVolumesSheet(vm: AppViewModel, state: Snapshot, key: String, c
     }
     var error by remember { mutableStateOf<String?>(null) }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -2300,6 +2392,7 @@ private fun AniListSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit)
         vm.linkAniList(t) { e -> busy = false; if (e == null) onClose() else error = e }
     }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -2423,6 +2516,7 @@ private fun MangaUpdatesSheet(vm: AppViewModel, onClose: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -2540,6 +2634,7 @@ private fun MoonSheet(vm: AppViewModel, onGuide: () -> Unit, onClose: () -> Unit
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -2811,6 +2906,7 @@ private fun KoHlHint(state: Snapshot, text: String, onOpen: () -> Unit) {
 private fun KoHlGuideSheet(onClose: () -> Unit) {
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -2861,6 +2957,7 @@ private fun KoHlSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -2918,6 +3015,7 @@ private fun MoonGuideSheet(onClose: () -> Unit) {
     val links = androidx.compose.ui.platform.LocalUriHandler.current
     var copied by remember { mutableStateOf(false) }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -3000,6 +3098,7 @@ private fun KosyncSheet(vm: AppViewModel, onClose: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -3040,6 +3139,7 @@ private fun PasswordSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -3086,6 +3186,7 @@ private fun TokenSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -3136,6 +3237,7 @@ private fun PairSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
         vm.startDeviceLink(t, onCode = { link = it }) { e -> if (e == null) onClose() else error = e }
     }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = { vm.cancelDeviceLink(); onClose() },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -3260,7 +3362,7 @@ private fun WebSignIn(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
 @Composable
 fun ConfirmSheet(title: String, body: String, action: String, onConfirm: () -> Unit, onClose: () -> Unit) {
     val c = Cp.colors
-    ModalBottomSheet(onDismissRequest = onClose, shape = CpShapes.sheet, containerColor = c.page) {
+    ModalBottomSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, shape = CpShapes.sheet, containerColor = c.page) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
             Text(title, style = CpType.section, color = c.text)
             VSpace(8)
@@ -3404,7 +3506,11 @@ private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
                 )
                 VSpace(10)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("At most ${state.threadsPerDay} a day", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        Text("At most ", style = CpType.body, color = c.text)
+                        RollingNumber(state.threadsPerDay, CpType.bodyStrong, c.accentText, countUp = false)
+                        Text(" a day", style = CpType.body, color = c.text)
+                    }
                     PillButton("\u2212", { vm.setThreadsOptions(perDay = state.threadsPerDay - 1) })
                     HSpace(6)
                     PillButton("+", { vm.setThreadsOptions(perDay = state.threadsPerDay + 1) })
@@ -3422,69 +3528,78 @@ private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
                     }
                     CpToggle(state.threadsPerSession, { vm.setThreadsOptions(perSession = it) }, "One post per reading session")
                 }
-                VSpace(10)
-                Text("Topic tag", style = CpType.body, color = c.text)
-                Quiet("Threads shows one topic with each post, so people following it find yours.", color = c.faint)
                 VSpace(6)
-                var customTopic by remember { mutableStateOf(state.threadsTopic.takeIf { it != "genre" }.orEmpty()) }
-                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for ((label, value) in listOf("By the book's genre" to "genre", "Books" to "Books", "BookThreads" to "BookThreads", "None" to "")) {
-                        val on = state.threadsTopic == value
-                        PillButton(label, { vm.setThreadsOptions(topic = value) }, outlined = !on)
-                    }
-                }
-                VSpace(6)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) { CpTextField(customTopic, { customTopic = it.take(50) }, "Your own topic", placeholder = "e.g. Dungeon Crawler Carl") }
-                    HSpace(8)
-                    PillButton("Use", { if (customTopic.isNotBlank()) vm.setThreadsOptions(topic = customTopic.trim()) }, outlined = state.threadsTopic != customTopic.trim() || customTopic.isBlank())
-                }
-                Quiet(
-                    when (state.threadsTopic) {
-                        "genre" -> "LitRPG, Fantasy, Science Fiction, Horror or Web Novels from what the book is; Books otherwise. Reviews get it too."
-                        "" -> "No topic."
-                        else -> "Every post: ${state.threadsTopic}."
-                    },
-                    color = c.faint,
-                )
-                // The on-device model's help, when one is set up.
-                val aiOn = remember { vm.aiReady() }
-                VSpace(14)
-                Text("On-device AI", style = CpType.body, color = c.text)
-                if (!aiOn) Quiet("Add a model (Services \u203A On-device AI) and it can keep spoilers hidden, pick topics, and write opening lines. It runs on your phone; nothing is sent anywhere.", color = c.faint)
-                else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Hide spoilers, pick topics", style = CpType.body, color = c.text)
-                            Quiet("Highlights or a review that give the story away go up behind Threads' tap-to-reveal. Books outside the genres above get a fitting topic (Romance, Thriller, Memoir…).", color = c.faint)
+                RowDivider()
+                // The finer choices, folded away until wanted.
+                MoreOptions("Topic, AI and looks", summary = listOf(
+                    when (state.threadsTopic) { "genre" -> "Topic by genre"; "" -> "No topic"; else -> "Topic: ${state.threadsTopic}" },
+                    if (state.threadsAnyLook) "any look" else "Book card",
+                ).joinToString(" · ")) {
+                    VSpace(10)
+                    Text("Topic tag", style = CpType.body, color = c.text)
+                    Quiet("Threads shows one topic with each post, so people following it find yours.", color = c.faint)
+                    VSpace(6)
+                    var customTopic by remember { mutableStateOf(state.threadsTopic.takeIf { it != "genre" }.orEmpty()) }
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for ((label, value) in listOf("By the book's genre" to "genre", "Books" to "Books", "BookThreads" to "BookThreads", "None" to "")) {
+                            val on = state.threadsTopic == value
+                            PillButton(label, { vm.setThreadsOptions(topic = value) }, outlined = !on)
                         }
-                        CpToggle(state.threadsAi, { vm.setThreadsOptions(ai = it) }, "Hide spoilers and pick topics with on-device AI")
                     }
                     VSpace(6)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Write the opening line", style = CpType.body, color = c.text)
-                            Quiet("A short line in your voice above a session's cards, or a highlight without a note (your own notes are never replaced). Checked: no hashtags, no quoting, nothing about the plot; else the usual wording.", color = c.faint)
+                        Box(Modifier.weight(1f)) { CpTextField(customTopic, { customTopic = it.take(50) }, "Your own topic", placeholder = "e.g. Dungeon Crawler Carl") }
+                        HSpace(8)
+                        PillButton("Use", { if (customTopic.isNotBlank()) vm.setThreadsOptions(topic = customTopic.trim()) }, outlined = state.threadsTopic != customTopic.trim() || customTopic.isBlank())
+                    }
+                    Quiet(
+                        when (state.threadsTopic) {
+                            "genre" -> "LitRPG, Fantasy, Science Fiction, Horror or Web Novels from what the book is; Books otherwise. Reviews get it too."
+                            "" -> "No topic."
+                            else -> "Every post: ${state.threadsTopic}."
+                        },
+                        color = c.faint,
+                    )
+                    // The on-device model's help, when one is set up.
+                    val aiOn = remember { vm.aiReady() }
+                    VSpace(14)
+                    Text("On-device AI", style = CpType.body, color = c.text)
+                    if (!aiOn) Quiet("Add a model (Services \u203A On-device AI) and it can keep spoilers hidden, pick topics, and write opening lines. It runs on your phone; nothing is sent anywhere.", color = c.faint)
+                    else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text("Hide spoilers, pick topics", style = CpType.body, color = c.text)
+                                Quiet("Highlights or a review that give the story away go up behind Threads' tap-to-reveal. Books outside the genres above get a fitting topic (Romance, Thriller, Memoir…).", color = c.faint)
+                            }
+                            CpToggle(state.threadsAi, { vm.setThreadsOptions(ai = it) }, "Hide spoilers and pick topics with on-device AI")
                         }
-                        CpToggle(state.threadsAiCaptions, { vm.setThreadsOptions(aiCaptions = it) }, "Write opening lines with on-device AI")
+                        VSpace(6)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text("Write the opening line", style = CpType.body, color = c.text)
+                                Quiet("A short line in your voice above a session's cards, or a highlight without a note (your own notes are never replaced). Checked: no hashtags, no quoting, nothing about the plot; else the usual wording.", color = c.faint)
+                            }
+                            CpToggle(state.threadsAiCaptions, { vm.setThreadsOptions(aiCaptions = it) }, "Write opening lines with on-device AI")
+                        }
+                    }
+                    VSpace(8)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Notes on their own too", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+                        CpToggle(state.threadsNotes, { vm.setThreadsOptions(notes = it) }, "Post notes on their own")
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Your note with its passage", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+                        CpToggle(state.threadsWithNote, { vm.setThreadsOptions(withNote = it) }, "Your note with its passage")
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("Any look, not just the Book card", style = CpType.body, color = c.text)
+                            Quiet("The Book card (the book's cover with the passage) comes in 15 layouts, picked at random. Turn this on to mix in the other looks too.", color = c.faint)
+                        }
+                        CpToggle(state.threadsAnyLook, { vm.setThreadsOptions(anyLook = it) }, "Any look")
                     }
                 }
-                VSpace(8)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Notes on their own too", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
-                    CpToggle(state.threadsNotes, { vm.setThreadsOptions(notes = it) }, "Post notes on their own")
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Your note with its passage", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
-                    CpToggle(state.threadsWithNote, { vm.setThreadsOptions(withNote = it) }, "Your note with its passage")
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text("Any look, not just the Book card", style = CpType.body, color = c.text)
-                        Quiet("The Book card (the book's cover with the passage) comes in 15 layouts, picked at random. Turn this on to mix in the other looks too.", color = c.faint)
-                    }
-                    CpToggle(state.threadsAnyLook, { vm.setThreadsOptions(anyLook = it) }, "Any look")
-                }
+                RowDivider()
                 val waiting = remember(state) { ThreadsAuto.waiting(state).size }
                 val today = state.threadsPostLog.count { it > System.currentTimeMillis() / 1000 - 86_400 }
                 VSpace(8)
@@ -3497,8 +3612,37 @@ private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
                     PillButton("New token", { showHow = true })
                     PillButton("Disconnect", { vm.disconnectThreads() }, danger = true)
                 }
-                Quiet("Pictures go up for a day on Litterbox (catbox.moe), for Threads to copy; Threads only takes pictures from a web address.", color = c.faint)
+                Quiet("Pictures go up for a short while on a public file host (Litterbox, else Uguu or tmpfiles.org), for Threads to copy; Threads only takes pictures from a web address.", color = c.faint)
             } else msg?.let { VSpace(6); Text(it, style = CpType.small, color = c.errorText) }
         }
+    }
+}
+
+
+/** The way into the Add sheet: one dashed row, instead of every unlinked service listed. */
+@Composable
+private fun AddServiceRow(text: String, onClick: () -> Unit) {
+    val c = Cp.colors
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val turn by androidx.compose.animation.core.animateFloatAsState(if (pressed) 90f else 0f, Motion.bouncy(), label = "plusTurn")
+    val edge by animateColorAsState(if (pressed) c.accent else c.track, Motion.fast(), label = "addEdge")
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(CpShapes.card)
+            // An empty slot waiting for a service: a dashed outline.
+            .drawBehind {
+                val stroke = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx(), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(7.dp.toPx(), 5.dp.toPx())))
+                drawRoundRect(edge, cornerRadius = androidx.compose.ui.geometry.CornerRadius(22.dp.toPx()), style = stroke)
+            }
+            .pressRow(source, text, onClick)
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(30.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
+            LucideIcon(R.drawable.lucide_plus, Modifier.size(16.dp).graphicsLayer { rotationZ = turn }, Color.White)
+        }
+        HSpace(12)
+        Text(text, style = CpType.bodyStrong, color = c.text)
     }
 }

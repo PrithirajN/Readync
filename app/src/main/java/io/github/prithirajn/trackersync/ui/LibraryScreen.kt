@@ -1,5 +1,6 @@
 package io.github.prithirajn.trackersync.ui
 
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -47,11 +48,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.animation.animateContentSize
 import androidx.compose.ui.unit.dp
 import io.github.prithirajn.trackersync.R
@@ -481,34 +486,61 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
     photoFrom?.let { doc -> state.books[doc]?.let { PaperHighlightSheet(vm, state, it) { photoFrom = null } } }
 }
 
-/** Reading now · pages read this month · finished this month, in the companion app's three-column card. */
+/**
+ * The day at a glance on the device's screen: books being read, pages this month (and today), books
+ * finished; and the reading streak as a row of lit days, with a nudge when today isn't lit yet.
+ */
 @Composable
 private fun StatsCard(reading: Int, pages: Int?, finished: Int, today: Int? = null, month: String? = null, streak: Int = 0, readToday: Boolean = false) {
     val c = Cp.colors
-    CpCard(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Stat(reading.toString(), "reading", Modifier.weight(1f))
-            Box(Modifier.width(1.dp).height(36.dp).background(c.divider))
-            Stat(
-                pages?.let { String.format(java.util.Locale.getDefault(), "%,d", it) } ?: "\u2014", if (month != null) "pages in $month" else "pages read", Modifier.weight(1f),
-                extra = today?.let { if (it > 0) "+${String.format(java.util.Locale.getDefault(), "%,d", it)} today" else "none yet today" },
-            )
-            Box(Modifier.width(1.dp).height(36.dp).background(c.divider))
-            Stat(finished.toString(), if (month != null) "finished in $month" else "finished", Modifier.weight(1f))
-        }
-        // A reading streak: days in a row with pages read. A little nudge when today isn't in it yet.
-        if (streak >= 2 || (streak == 1 && readToday)) {
-            RowDivider()
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                Text("\uD83D\uDD25", style = CpType.body)
-                HSpace(8)
-                Text(
-                    if (streak == 1) "Day one of a new streak" else "$streak-day reading streak",
-                    style = CpType.bodyStrong, color = c.accentText,
-                )
-                if (!readToday && streak >= 2) {
-                    HSpace(8)
-                    Text("· read today to keep it", style = CpType.small, color = c.faint)
+    Column(
+        Modifier
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp)
+            .shadow(14.dp, androidx.compose.foundation.shape.RoundedCornerShape(26.dp), ambientColor = c.shade, spotColor = c.shade)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(26.dp))
+            .background(c.surface)
+            .padding(10.dp),
+    ) {
+        Screen {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                Stat(reading, "Reading", Modifier.weight(1f))
+                Stat(pages ?: 0, if (month != null) "Pages in $month" else "Pages", Modifier.weight(1.3f),
+                    extra = today?.let { if (it > 0) "+${String.format(java.util.Locale.getDefault(), "%,d", it)} today" else "None yet today" })
+                Stat(finished, if (month != null) "Done in $month" else "Finished", Modifier.weight(1f))
+            }
+            // The streak: a lit day for each day in a row, up to a week; today blinks until you read.
+            if (streak >= 1) {
+                VSpace(12)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("\uD83D\uDD25", style = CpType.body)
+                    HSpace(6)
+                    Text(
+                        if (streak == 1) "Day one" else "$streak-day streak",
+                        style = CpType.bodyStrong, color = c.screenText,
+                    )
+                    Fill()
+                    val blink = androidx.compose.animation.core.rememberInfiniteTransition(label = "streak")
+                    val b by blink.animateFloat(0.25f, 1f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(700), androidx.compose.animation.core.RepeatMode.Reverse), label = "blink")
+                    // Read today: the streak's days lit (up to a week). Not yet: the days before, and today blinking.
+                    val litCount = if (readToday) streak.coerceAtMost(7) else streak.coerceAtMost(6)
+                    for (i in 0 until 7) {
+                        val lit = i < litCount
+                        val isToday = !readToday && i == litCount
+                        Box(
+                            Modifier.padding(start = 4.dp).size(width = 12.dp, height = 8.dp).clip(CpShapes.pill)
+                                .background(
+                                    when {
+                                        lit -> c.accent
+                                        isToday -> c.accent.copy(alpha = 0.25f + 0.5f * b)
+                                        else -> c.screenOff
+                                    },
+                                ),
+                        )
+                    }
+                }
+                if (!readToday && streak >= 1) {
+                    VSpace(6)
+                    DeviceLabel("Read a page today to keep it going", color = c.screenDim)
                 }
             }
         }
@@ -516,21 +548,19 @@ private fun StatsCard(reading: Int, pages: Int?, finished: Int, today: Int? = nu
 }
 
 @Composable
-private fun Stat(value: String, label: String, modifier: Modifier, extra: String? = null) {
+private fun Stat(value: Int, label: String, modifier: Modifier, extra: String? = null) {
     val c = Cp.colors
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        AnimatedContent(
-            targetState = value,
-            transitionSpec = { (fadeIn(Motion.medium()) + slideInVertically(Motion.bouncy()) { it }) togetherWith fadeOut(Motion.fast()) },
-            label = "stat",
-        ) { v -> Text(v, style = CpType.section, color = c.text) }
-        Text(label, style = CpType.small, color = c.quiet)
+    Column(modifier) {
+        RollingNumber(value, CpType.screenSmall.copy(fontSize = 30.sp, lineHeight = 32.sp), c.screenText)
+        VSpace(2)
+        DeviceLabel(label, color = c.screenDim)
         extra?.let {
+            VSpace(4)
             AnimatedContent(
                 targetState = it,
                 transitionSpec = { (fadeIn(Motion.medium()) + slideInVertically(Motion.bouncy()) { h -> h }) togetherWith fadeOut(Motion.fast()) },
                 label = "statExtra",
-            ) { e -> Text(e, style = CpType.small, color = if (e.startsWith("+")) c.accentText else c.faint) }
+            ) { e -> Text(e, style = CpType.small, color = if (e.startsWith("+")) c.accent else c.screenDim, maxLines = 1) }
         }
     }
 }
@@ -799,6 +829,7 @@ private fun BookSheet(
     LaunchedEffect(Unit) { vm.loadHighlights() }
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -808,38 +839,97 @@ private fun BookSheet(
             Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, bottom = 32.dp)
+                .padding(bottom = 32.dp)
         ) {
-            // The cover pops in with a little bounce when the book opens.
-            val pop = remember(book.document) { androidx.compose.animation.core.Animatable(0.8f) }
-            LaunchedEffect(book.document) { pop.animateTo(1f, Motion.bouncy()) }
-            Row {
-                BookCover(
-                    book.coverUrl, book.displayTitle, 96.dp, 144.dp,
-                    Modifier.graphicsLayer { scaleX = pop.value; scaleY = pop.value; rotationZ = (1f - pop.value) * -12f },
-                )
-                HSpace(16)
-                Column(Modifier.weight(1f)) {
-                    Text(book.displayTitle, style = CpType.section, color = c.text)
-                    book.author?.let { Quiet(it) }
-                    val facts = state.facts[book.document]
-                    seriesLine(facts)?.let { Quiet(it, color = c.textMid, maxLines = 1) }
-                    if (facts?.rating != null || facts?.year != null) { VSpace(2); RatingLine(facts) }
-                    VSpace(12)
-                    ProgressBar(book.percentage.toFloat(), fillIn = true)
-                    VSpace(6)
-                    Quiet("${book.percent}% · ${book.status?.label ?: "Reading"}" + (if (book.manualAt != null && book.timestamp == book.manualAt && !ManualBooks.isManual(book)) " · chosen by you" else "") + when {
-                        ManualBooks.isManual(book) -> " · physical book"
-                        originName != null -> " · from $originName"
-                        else -> " on CrossPoint"
-                    })
-                    book.pageCount?.let { Quiet("$it print pages", color = c.faint) }
-                }
-                // The ⋯ menu for editing details, cover, print pages, dates, duplicates, or removing from library.
-                BookMenuButton(state, book, webNovelLinked = state.webNovels[book.document] != null) {
-                    if (it == BookAction.WEBNOVEL) storyLink = true else bookAction = it
+            val facts = state.facts[book.document]
+            // The book as a little device on a wallpaper in its cover's colours: a dark screen with
+            // the title, the cover and your place rolling up in pixel digits, and keys under it.
+            val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+            val bookSeed by androidx.compose.runtime.produceState<Int?>(null, book.coverUrl) {
+                value = book.coverUrl?.let { u -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { CoverAccent.of(appContext, u) }.getOrNull() } }
+            }
+            Box(Modifier.fillMaxWidth()) {
+                io.github.prithirajn.trackersync.ui.theme.AccentTheme(bookSeed) { Wallpaper(height = 300.dp) }
+                Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        DeviceLabel(
+                            listOfNotNull(
+                                if (ManualBooks.isManual(book)) "Physical book" else originName?.let { "From $it" } ?: "On CrossPoint",
+                                book.pageCount?.let { "$it pages" },
+                            ).joinToString("  /  "),
+                            Modifier.weight(1f).padding(start = 6.dp),
+                            color = c.textMid,
+                        )
+                        // The ⋯ menu for editing details, cover, print pages, dates, duplicates, or removing from library.
+                        BookMenuButton(state, book, webNovelLinked = state.webNovels[book.document] != null) {
+                            if (it == BookAction.WEBNOVEL) storyLink = true else bookAction = it
+                        }
+                    }
+                    // The device.
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .shadow(16.dp, androidx.compose.foundation.shape.RoundedCornerShape(28.dp), ambientColor = c.shade, spotColor = c.shade)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(28.dp))
+                            .background(c.surface)
+                            .padding(12.dp),
+                    ) {
+                        Screen {
+                            Row {
+                                Column(Modifier.weight(1f)) {
+                                    DeviceLabel(
+                                        when (book.status) {
+                                            ReadStatus.FINISHED -> "Finished"
+                                            ReadStatus.DNF -> "Did not finish"
+                                            ReadStatus.PAUSED -> "Paused"
+                                            ReadStatus.TO_READ -> "Want to read"
+                                            else -> "Now reading"
+                                        } + if (book.manualAt != null && book.timestamp == book.manualAt && !ManualBooks.isManual(book)) "  /  set by you" else "",
+                                        color = c.screenDim,
+                                    )
+                                    VSpace(8)
+                                    Text(book.displayTitle, style = CpType.section.copy(fontSize = 19.sp, lineHeight = 23.sp), color = c.screenText, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                                    VSpace(6)
+                                    book.author?.let { Text(it, style = CpType.small, color = c.screenDim, maxLines = 1) }
+                                    seriesLine(facts)?.let { Text(it, style = CpType.small, color = c.screenDim, maxLines = 1) }
+                                }
+                                HSpace(12)
+                                // The cover pops in with a little bounce and a tilt when the book opens.
+                                val pop = remember(book.document) { androidx.compose.animation.core.Animatable(0.7f) }
+                                LaunchedEffect(book.document) { pop.animateTo(1f, Motion.bouncy()) }
+                                BookCover(
+                                    book.coverUrl, book.displayTitle, 78.dp, 116.dp,
+                                    Modifier.graphicsLayer { scaleX = pop.value; scaleY = pop.value; rotationZ = 3f + (1f - pop.value) * 14f },
+                                )
+                            }
+                            VSpace(10)
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                RollingNumber(book.percent, CpType.screenNumber, c.accent)
+                                Text("%", style = CpType.screenSmall, color = c.screenDim, modifier = Modifier.padding(start = 3.dp, bottom = 7.dp))
+                                Fill()
+                                if (facts?.rating != null || facts?.year != null) Box(Modifier.padding(bottom = 8.dp)) { RatingLine(facts) }
+                            }
+                            VSpace(10)
+                            SegmentBar(book.percentage.toFloat(), segments = 20, height = 7.dp, on = c.accent, off = c.screenOff)
+                        }
+                        VSpace(12)
+                        // The keys: the everyday actions. Rate is the orange key until the book is rated.
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            DeviceKey(R.drawable.lucide_star, book.rating?.let { SyncEngine.stars(it) } ?: "Rate", Modifier.weight(1f), signal = book.rating == null, onClick = onRate)
+                            if (!ManualBooks.isManual(book)) DeviceKey(R.drawable.lucide_book_open, "Progress", Modifier.weight(1f)) { updating = true }
+                            DeviceKey(R.drawable.lucide_camera, "Snap", Modifier.weight(1f)) { highlighting = true }
+                            if (allLinked.isNotEmpty()) DeviceKey(R.drawable.lucide_scale, "Compare", Modifier.weight(1f)) { comparing = true }
+                        }
+                    }
                 }
             }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            // Only for what looks like a web novel; any book can still be linked from the ⋯ menu.
+            if (state.webNovels[book.document] == null && !storyLink && looksLikeWebNovel(book)) {
+                VSpace(12)
+                PillButton("Link it as a web novel", { storyLink = true })
+            }
+            // What needs you, right under the book: nothing else comes before it.
             // Started on the reader: offered on both copies.
             (state.handoffs[book.document]?.let { book.document to it }
                 ?: state.handoffs.entries.firstOrNull { it.value == book.document }?.toPair())?.let { (m, cDoc) ->
@@ -855,11 +945,6 @@ private fun BookSheet(
                 SeekquelProgressCard(book, ask, onUse = { vm.acceptSeekquelProgress(book.document) }, onKeep = { vm.denySeekquelProgress(book.document) }, showBook = false, kosyncOn = state.kosync != null,
                     onMoveBack = { vm.moveBackProgress(book.document) }, onAlways = { all -> vm.trustSource(if (all) null else book.document, ask.source) })
             }
-            // Where this book's position is trusted from, and the others by rank.
-            if (!ManualBooks.isManual(book)) {
-                VSpace(16)
-                MainSourceCard(vm, state, book)
-            }
             if (ManualBooks.isManual(book)) {
                 VSpace(16)
                 ManualProgressCard(vm, book, onRemoved = onClose, autoSnap = autoSnap)
@@ -869,136 +954,155 @@ private fun BookSheet(
                 VSpace(16)
                 MangaLogCard(vm, state, book, series)
             }
-            // The book's actions as one row of tiles: all visible, none cut off or wrapped.
-            VSpace(16)
-            ActionBar(buildList {
-                add(BookActionItem(R.drawable.lucide_star, book.rating?.let { SyncEngine.stars(it) } ?: "Rate", onRate, highlighted = book.status == ReadStatus.FINISHED && book.rating == null))
-                if (!ManualBooks.isManual(book)) add(BookActionItem(R.drawable.lucide_book_open, "Progress", { updating = true }))
-                add(BookActionItem(R.drawable.lucide_camera, "Snap page", { highlighting = true }))
-                if (allLinked.isNotEmpty()) add(BookActionItem(R.drawable.lucide_scale, "Compare", { comparing = true }))
-                // Only for what looks like a web novel; any book can still be linked from the ⋯ menu.
-                if (state.webNovels[book.document] == null && !storyLink && looksLikeWebNovel(book)) add(BookActionItem(R.drawable.lucide_globe, "Web novel", { storyLink = true }))
-            })
-            if (!book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
-            ThreadsBookCard(vm, state, book) { postingReview = true }
-            AudiobookCard(vm, state, book)
-            // What the book is about, before your highlights and the trackers (it was at the bottom).
-            Description(
-                book, state.detailsLooked[book.document],
-                onLookAgain = { vm.lookAgain(book.document) },
-                onTidy = if (aiReady) ({ tidying = true }) else null,
-            )
-            FeelCard(state.facts[book.document])
-            ReadingStatsCard(book)
-            DayByDayCard(state.readingDays[book.document])
-            HighlightsSection(vm, state, book)
-            // Right under the book, where it's reachable without scrolling past every tracker.
-            if (book.held) {
-                VSpace(16)
-                CpCard {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("From your ${originName ?: "tracker"} history", style = CpType.bodyStrong, color = c.text)
-                        Quiet("It isn't sent to your other trackers until you choose to. Sending marks it ${book.status?.label ?: "Reading"} there (dates stay as each tracker sets them).")
-                        VSpace(12)
-                        BigButton("Send to my trackers", { vm.sendHeld(book.document) }, enabled = allLinked.any { it.id != book.origin })
+
+            // The rest in tabs, instead of one long stack of cards.
+            val clipCount = remember(state.cpClips, state.paperClips, state.koClips, state.kindleClips, book.document) {
+                runCatching { io.github.prithirajn.trackersync.sync.Highlights.forBook(state, book.document).size }.getOrDefault(0)
+            }
+            val needsSync = linked.any { t -> state.link(t.id, book.document)?.let { it.externalId != null && !it.confirmed && it.source != LinkSource.NONE } == true }
+            var tab by rememberSaveable(book.document) { mutableStateOf(if (needsSync) 3 else 0) }
+            VSpace(18)
+            PageTabs(listOf("About", "Highlights" + (if (clipCount > 0) " $clipCount" else ""), "Reading", "Sync" + if (needsSync) " \u2022" else ""), tab) { tab = it }
+            when (tab) {
+                0 -> {
+                    // What the book is about, and how it reads.
+                    Description(
+                        book, state.detailsLooked[book.document],
+                        onLookAgain = { vm.lookAgain(book.document) },
+                        onTidy = if (aiReady) ({ tidying = true }) else null,
+                    )
+                    FeelCard(state.facts[book.document])
+                }
+                1 -> {
+                    HighlightsSection(vm, state, book)
+                    if (clipCount == 0) { VSpace(16); Quiet("No highlights yet. Snap page adds one from a photo of the page.", color = c.faint) }
+                }
+                2 -> {
+                    // Where the position comes from, how the reading went, and what's linked to it.
+                // Where this book's position is trusted from, and the others by rank.
+                if (!ManualBooks.isManual(book)) {
+                    VSpace(16)
+                    MainSourceCard(vm, state, book)
+                }
+                    ReadingStatsCard(book)
+                    DayByDayCard(state.readingDays[book.document])
+                    if (!book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
+                    AudiobookCard(vm, state, book)
+                }
+                else -> {
+                    ThreadsBookCard(vm, state, book) { postingReview = true }
+                // Right under the book, where it's reachable without scrolling past every tracker.
+                if (book.held) {
+                    VSpace(16)
+                    CpCard {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("From your ${originName ?: "tracker"} history", style = CpType.bodyStrong, color = c.text)
+                            Quiet("It isn't sent to your other trackers until you choose to. Sending marks it ${book.status?.label ?: "Reading"} there (dates stay as each tracker sets them).")
+                            VSpace(12)
+                            BigButton("Send to my trackers", { vm.sendHeld(book.document) }, enabled = allLinked.any { it.id != book.origin })
+                        }
+                    }
+                } else if (linked.isNotEmpty()) {
+                    VSpace(16)
+                    BigButton("Sync this book now", { vm.syncBook(book.document); onClose() })
+                    val anyPaused = linked.any { state.link(it.id, book.document)?.source == io.github.prithirajn.trackersync.data.LinkSource.NONE }
+                    if (anyPaused) {
+                        VSpace(8)
+                        BigButton("Enable all trackers for this book", { vm.enableAllTrackers(book.document) }, filled = false)
                     }
                 }
-            } else if (linked.isNotEmpty()) {
-                VSpace(16)
-                BigButton("Sync this book now", { vm.syncBook(book.document); onClose() })
-                val anyPaused = linked.any { state.link(it.id, book.document)?.source == io.github.prithirajn.trackersync.data.LinkSource.NONE }
-                if (anyPaused) {
-                    VSpace(8)
-                    BigButton("Enable all trackers for this book", { vm.enableAllTrackers(book.document) }, filled = false)
+                VSpace(20)
+                if (linked.isEmpty() && !book.held) {
+                    Quiet(if (state.services.values.any { it.linked }) "Every tracker is paused under Services." else "Link a tracker under Services first.")
                 }
-            }
-            VSpace(20)
-            if (linked.isEmpty() && !book.held) {
-                Quiet(if (state.services.values.any { it.linked }) "Every tracker is paused under Services." else "Link a tracker under Services first.")
-            }
-            // Several first matches to check: confirm them together once you've looked.
-            val unconfirmed = linked.filter { t -> state.link(t.id, book.document)?.let { it.externalId != null && !it.confirmed && it.source != LinkSource.NONE } == true }
-            if (unconfirmed.size > 1) {
-                BigButton("All ${unconfirmed.size} matches are right", { vm.confirmAllMatches(book.document) })
-                VSpace(12)
-            }
-            if (linked.isNotEmpty()) CpCard {
-                linked.forEachIndexed { i, t ->
-                    if (i > 0) RowDivider()
-                    val link = state.link(t.id, book.document)
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            ServiceTile(t.name)
-                            HSpace(12)
-                            Column(Modifier.weight(1f)) {
-                                Text(t.name, style = CpType.bodyStrong, color = c.text)
-                                val line = when {
-                                    link == null -> "Not matched yet; matches on the next sync"
-                                    link.source == LinkSource.NONE -> "Not synced"
-                                    link.externalId == null -> link.note ?: "Needs a match"
-                                    else -> "“${link.title ?: link.externalId}”" + (link.author?.let { " · $it" } ?: "")
-                                }
-                                Quiet(line, maxLines = 2)
-                                // A first match: nothing goes there until you say it's the right book.
-                                if (link != null && link.externalId != null && !link.confirmed && link.source != LinkSource.NONE) {
-                                    Text("Is this the right book? Nothing is sent to ${t.name} until you confirm.", style = CpType.small, color = c.warn)
-                                }
-                                link?.takeIf { it.externalId != null }?.note?.let { Quiet(it, color = c.faint) }
-                                // What was sent there: progress from → to, pages, highlights; tap for earlier ones.
-                                val history = state.sent[io.github.prithirajn.trackersync.data.Link.key(t.id, book.document)].orEmpty()
-                                history.lastOrNull()?.let { last ->
-                                    val open = t.id in openHistory
-                                    VSpace(4)
-                                    Column(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            // A square press area: the card's rounded corners were clipping the first letters.
-                                            .bouncyClickable(androidx.compose.ui.graphics.RectangleShape, pressedScale = 0.99f) {
-                                                if (open) openHistory.remove(t.id) else openHistory.add(t.id)
+                // Several first matches to check: confirm them together once you've looked.
+                val unconfirmed = linked.filter { t -> state.link(t.id, book.document)?.let { it.externalId != null && !it.confirmed && it.source != LinkSource.NONE } == true }
+                if (unconfirmed.size > 1) {
+                    BigButton("All ${unconfirmed.size} matches are right", { vm.confirmAllMatches(book.document) })
+                    VSpace(12)
+                }
+                if (linked.isNotEmpty()) CpCard {
+                    linked.forEachIndexed { i, t ->
+                        if (i > 0) RowDivider()
+                        val link = state.link(t.id, book.document)
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                ServiceTile(t.name)
+                                HSpace(12)
+                                Column(Modifier.weight(1f)) {
+                                    Text(t.name, style = CpType.bodyStrong, color = c.text)
+                                    val line = when {
+                                        link == null -> "Not matched yet; matches on the next sync"
+                                        link.source == LinkSource.NONE -> "Not synced"
+                                        link.externalId == null -> link.note ?: "Needs a match"
+                                        else -> "“${link.title ?: link.externalId}”" + (link.author?.let { " · $it" } ?: "")
+                                    }
+                                    Quiet(line, maxLines = 2)
+                                    // A first match: nothing goes there until you say it's the right book.
+                                    if (link != null && link.externalId != null && !link.confirmed && link.source != LinkSource.NONE) {
+                                        Text("Is this the right book? Nothing is sent to ${t.name} until you confirm.", style = CpType.small, color = c.warn)
+                                    }
+                                    link?.takeIf { it.externalId != null }?.note?.let { Quiet(it, color = c.faint) }
+                                    // What was sent there: progress from → to, pages, highlights; tap for earlier ones.
+                                    val history = state.sent[io.github.prithirajn.trackersync.data.Link.key(t.id, book.document)].orEmpty()
+                                    history.lastOrNull()?.let { last ->
+                                        val open = t.id in openHistory
+                                        VSpace(4)
+                                        Column(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                // A square press area: the card's rounded corners were clipping the first letters.
+                                                .bouncyClickable(androidx.compose.ui.graphics.RectangleShape, pressedScale = 0.99f) {
+                                                    if (open) openHistory.remove(t.id) else openHistory.add(t.id)
+                                                }
+                                                .animateContentSize(Motion.springy())
+                                        ) {
+                                            Text("Sent ${last.describe()} · ${ago(last.at)}", style = CpType.small, color = c.accentText, maxLines = if (open) 3 else 1, overflow = TextOverflow.Ellipsis)
+                                            if (open) {
+                                                for (ev in history.dropLast(1).asReversed()) {
+                                                    Text("${ev.describe()} · ${ago(ev.at)}", style = CpType.small, color = c.quiet, modifier = Modifier.padding(top = 2.dp))
+                                                }
+                                                if (history.size == 1) Quiet("Nothing earlier yet.", color = c.faint)
+                                            } else if (history.size > 1) {
+                                                Quiet("${history.size - 1} earlier · tap to see", color = c.faint)
                                             }
-                                            .animateContentSize(Motion.springy())
-                                    ) {
-                                        Text("Sent ${last.describe()} · ${ago(last.at)}", style = CpType.small, color = c.accentText, maxLines = if (open) 3 else 1, overflow = TextOverflow.Ellipsis)
-                                        if (open) {
-                                            for (ev in history.dropLast(1).asReversed()) {
-                                                Text("${ev.describe()} · ${ago(ev.at)}", style = CpType.small, color = c.quiet, modifier = Modifier.padding(top = 2.dp))
-                                            }
-                                            if (history.size == 1) Quiet("Nothing earlier yet.", color = c.faint)
-                                        } else if (history.size > 1) {
-                                            Quiet("${history.size - 1} earlier · tap to see", color = c.faint)
                                         }
                                     }
                                 }
                             }
-                        }
-                        // The on-device AI's pick for a book the rules couldn't match: accept or dismiss.
-                        val suggestion = state.aiSuggestions[io.github.prithirajn.trackersync.data.Link.key(t.id, book.document)]
-                            ?.takeIf { it.id.isNotEmpty() && link?.externalId == null && link?.source != LinkSource.NONE }
-                        if (suggestion != null) {
-                            VSpace(8)
-                            Column(Modifier.fillMaxWidth().background(c.accentTint, CpShapes.control).padding(horizontal = 12.dp, vertical = 10.dp)) {
-                                Text("AI suggests", style = CpType.small, color = c.accentText)
-                                Text("“${suggestion.title}”" + (suggestion.author?.let { " · $it" } ?: ""), style = CpType.body, color = c.text)
-                                VSpace(6)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    PillButton("Use it", { vm.acceptSuggestion(t, book.document) }, outlined = false)
-                                    PillButton("Not this one", { vm.dismissSuggestion(t.id, book.document) })
+                            // The on-device AI's pick for a book the rules couldn't match: accept or dismiss.
+                            val suggestion = state.aiSuggestions[io.github.prithirajn.trackersync.data.Link.key(t.id, book.document)]
+                                ?.takeIf { it.id.isNotEmpty() && link?.externalId == null && link?.source != LinkSource.NONE }
+                            if (suggestion != null) {
+                                VSpace(8)
+                                Column(Modifier.fillMaxWidth().background(c.accentTint, CpShapes.control).padding(horizontal = 12.dp, vertical = 10.dp)) {
+                                    Text("AI suggests", style = CpType.small, color = c.accentText)
+                                    Text("“${suggestion.title}”" + (suggestion.author?.let { " · $it" } ?: ""), style = CpType.body, color = c.text)
+                                    VSpace(6)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        PillButton("Use it", { vm.acceptSuggestion(t, book.document) }, outlined = false)
+                                        PillButton("Not this one", { vm.dismissSuggestion(t.id, book.document) })
+                                    }
                                 }
                             }
-                        }
-                        VSpace(8)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (link?.source == LinkSource.NONE) {
-                                // Paused for this book: turning it on is the one thing to do here.
-                                PillButton("Turn on", { vm.resetLink(t, book.document) }, outlined = false)
-                            } else {
-                                if (link != null && link.externalId != null && !link.confirmed) PillButton("It's right", { vm.confirmMatch(t, book.document) }, outlined = false)
-                                PillButton(if (link?.externalId == null) "Find match" else "Change match", { searching = t }, outlined = link?.externalId != null)
-                                PillButton("Don't sync", { vm.neverSync(t, book.document) }, danger = true)
+                            VSpace(8)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (link?.source == LinkSource.NONE) {
+                                    // Paused for this book: turning it on is the one thing to do here.
+                                    PillButton("Turn on", { vm.resetLink(t, book.document) }, outlined = false)
+                                } else {
+                                    if (link != null && link.externalId != null && !link.confirmed) PillButton("It's right", { vm.confirmMatch(t, book.document) }, outlined = false)
+                                    PillButton(if (link?.externalId == null) "Find match" else "Change match", { searching = t }, outlined = link?.externalId != null)
+                                    PillButton("Don't sync", { vm.neverSync(t, book.document) }, danger = true)
+                                }
                             }
                         }
                     }
                 }
+                }
+            }
+            // A web novel being linked from the pill shows straight away, whatever the tab.
+            if (storyLink && tab != 2 && !book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
             }
         }
     }
@@ -1042,6 +1146,7 @@ private fun SearchSheet(vm: AppViewModel, tracker: Tracker, book: Book, currentI
     LaunchedEffect(Unit) { if (query.isNotBlank()) run() }
 
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -1184,4 +1289,77 @@ internal fun looksLikeWebNovel(book: io.github.prithirajn.trackersync.data.Book)
     if (a.isEmpty()) return true
     val handle = !a.contains(' ') && (a.first().isLowerCase() || a.any { it.isDigit() || it == '_' })
     return handle
+}
+
+
+/**
+ * Tabs as a row of chips on a recessed strip; an ink pill slides from the chosen chip to the next
+ * on a spring, with a click.
+ */
+@Composable
+internal fun PageTabs(tabs: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    val c = Cp.colors
+    val view = androidx.compose.ui.platform.LocalView.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val xs = remember { androidx.compose.runtime.mutableStateMapOf<Int, Pair<Float, Float>>() }
+    val target = xs[selected]
+    val x by androidx.compose.animation.core.animateFloatAsState(target?.first ?: 0f, androidx.compose.animation.core.spring(dampingRatio = 0.7f, stiffness = 420f), label = "tabX")
+    val w by androidx.compose.animation.core.animateFloatAsState(target?.second ?: 0f, androidx.compose.animation.core.spring(dampingRatio = 0.7f, stiffness = 420f), label = "tabW")
+    val scroll = rememberScrollState()
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+            .clip(CpShapes.pill)
+            .background(c.field)
+            .drawBehind { drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.07f), androidx.compose.ui.graphics.Color.Transparent), endY = 5.dp.toPx())) }
+            .horizontalScroll(scroll)
+            .padding(4.dp),
+    ) {
+        if (target != null) {
+            Box(
+                Modifier
+                    .offset(x = with(density) { x.toDp() })
+                    .width(with(density) { w.toDp() })
+                    .height(34.dp)
+                    .shadow(3.dp, CpShapes.pill)
+                    .clip(CpShapes.pill)
+                    .background(c.ink),
+            )
+        }
+        Row {
+            tabs.forEachIndexed { i, t ->
+                val on = i == selected
+                val tint by androidx.compose.animation.animateColorAsState(if (on) c.onInk else c.quiet, Motion.medium(), label = "tabTint")
+                Box(
+                    Modifier
+                        .height(34.dp)
+                        .onGloballyPositioned { xs[i] = it.positionInParent().x to it.size.width.toFloat() }
+                        .clip(CpShapes.pill)
+                        .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, role = androidx.compose.ui.semantics.Role.Tab) {
+                            if (!on) Haptics.tick(view)
+                            onSelect(i)
+                        }
+                        .padding(horizontal = 15.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(t, style = CpType.label, color = tint, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+
+/** A key on the device: an icon over its name; the signal orange for the one that wants you. */
+@Composable
+private fun DeviceKey(icon: Int, label: String, modifier: Modifier = Modifier, signal: Boolean = false, onClick: () -> Unit) {
+    val kind = if (signal) KeyKind.SIGNAL else KeyKind.PLAIN
+    Key(onClick, modifier.height(62.dp), kind = kind, label = label) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            LucideIcon(icon, Modifier.size(18.dp), keyText(kind))
+            VSpace(4)
+            Text(label, style = CpType.small.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), color = keyText(kind), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
 }

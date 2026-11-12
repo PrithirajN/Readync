@@ -25,9 +25,9 @@ import androidx.compose.ui.unit.sp
 import io.github.prithirajn.trackersync.R
 
 /**
- * Tokens from crosspoint-sync's app/src/index.css (the "Free-Ink" set): Tailwind stone
- * neutrals, one forest-green accent, white cards on a warm off-white page. Dark mode uses
- * the remapped values from the same file.
+ * Gadget: Readync as a little reading device. A warm light-grey body (graphite at night),
+ * panels, a dark screen, pressable keys, ink for what's chosen and one signal orange for what's
+ * on or happening. The cover of the book you're reading colours the wallpaper behind it.
  */
 @Immutable
 data class CpColors(
@@ -55,56 +55,89 @@ data class CpColors(
     /** Placeholder cover paper for books without artwork (--color-cover). */
     val cover: Color,
     val isDark: Boolean,
+    // ---- Gadget: the device's own parts ----
+    /** The wallpaper's colour: the cover of the book you're reading (the accent stays the signal orange). */
+    val wall: Color = Color(0xFFFFB08A),
+    /** The dark screen on the device (book page, stats) and what's written on it. */
+    val screen: Color = Color(0xFF141513),
+    val screenText: Color = Color(0xFFF4F2EA),
+    val screenDim: Color = Color(0xFF8B8A82),
+    val screenOff: Color = Color(0xFF2B2C29),
+    /** A key's face (top to bottom) and the ledge it sits on. */
+    val keyTop: Color = Color(0xFFF6F5F1),
+    val keyBottom: Color = Color(0xFFE6E3DB),
+    val keyLedge: Color = Color(0xFFCFCBC0),
+    /** The signal key's ledge (under the orange). */
+    val signalLedge: Color = Color(0xFFC24618),
+    /** Ink: the dock, a chosen tab, and what's written on them. */
+    val ink: Color = Color(0xFF2A2620),
+    val onInk: Color = Color(0xFFFFFFFF),
+    /** Shadow colour under the device's panels. */
+    val shade: Color = Color(0x40783214),
 )
 
+/** Gadget, by day: warm light-grey body, white panels, ink and one signal orange. */
 private val Light = CpColors(
-    page = Color(0xFFFAFAF9),        // stone-50
-    surface = Color(0xFFFFFFFF),
+    page = Color(0xFFEEECE6),
+    surface = Color(0xFFF8F7F3),
     raised = Color(0xFFFFFFFF),
-    text = Color(0xFF1C1917),        // stone-900
-    textMid = Color(0xFF44403C),     // stone-700
-    quiet = Color(0xFF78716C),       // stone-500
-    faint = Color(0xFFA8A29E),       // stone-400
-    divider = Color(0xFFF5F5F4),     // stone-100
-    track = Color(0xFFE7E5E4),       // stone-200
-    toggleOff = Color(0xFFD6D3D1),   // stone-300
-    hairline = Color(0x0D0C0A09),    // stone-950 at 5%
-    field = Color(0xFFF5F5F4),       // stone-100
-    accent = Color(0xFF4A7A62),      // brand-500
-    accentText = Color(0xFF3D6652),  // brand-600
-    accentTint = Color(0xFFF0F5F3),  // brand-50
-    accentRing = Color(0xFFB3CFC2),  // brand-200
-    error = Color(0xFFDC2626),       // red-600
-    errorText = Color(0xFFB91C1C),   // red-700
-    good = Color(0xFF16A34A),        // green-600
-    warn = Color(0xFFD97706),        // amber-600
-    cover = Color(0xFFF5F4EF),
+    text = Color(0xFF221E19),
+    textMid = Color(0xFF4A453D),
+    quiet = Color(0xFF77716A),
+    faint = Color(0xFFA7A198),
+    divider = Color(0xFFE4E1D9),
+    track = Color(0xFFE2DFD7),
+    toggleOff = Color(0xFFD8D4CA),
+    hairline = Color(0x0F000000),
+    field = Color(0xFFEAE7E0),
+    accent = Color(0xFFFF6A3D),
+    accentText = Color(0xFFC94A1C),
+    accentTint = Color(0xFFFFE6DC),
+    accentRing = Color(0xFFFFC2AA),
+    error = Color(0xFFD23C2A),
+    errorText = Color(0xFFB8311F),
+    good = Color(0xFF2F9E5B),
+    warn = Color(0xFFE07A12),
+    cover = Color(0xFFE6E3DB),
     isDark = false,
 )
 
+/** Gadget, by night: graphite body, a black screen, keys a shade lighter, the same orange glowing. */
 private val Dark = CpColors(
-    page = Color(0xFF121110),
-    surface = Color(0xFF1B1917),
-    raised = Color(0xFF3A3531),
-    text = Color(0xFFF3F0ED),
-    textMid = Color(0xFFD3CEC9),
-    quiet = Color(0xFFA09993),
-    faint = Color(0xFF6F6963),
-    divider = Color(0xFF221F1D),
-    track = Color(0xFF2E2A27),
-    toggleOff = Color(0xFF423D39),
-    hairline = Color(0x1AFBF9F7),
-    field = Color(0xFF221F1D),
-    accent = Color(0xFF4F8268),
-    accentText = Color(0xFF8FB9A6),
-    accentTint = Color(0xFF16211C),
-    accentRing = Color(0xFF284738),
+    page = Color(0xFF111110),
+    surface = Color(0xFF1C1B19),
+    raised = Color(0xFF26251F),
+    text = Color(0xFFF3F1EC),
+    textMid = Color(0xFFD5D1C9),
+    quiet = Color(0xFFA19C93),
+    faint = Color(0xFF6D6961),
+    divider = Color(0xFF2A2925),
+    track = Color(0xFF2C2B27),
+    toggleOff = Color(0xFF3A3833),
+    hairline = Color(0x14FFFFFF),
+    field = Color(0xFF23221F),
+    accent = Color(0xFFFF7A4D),
+    accentText = Color(0xFFFF9C78),
+    accentTint = Color(0xFF3A1D12),
+    accentRing = Color(0xFF6B2E18),
     error = Color(0xFFF87171),
     errorText = Color(0xFFFCA5A5),
     good = Color(0xFF4ADE80),        // green-400
     warn = Color(0xFFFBBF24),        // amber-400
     cover = Color(0xFF26231F),
     isDark = true,
+    wall = Color(0xFF8A3A1E),
+    screen = Color(0xFF060606),
+    screenText = Color(0xFFF4F2EA),
+    screenDim = Color(0xFF7D7A72),
+    screenOff = Color(0xFF1E1E1C),
+    keyTop = Color(0xFF2E2D29),
+    keyBottom = Color(0xFF23221F),
+    keyLedge = Color(0xFF0A0A09),
+    signalLedge = Color(0xFF8E2C0C),
+    ink = Color(0xFF2C2B27),
+    onInk = Color(0xFFFFFFFF),
+    shade = Color(0x80000000),
 )
 
 @OptIn(ExperimentalTextApi::class)
@@ -120,22 +153,37 @@ val Lora = FontFamily(variable(R.font.lora, 500), variable(R.font.lora, 600), va
 /** Caveat for the handwritten eyebrow. */
 val Caveat = FontFamily(variable(R.font.caveat, 500), variable(R.font.caveat, 600))
 
+/** Pixelify Sans: the device screen's big numbers. */
+val Pixel = FontFamily(Font(R.font.book_pixelify))
+
+/** IBM Plex Mono: the device's tiny printed labels. */
+val Mono = FontFamily(Font(R.font.book_plexmono))
+
 private const val InterFeatures = "'cv02', 'cv03', 'cv04', 'cv11'"
 
 object CpType {
-    val pageTitle = TextStyle(fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 30.sp, lineHeight = 36.sp, letterSpacing = (-0.5).sp)
-    val section = TextStyle(fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, lineHeight = 28.sp)
+    // Titles in Inter, set tight and heavy like the print on a device; Lora stays for long reading text.
+    val pageTitle = TextStyle(fontFamily = Inter, fontWeight = FontWeight.Bold, fontSize = 32.sp, lineHeight = 36.sp, letterSpacing = (-1.1).sp, fontFeatureSettings = InterFeatures)
+    val section = TextStyle(fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, lineHeight = 26.sp, letterSpacing = (-0.4).sp, fontFeatureSettings = InterFeatures)
     val eyebrow = TextStyle(fontFamily = Caveat, fontWeight = FontWeight.Medium, fontSize = 20.sp, lineHeight = 24.sp)
     val body = TextStyle(fontFamily = Inter, fontSize = 14.sp, lineHeight = 20.sp, fontFeatureSettings = InterFeatures)
     val bodyStrong = body.copy(fontWeight = FontWeight.SemiBold)
     val small = TextStyle(fontFamily = Inter, fontSize = 12.sp, lineHeight = 16.sp, fontFeatureSettings = InterFeatures)
     val label = TextStyle(fontFamily = Inter, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, fontFeatureSettings = InterFeatures)
     val chip = TextStyle(fontFamily = Inter, fontSize = 10.sp, lineHeight = 14.sp, fontWeight = FontWeight.Medium, fontFeatureSettings = InterFeatures)
+    /** The device's printed labels: tiny, spaced, monospaced. */
+    val mono = TextStyle(fontFamily = Mono, fontSize = 10.sp, lineHeight = 13.sp, letterSpacing = 0.8.sp)
+    /** The screen's big pixel number. */
+    val screenNumber = TextStyle(fontFamily = Pixel, fontSize = 52.sp, lineHeight = 52.sp)
+    val screenSmall = TextStyle(fontFamily = Pixel, fontSize = 22.sp, lineHeight = 24.sp)
+    /** Long reading text (descriptions): Lora, comfortable. */
+    val reading = TextStyle(fontFamily = Lora, fontWeight = FontWeight.Medium, fontSize = 15.sp, lineHeight = 24.sp)
 }
 
 object CpShapes {
-    val card = RoundedCornerShape(12.dp)       // rounded-xl
-    val control = RoundedCornerShape(16.dp)    // rounded-2xl, 48-56dp controls
+    val card = RoundedCornerShape(22.dp)       // the device's panels
+    val control = RoundedCornerShape(16.dp)    // keys
+    val screen = RoundedCornerShape(16.dp)     // the dark screen
     val field = RoundedCornerShape(8.dp)       // rounded-lg
     val pill = RoundedCornerShape(50)          // rounded-full
     val sheet = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
@@ -148,21 +196,16 @@ object Cp {
 }
 
 /**
- * Re-colours the app's accent (progress bars, buttons, tabs, highlights) from [seed], a book
- * cover's colour, easing from the old accent to the new. Null keeps the default green.
+ * The cover of the book you're reading colours the wallpaper behind the device ([CpColors.wall]),
+ * easing from the old colour to the new. The accent stays the device's signal orange.
  */
 @Composable
 fun AccentTheme(seed: Int?, content: @Composable () -> Unit) {
     val base = LocalCp.current
     val set = seed?.let { Palette.accentFrom(it, base.isDark) }
-    val spec = tween<Color>(durationMillis = 900)
-    val accent by animateColorAsState(set?.let { Color(it.accent) } ?: base.accent, spec, label = "accent")
-    val text by animateColorAsState(set?.let { Color(it.text) } ?: base.accentText, spec, label = "accentText")
-    val tint by animateColorAsState(set?.let { Color(it.tint) } ?: base.accentTint, spec, label = "accentTint")
-    val ring by animateColorAsState(set?.let { Color(it.ring) } ?: base.accentRing, spec, label = "accentRing")
-    val c = base.copy(accent = accent, accentText = text, accentTint = tint, accentRing = ring)
-    CompositionLocalProvider(LocalCp provides c) {
-        MaterialTheme(colorScheme = MaterialTheme.colorScheme.copy(primary = accent), content = content)
+    val wall by animateColorAsState(set?.let { Color(it.accent) } ?: base.wall, tween(durationMillis = 900), label = "wall")
+    CompositionLocalProvider(LocalCp provides base.copy(wall = wall)) {
+        MaterialTheme(colorScheme = MaterialTheme.colorScheme, content = content)
     }
 }
 
@@ -176,5 +219,14 @@ fun TrackerSyncTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable
     }
     CompositionLocalProvider(LocalCp provides c) {
         MaterialTheme(colorScheme = scheme, content = content)
+    }
+}
+
+/** Always the dark device, whatever the phone is set to: for the photo studio, where a dark room shows the picture best. */
+@Composable
+fun DarkGadget(content: @Composable () -> Unit) {
+    val c = Dark.copy(wall = LocalCp.current.wall)
+    CompositionLocalProvider(LocalCp provides c) {
+        MaterialTheme(colorScheme = darkColorScheme(primary = c.accent, background = c.page, surface = c.surface, onSurface = c.text, onBackground = c.text, error = c.error), content = content)
     }
 }

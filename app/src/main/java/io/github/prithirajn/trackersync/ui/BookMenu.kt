@@ -167,6 +167,7 @@ fun BookActionSheet(vm: AppViewModel, state: Snapshot, book: Book, action: BookA
 private fun MenuSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,

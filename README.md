@@ -33,6 +33,8 @@ server), from physical books and from web novels. Then it updates **Hardcover**,
 
 You read, and your trackers keep up. You don't have to update page numbers by hand on six sites.
 
+It's drawn like a small reading gadget: each book sits on a dark screen with a pixel percentage that rolls like an odometer, the buttons are keys that sink with a click you can feel, switches glow orange when on, and services each have their own status light.
+
 ## Features
 
 ### 📚 One sync, every tracker

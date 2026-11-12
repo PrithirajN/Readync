@@ -1,6 +1,7 @@
 package io.github.prithirajn.trackersync.ui
 
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
@@ -42,6 +43,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.painterResource
@@ -53,22 +60,26 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import io.github.prithirajn.trackersync.ui.theme.Cp
 import io.github.prithirajn.trackersync.ui.theme.CpShapes
 import io.github.prithirajn.trackersync.ui.theme.CpType
 
 // Compose versions of the companion app's ui.jsx / Settings.jsx building blocks.
 
-/** rounded-xl bg-surface ring-1 ring-stone-950/5 */
+/** A panel of the device: solid, softly lifted off the body by a warm shadow, with a light top edge. */
 @Composable
 fun CpCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    val c = Cp.colors
     Column(
         modifier
             .fillMaxWidth()
+            .shadow(if (c.isDark) 2.dp else 5.dp, CpShapes.card, ambientColor = c.shade, spotColor = c.shade)
             .clip(CpShapes.card)
-            // Very slightly see-through, so the moving background reads behind the cards.
-            .background(Cp.colors.surface.copy(alpha = if (Cp.colors.isDark) 0.9f else 0.93f))
-            .border(1.dp, Cp.colors.hairline, CpShapes.card)
+            .background(c.surface)
+            .border(1.dp, c.hairline, CpShapes.card)
+            .drawBehind { drawRect(Color.White.copy(alpha = if (c.isDark) 0.04f else 0.9f), size = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx())) }
             // Rows appearing or disappearing inside a card resize it smoothly.
             .animateContentSize(Motion.medium()),
         content = content,
@@ -100,66 +111,60 @@ fun LucideIcon(res: Int, modifier: Modifier = Modifier.size(16.dp), tint: Color 
     Icon(painterResource(res), contentDescription = null, modifier = modifier, tint = tint)
 }
 
-/**
- * h-1.5 rounded-full bg-stone-200 track, brand-500 fill. Glides to new values; with [fillIn]
- * it also fills from empty when it first appears.
- */
+/** Progress as the device shows it: a row of segments lighting up to the place, the last one partly. */
 @Composable
 fun ProgressBar(fraction: Float, modifier: Modifier = Modifier, fillIn: Boolean = false) {
-    val target = fraction.coerceIn(0f, 1f)
-    val shown = remember { Animatable(if (fillIn) 0f else target) }
-    LaunchedEffect(target) { shown.animateTo(target, Motion.fill()) }
-    val fill = Cp.colors.accent
-    Box(
-        modifier
-            .fillMaxWidth()
-            .height(6.dp)
-            .clip(CpShapes.pill)
-            .background(Cp.colors.track)
-            // Drawn, not laid out, so a filling bar only repaints each frame.
-            .drawBehind {
-                val w = size.width * shown.value.coerceIn(0f, 1f)
-                if (w > 0f) {
-                    drawRoundRect(
-                        color = fill,
-                        size = androidx.compose.ui.geometry.Size(w, size.height),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f),
-                    )
-                }
-            }
-    )
+    SegmentBar(fraction, modifier, segments = 12, height = 6.dp)
 }
 
-/** The companion app's switch: 48 x 28, brand-500 when on, stone-300 when off. */
+/**
+ * A hardware slide switch: a recessed track, and a knob that slides across with a click. When
+ * it's on, the knob is the signal orange and glows (with a brief flare as it turns on).
+ */
 @Composable
 fun CpToggle(checked: Boolean, onChange: (Boolean) -> Unit, label: String, enabled: Boolean = true) {
-    val knob by animateDpAsState(if (checked) 22.dp else 2.dp, Motion.bouncy(), label = "toggle")
-    val track by animateColorAsState(
-        when {
-            !enabled -> Cp.colors.toggleOff.copy(alpha = 0.5f)
-            checked -> Cp.colors.accent
-            else -> Cp.colors.toggleOff
-        },
-        Motion.medium(),
-        label = "track",
-    )
+    val c = Cp.colors
+    val view = androidx.compose.ui.platform.LocalView.current
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    // Held down, the knob stretches toward where it's about to go, like a drop of something.
+    val stretch by animateDpAsState(if (pressed && enabled) 6.dp else 0.dp, androidx.compose.animation.core.spring(dampingRatio = 0.6f, stiffness = 800f), label = "knobStretch")
+    val knob by animateDpAsState(if (checked) 22.dp else 3.dp, Motion.bouncy(), label = "toggle")
+    val track by animateColorAsState(if (checked) c.ink else c.toggleOff, Motion.medium(), label = "track")
+    val knobColor by animateColorAsState(if (checked) c.accent else if (c.isDark) Color(0xFFBDB8AE) else Color.White, Motion.medium(), label = "knob")
+    // The flare: bright for a moment when switched on, settling to a steady glow.
+    val flare = remember { androidx.compose.animation.core.Animatable(if (checked) 1f else 0f) }
+    LaunchedEffect(checked) {
+        if (checked) { flare.snapTo(2.2f); flare.animateTo(1f, tween(650)) } else flare.animateTo(0f, tween(200))
+    }
     Box(
         Modifier
             .size(width = 48.dp, height = 28.dp)
-            .bouncyClickable(CpShapes.pill, enabled = enabled, pressedScale = 0.92f, role = Role.Switch, onClickLabel = label) { onChange(!checked) }
+            .graphicsLayer { alpha = if (enabled) 1f else 0.45f }
+            .clip(CpShapes.pill)
+            .clickable(source, indication = null, enabled = enabled, role = Role.Switch, onClickLabel = label) {
+                Haptics.toggle(view, !checked)
+                onChange(!checked)
+            }
             .background(track)
+            // Recessed: a shade along the top inside edge.
+            .drawBehind { drawRect(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.22f), Color.Transparent), endY = 6.dp.toPx())) }
     ) {
         Box(
             Modifier
-                .offset(x = knob, y = 2.dp)
-                .size(24.dp)
-                .clip(CircleShape)
-                .background(Cp.colors.surface)
+                .offset(x = if (checked) knob - stretch else knob, y = 3.dp)
+                .size(width = 22.dp + stretch, height = 22.dp)
+                .drawBehind {
+                    if (flare.value > 0f) drawCircle(c.accent.copy(alpha = (0.28f * flare.value).coerceAtMost(0.6f)), radius = size.minDimension * (0.62f + 0.22f * flare.value))
+                }
+                .shadow(2.dp, CpShapes.pill)
+                .clip(CpShapes.pill)
+                .background(knobColor)
         )
     }
 }
 
-/** Large touch control: h-12 rounded-2xl. Filled = brand button, else a surface button with a ring. */
+/** A big key: the signal orange when [filled], a light key otherwise (red writing for [danger]). */
 @Composable
 fun BigButton(
     text: String,
@@ -169,24 +174,17 @@ fun BigButton(
     danger: Boolean = false,
     busy: Boolean = false,
     enabled: Boolean = true,
+    /** Overrides [filled] and [danger]: the dark ink key, say. */
+    look: KeyKind? = null,
 ) {
-    val c = Cp.colors
-    val bg = if (filled) c.accent else c.surface
-    val fg = when {
-        filled -> Color.White
-        danger -> c.error
-        else -> c.text
+    val kind = when {
+        look != null -> look
+        filled && !danger -> KeyKind.SIGNAL
+        danger -> KeyKind.DANGER
+        else -> KeyKind.PLAIN
     }
-    Row(
-        modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .bouncyClickable(CpShapes.control, enabled = enabled && !busy, onClick = onClick)
-            .background(if (enabled) bg else bg.copy(alpha = 0.5f))
-            .then(if (filled) Modifier else Modifier.border(1.dp, c.hairline, CpShapes.control)),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    val fg = keyText(kind)
+    Key(onClick, modifier.fillMaxWidth().height(52.dp), kind = kind, enabled = enabled && !busy, label = text) {
         Crossfade(busy, animationSpec = Motion.fast(), label = "busy") { working ->
             if (working) {
                 CircularProgressIndicator(Modifier.size(18.dp), color = fg, strokeWidth = 2.dp)
@@ -197,49 +195,34 @@ fun BigButton(
     }
 }
 
-/** Outlined pill: "Link" in brand-600 with a brand-200 ring. */
+/** A small key: a light one, the orange signal key when not [outlined], or red writing for [danger]. */
 @Composable
 fun PillButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, danger: Boolean = false, outlined: Boolean = true) {
-    val c = Cp.colors
-    Box(
-        modifier
-            .height(36.dp)
-            .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, onClick = onClick)
-            // Outlined: a ring. Not outlined: the main action of its group, on a tinted fill (it used to
-            // be bare text, which read as less important than the outlined ones beside it).
-            .then(
-                when {
-                    danger -> Modifier
-                    outlined -> Modifier.border(1.dp, c.accentRing, CpShapes.pill)
-                    else -> Modifier.background(c.accentTint, CpShapes.pill)
-                }
-            )
-            .padding(horizontal = 14.dp),
-        contentAlignment = Alignment.Center,
-    ) {
+    val kind = when {
+        danger -> KeyKind.DANGER
+        !outlined -> KeyKind.SIGNAL
+        else -> KeyKind.PLAIN
+    }
+    Key(onClick, modifier.height(38.dp), kind = kind, shape = CpShapes.pill, ledge = 2.dp, label = text) {
         Text(
             text,
-            style = if (danger) CpType.label else CpType.bodyStrong,
-            color = if (danger) c.error else c.accentText,
+            style = CpType.bodyStrong,
+            color = keyText(kind),
             maxLines = 1,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 15.dp),
         )
     }
 }
 
-/** Round 36dp icon button (matches, sync now). */
+/** A small round key with an icon (sync now, settings, matches): sinks with a click. */
 @Composable
-fun IconCircleButton(res: Int, label: String, onClick: () -> Unit, busy: Boolean = false, tint: Color = Cp.colors.quiet) {
-    Box(
-        Modifier
-            .size(36.dp)
-            .bouncyClickable(CircleShape, enabled = !busy, pressedScale = 0.88f, onClickLabel = label, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
+fun IconCircleButton(res: Int, label: String, onClick: () -> Unit, busy: Boolean = false, tint: Color = Cp.colors.textMid) {
+    Key(onClick, Modifier.size(width = 40.dp, height = 42.dp), shape = CircleShape, ledge = 2.dp, enabled = !busy, label = label) {
         // The sync ribbon moves its arrows while busy; any other icon turns.
-        if (res == io.github.prithirajn.trackersync.R.drawable.ic_ribbon_sync) SyncRibbon(18.dp, tint, moving = busy)
-        else if (busy) SpinningIcon(res, 16.dp, tint)
-        else LucideIcon(res, Modifier.size(16.dp), tint)
+        if (res == io.github.prithirajn.trackersync.R.drawable.ic_ribbon_sync) SyncRibbon(18.dp, if (busy) Cp.colors.accent else tint, moving = busy)
+        else if (busy) SpinningIcon(res, 16.dp, Cp.colors.accent)
+        else LucideIcon(res, Modifier.size(17.dp), tint)
     }
 }
 
@@ -284,26 +267,24 @@ fun <T> CpSelect(
 ) {
     var open by remember { mutableStateOf(false) }
     val c = Cp.colors
+    val view = androidx.compose.ui.platform.LocalView.current
+    val flip by androidx.compose.animation.core.animateFloatAsState(if (open) 90f else -90f, Motion.bouncy(), label = "selectFlip")
     Box {
-        Row(
-            Modifier
-                .height(36.dp)
-                .clip(CpShapes.field)
-                .background(c.page)
-                .border(1.dp, c.hairline, CpShapes.field)
-                .clickable(enabled = enabled) { open = true }
-                .padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(label(value), style = CpType.body, color = if (enabled) c.text else c.faint)
-            LucideIcon(io.github.prithirajn.trackersync.R.drawable.lucide_chevron_left, Modifier.size(14.dp).rotate(-90f), c.quiet)
+        Key({ open = true }, Modifier.height(40.dp), shape = CpShapes.field, ledge = 2.dp, enabled = enabled) {
+            Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                androidx.compose.animation.AnimatedContent(label(value), transitionSpec = {
+                    (androidx.compose.animation.slideInVertically { it / 2 } + androidx.compose.animation.fadeIn()) togetherWith (androidx.compose.animation.slideOutVertically { -it / 2 } + androidx.compose.animation.fadeOut())
+                }, label = "selectValue") { t -> Text(t, style = CpType.body, color = if (enabled) c.text else c.faint) }
+                LucideIcon(io.github.prithirajn.trackersync.R.drawable.lucide_chevron_left, Modifier.size(14.dp).rotate(flip), if (open) c.accentText else c.quiet)
+            }
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = c.surface) {
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = c.surface, shape = CpShapes.card) {
             for (o in options) {
+                val chosen = o == value
                 DropdownMenuItem(
-                    text = { Text(label(o), style = CpType.body, color = c.text) },
-                    onClick = { open = false; onChange(o) },
+                    text = { Text(label(o), style = if (chosen) CpType.bodyStrong else CpType.body, color = if (chosen) c.accentText else c.text) },
+                    leadingIcon = { Led(chosen, size = 6.dp) },
+                    onClick = { Haptics.tick(view); open = false; onChange(o) },
                 )
             }
         }
@@ -323,16 +304,28 @@ fun CpTextField(
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val c = Cp.colors
+    val focus = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val focused by focus.collectIsFocusedAsState()
+    val ring by animateColorAsState(if (focused) c.accent else c.hairline, Motion.medium(), label = "fieldRing")
+    val glow by androidx.compose.animation.core.animateFloatAsState(if (focused) 1f else 0f, Motion.springy(), label = "fieldGlow")
+    val labelColor by animateColorAsState(if (focused) c.accentText else c.textMid, Motion.medium(), label = "fieldLabel")
     Column(Modifier.fillMaxWidth()) {
-        Text(label, style = CpType.label, color = c.textMid)
+        Text(label, style = CpType.label, color = labelColor)
         Spacer(Modifier.height(6.dp))
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(48.dp)
+                .height(50.dp)
+                // A soft orange glow grows around the well while you type in it.
+                .drawBehind {
+                    if (glow > 0f) drawRoundRect(c.accent.copy(alpha = 0.22f * glow), topLeft = androidx.compose.ui.geometry.Offset(-4.dp.toPx() * glow, -4.dp.toPx() * glow),
+                        size = androidx.compose.ui.geometry.Size(size.width + 8.dp.toPx() * glow, size.height + 8.dp.toPx() * glow), cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx()))
+                }
                 .clip(CpShapes.control)
-                .background(c.surface)
-                .border(1.dp, c.hairline, CpShapes.control)
+                .background(c.field)
+                // Set into the surface: a shade along the top inside edge.
+                .drawBehind { drawRect(Brush.verticalGradient(listOf(Color.Black.copy(alpha = if (c.isDark) 0.3f else 0.06f), Color.Transparent), endY = 6.dp.toPx())) }
+                .border(if (focused) 1.5.dp else 1.dp, ring, CpShapes.control)
                 .padding(horizontal = 16.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
@@ -354,23 +347,56 @@ fun CpTextField(
                     keyboardType = if (password) KeyboardType.Password else keyboard,
                     autoCorrectEnabled = false,
                 ),
-                modifier = Modifier.fillMaxWidth(),
+                interactionSource = focus,
+                modifier = Modifier.fillMaxWidth().padding(end = if (trailing != null) 40.dp else 0.dp),
             )
+            trailing?.let { Box(Modifier.align(Alignment.CenterEnd)) { it() } }
         }
     }
 }
 
-/** Initial-letter tile standing in for a service logo (size-9 rounded-lg). */
+/** A service's colour, the same every time (its badge, its light). */
+fun serviceColor(name: String): Color = when (name.lowercase().substringBefore(' ')) {
+    "hardcover" -> Color(0xFF5B4BE0)
+    "goodreads" -> Color(0xFF5A4632)
+    "storygraph" -> Color(0xFF1F8A8A)
+    "fable" -> Color(0xFF9BC53D)
+    "pagebound" -> Color(0xFFE0703B)
+    "seekquel" -> Color(0xFF9A3D2A)
+    "readwise" -> Color(0xFF2A2A2A)
+    "bookfusion" -> Color(0xFF2E6FD8)
+    "audiobookshelf" -> Color(0xFFB38A2E)
+    "jellyfin" -> Color(0xFF8E5BE0)
+    "bookorbit" -> Color(0xFF3A3A3A)
+    "spotify" -> Color(0xFF1DB954)
+    "readest" -> Color(0xFFD9822B)
+    "micro.blog" -> Color(0xFF3B7DD8)
+    "kindle" -> Color(0xFF1F7FA6)
+    "libby" -> Color(0xFFB0285A)
+    "audible" -> Color(0xFFE88A12)
+    "mihon" -> Color(0xFF3D6FD8)
+    "anilist" -> Color(0xFF0B8FD9)
+    "mangaupdates" -> Color(0xFFD9542B)
+    else -> {
+        val h = (name.hashCode() and 0x7fffffff) % 360
+        Color.hsl(h.toFloat(), 0.45f, 0.45f)
+    }
+}
+
+/** A service's badge: its letter on a moulded square in its own colour, with a light top edge. */
 @Composable
 fun ServiceTile(name: String, size: Dp = 36.dp) {
+    val col = serviceColor(name)
     Box(
         Modifier
             .size(size)
-            .clip(CpShapes.field)
-            .background(Cp.colors.accentTint),
+            .shadow(3.dp, CpShapes.field, ambientColor = col, spotColor = col)
+            .clip(RoundedCornerShape(size * 0.3f))
+            .background(Brush.verticalGradient(listOf(lerpColor(col, Color.White, 0.18f), col)))
+            .drawBehind { drawRect(Color.White.copy(alpha = 0.28f), size = androidx.compose.ui.geometry.Size(this.size.width, 1.dp.toPx())) },
         contentAlignment = Alignment.Center,
     ) {
-        Text(name.take(1), style = CpType.section.copy(fontSize = CpType.section.fontSize * 0.9f), color = Cp.colors.accentText)
+        Text(name.take(1).uppercase(), style = CpType.section.copy(fontSize = (size.value * 0.45f).sp, lineHeight = (size.value * 0.5f).sp), color = Color.White)
     }
 }
 

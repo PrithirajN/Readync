@@ -65,6 +65,7 @@ import java.io.File
 private fun FlowSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -713,6 +714,7 @@ private fun SendHighlightsSheet(vm: AppViewModel, book: Book, targets: List<Pair
     val c = Cp.colors
     val picked = remember { mutableStateMapOf<String, Boolean>().apply { targets.forEach { (t, _) -> put(t.id, true) } } }
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,

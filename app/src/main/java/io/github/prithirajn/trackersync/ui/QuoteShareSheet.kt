@@ -1,7 +1,6 @@
 package io.github.prithirajn.trackersync.ui
 
 import android.graphics.Bitmap
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,6 +38,31 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.AnimatedContent
 import io.github.prithirajn.trackersync.data.Book
 import io.github.prithirajn.trackersync.source.Clipping
 import io.github.prithirajn.trackersync.ui.theme.Cp
@@ -149,6 +173,7 @@ fun QuoteShareSheet(
     }
 
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
@@ -160,63 +185,108 @@ fun QuoteShareSheet(
                 .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
         ) {
-            Text(if (standalone) "Share this note" else "Share this passage", style = CpType.section, color = c.text)
+            Text(if (standalone) "Share this note" else "Share this passage", style = CpType.section, color = c.text, modifier = Modifier.riseIn(0))
             VSpace(14)
+            val looks = QuoteCard.Look.entries
+            // Which way the last change of look went, so the picture slides the same way.
+            var dir by remember { mutableStateOf(1) }
+            fun pick(l: QuoteCard.Look) {
+                if (l == look) return
+                dir = if (l.ordinal > look.ordinal) 1 else -1
+                look = l; tick()
+            }
+            // The device: the picture on its screen, with what's showing along the top and a dot per look.
             Box(
-                Modifier.fillMaxWidth().heightIn(min = 280.dp),
-                contentAlignment = Alignment.Center,
+                Modifier.riseIn(1).fillMaxWidth()
+                    .shadow(16.dp, RoundedCornerShape(28.dp), ambientColor = c.shade, spotColor = c.shade)
+                    .clip(RoundedCornerShape(28.dp)).background(c.surface).padding(10.dp),
             ) {
-                Crossfade(bmp, animationSpec = Motion.medium(), label = "quote") { b ->
-                    if (b == null && failed) {
-                        Quiet("Couldn't draw this one. Try another look or shape.", color = c.faint)
-                    } else if (b == null) {
-                        Box(Modifier.fillMaxWidth(0.8f).aspectRatio(0.8f), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(Modifier.size(24.dp), color = c.faint)
+                Column {
+                    Screen(Modifier.fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            DeviceLabel(look.label + if (look.sized) " · " + size.label else "", color = c.screenDim, modifier = Modifier.weight(1f))
+                            Led(bmp != null && !failed, size = 6.dp)
+                            Spacer(Modifier.width(6.dp))
+                            DeviceLabel(if (bmp == null) "Drawing" else "Live", color = c.accent)
                         }
-                    } else {
-                        Image(
-                            b.asImageBitmap(),
-                            contentDescription = "The passage as a picture",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxWidth(if (b.height > b.width * 1.5f) 0.58f else 0.82f)
-                                .aspectRatio(b.width.toFloat() / b.height)
-                                .clip(CpShapes.card)
-                                .border(1.dp, c.divider, CpShapes.card)
-                                .then(if (look == QuoteCard.Look.PAGE) Modifier.bouncyClickable(CpShapes.card, pressedScale = 0.98f, onClickLabel = "Open the studio") { studio = true } else Modifier),
-                        )
+                        VSpace(10)
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 280.dp)
+                                // Swipe the picture for the next or the one before.
+                                .pointerInput(look) {
+                                    var drag = 0f
+                                    detectHorizontalDragGestures(
+                                        onDragStart = { drag = 0f },
+                                        onHorizontalDrag = { ch, d -> ch.consume(); drag += d },
+                                        onDragEnd = {
+                                            val i = look.ordinal
+                                            if (drag < -60f) pick(looks[(i + 1) % looks.size])
+                                            else if (drag > 60f) pick(looks[(i - 1 + looks.size) % looks.size])
+                                        },
+                                    )
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            AnimatedContent(
+                                bmp,
+                                transitionSpec = {
+                                    (slideInHorizontally(spring(dampingRatio = 0.8f, stiffness = 380f)) { it / 3 * dir } + fadeIn(tween(200)) +
+                                        scaleIn(spring(dampingRatio = 0.7f, stiffness = 380f), initialScale = 0.94f))
+                                        .togetherWith(slideOutHorizontally(tween(180)) { -it / 4 * dir } + fadeOut(tween(140)))
+                                        .using(SizeTransform(clip = false))
+                                },
+                                contentAlignment = Alignment.Center,
+                                label = "quote",
+                            ) { b ->
+                                if (b == null && failed) {
+                                    Text("Couldn't draw this one. Try another look or shape.", style = CpType.small, color = c.screenDim)
+                                } else if (b == null) {
+                                    Box(Modifier.fillMaxWidth(0.8f).aspectRatio(0.8f), contentAlignment = Alignment.Center) {
+                                        CircularProgressIndicator(Modifier.size(24.dp), color = c.accent, strokeWidth = 2.dp)
+                                    }
+                                } else {
+                                    Image(
+                                        b.asImageBitmap(),
+                                        contentDescription = "The passage as a picture",
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier
+                                            .fillMaxWidth(if (b.height > b.width * 1.5f) 0.58f else 0.84f)
+                                            .aspectRatio(b.width.toFloat() / b.height)
+                                            .graphicsLayer { rotationZ = -1.2f }
+                                            .shadow(18.dp, RoundedCornerShape(10.dp))
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .then(if (look == QuoteCard.Look.PAGE) Modifier.bouncyClickable(RoundedCornerShape(10.dp), pressedScale = 0.98f, onClickLabel = "Open the studio") { studio = true } else Modifier),
+                                    )
+                                }
+                            }
+                        }
+                        VSpace(10)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            DeviceLabel("Swipe for another look", color = c.screenDim, modifier = Modifier.weight(1f))
+                            for (l in looks) { Led(l == look, size = 5.dp); Spacer(Modifier.width(4.dp)) }
+                        }
+                    }
+                    if (look.sized) {
+                        VSpace(10)
+                        // Post, square or story, each with a little frame of its shape.
+                        Segmented(QuoteCard.Size.entries, size, { it.label }, { size = it }) { z, on ->
+                            val h = when (z) { QuoteCard.Size.POST -> 12.dp; QuoteCard.Size.SQUARE -> 10.dp; QuoteCard.Size.STORY -> 15.dp }
+                            val w = when (z) { QuoteCard.Size.POST -> 10.dp; QuoteCard.Size.SQUARE -> 10.dp; QuoteCard.Size.STORY -> 8.dp }
+                            Box(Modifier.size(w, h).border(1.5.dp, if (on) c.onInk else c.textMid, RoundedCornerShape(2.dp)))
+                        }
                     }
                 }
             }
             if (failed && bmp != null) { VSpace(6); AnimatedQuiet("Couldn't draw that one; this is the last picture. Try another look or shape.", color = c.faint) }
             VSpace(14)
-            // The looks, as chips that wrap onto more lines, so every look is in sight.
-            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (l in QuoteCard.Look.entries) {
-                    val on = l == look
-                    Box(
-                        Modifier
-                            .clip(CpShapes.pill)
-                            .background(if (on) c.accentTint else c.divider)
-                            .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, role = Role.RadioButton, onClickLabel = l.label) { look = l; tick() }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                    ) { Text(l.label, style = CpType.label, color = if (on) c.accentText else c.textMid) }
-                }
-            }
-            if (look.sized) {
-                VSpace(10)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-                    for (z in QuoteCard.Size.entries) {
-                        val on = z == size
-                        Box(
-                            Modifier
-                                .clip(CpShapes.pill)
-                                .border(1.dp, if (on) c.accent else c.divider, CpShapes.pill)
-                                .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, role = Role.RadioButton, onClickLabel = z.label) { size = z; tick() }
-                                .padding(horizontal = 14.dp, vertical = 6.dp),
-                        ) { Text(z.label, style = CpType.small, color = if (on) c.accentText else c.textMid) }
-                    }
-                }
+            // The looks as a row of keys, each with a swatch of itself; the chosen one stays pressed in, lit.
+            val lookScroll = rememberScrollState()
+            val keyStep = with(LocalDensity.current) { 84.dp.toPx() }
+            LaunchedEffect(look) { lookScroll.animateScrollTo(((look.ordinal - 1).coerceAtLeast(0) * keyStep).toInt()) }
+            Row(Modifier.riseIn(2).fillMaxWidth().horizontalScroll(lookScroll).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (l in looks) LookKey(l, l == look) { pick(l) }
             }
             if (look == QuoteCard.Look.PAGE) {
                 VSpace(12)
@@ -259,7 +329,9 @@ fun QuoteShareSheet(
                     value = noteDraft, onValueChange = { noteDraft = it.take(600) },
                     label = { Text(if (standalone) "Your note" else "Note on the picture") },
                     modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 6,
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.accent, unfocusedBorderColor = c.divider, focusedTextColor = c.text, unfocusedTextColor = c.text),
+                    shape = CpShapes.control,
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.accent, unfocusedBorderColor = c.hairline, focusedTextColor = c.text, unfocusedTextColor = c.text,
+                        focusedContainerColor = c.field, unfocusedContainerColor = c.field, focusedLabelColor = c.accentText, unfocusedLabelColor = c.textMid, cursorColor = c.accent),
                 )
                 Quiet("Only for this picture: your highlight keeps its note as it is.", color = c.faint)
                 if (!standalone && noteDraft.trim() != note.orEmpty().trim() && !note.isNullOrBlank()) {
@@ -282,17 +354,22 @@ fun QuoteShareSheet(
                 }, Modifier.weight(1f), filled = false, enabled = bmp != null)
             }
             VSpace(8)
-            // Straight into a new Threads post, picture and words.
+            // Straight into a new Threads post, picture and words: the dark key, with a little burst.
+            var burst by remember { mutableStateOf(0) }
+            Box {
             BigButton("Post to Threads", {
                 bmp?.let { b ->
                     val how = runCatching { QuoteCard.postToThreads(context, b, plain.take(500)) }.getOrNull()
+                    if (how == "app" || how == "web") burst++
                     said = when (how) {
                         "app" -> "Opened in Threads with the picture. The words are copied too, if you need to paste them."
                         "web" -> "Threads isn't installed, so it opened in the browser with the words (a picture can't go that way; save it and add it there)."
                         else -> "Couldn't open Threads."
                     }
                 }
-            }, filled = false, enabled = bmp != null)
+            }, look = KeyKind.INK, enabled = bmp != null)
+            Confetti(burst, Modifier.matchParentSize())
+            }
             said?.let { VSpace(8); AnimatedQuiet(it, color = c.faint) }
             VSpace(12)
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -315,5 +392,41 @@ fun QuoteShareSheet(
             onClose = { studio = false },
             fullNote = noteDraft.ifBlank { note },
         )
+    }
+}
+
+/** One look as a key: a little swatch of what it draws, its name, and a light when it's the one. */
+@Composable
+private fun LookKey(l: QuoteCard.Look, on: Boolean, onClick: () -> Unit) {
+    val c = Cp.colors
+    val sink by androidx.compose.animation.core.animateDpAsState(if (on) 2.dp else 0.dp, androidx.compose.animation.core.spring(dampingRatio = 0.5f, stiffness = 700f), label = "lookSink")
+    Key(onClick, Modifier.size(width = 76.dp, height = 88.dp).offset(y = sink), shape = RoundedCornerShape(14.dp), ledge = if (on) 1.dp else 3.dp, role = Role.RadioButton, label = l.label) {
+        Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.SpaceBetween) {
+            Box(Modifier.fillMaxWidth().height(38.dp).clip(RoundedCornerShape(6.dp)).drawBehind { lookSwatch(l) })
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(l.label, style = CpType.small, color = c.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            }
+        }
+        Led(on, Modifier.align(Alignment.TopEnd).padding(5.dp), size = 6.dp)
+    }
+}
+
+/** A tiny impression of each look, for its key. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.lookSwatch(l: QuoteCard.Look) {
+    val w = size.width; val h = size.height
+    fun lines(color: Color, x0: Float, y0: Float, n: Int, gap: Float, width: Float = w * 0.6f) {
+        for (i in 0 until n) drawRect(color, Offset(x0, y0 + i * gap), Size(width * (if (i == n - 1) 0.6f else 1f), 2.5f))
+    }
+    when (l) {
+        QuoteCard.Look.SPOTLIGHT -> { drawRect(Color(0xFF1C1B19)); drawCircle(Color(0x33F1D36B), h * 0.7f, Offset(w * 0.5f, h * 0.45f)); lines(Color(0xFFF4EFE6), w * 0.2f, h * 0.35f, 3, 6f) }
+        QuoteCard.Look.HIGHLIGHTER -> { drawRect(Color.White); drawRect(Color(0xFFFFF176), Offset(w * 0.12f, h * 0.38f), Size(w * 0.7f, h * 0.24f)); lines(Color(0xFF333333), w * 0.15f, h * 0.46f, 1, 6f) }
+        QuoteCard.Look.SPINE -> { drawRect(Color(0xFFF4EEE2)); drawRect(Color(0xFF7A3524), size = Size(w * 0.22f, h)); lines(Color(0xFF3A2A20), w * 0.32f, h * 0.3f, 4, 6f) }
+        QuoteCard.Look.PAGE -> { drawRect(Color(0xFF2A211A)); drawRect(Color(0xFFEDE6D8), Offset(w * 0.15f, h * 0.12f), Size(w * 0.7f, h * 0.8f)); drawRect(Color(0x55FF7A9C), Offset(w * 0.22f, h * 0.5f), Size(w * 0.5f, 4f)); lines(Color(0xFF6B6255), w * 0.22f, h * 0.25f, 3, 5f, w * 0.55f) }
+        QuoteCard.Look.EDITORIAL -> { drawRect(Color(0xFFF2EFE8)); drawRect(Color(0xFF111111), Offset(w * 0.12f, h * 0.22f), Size(w * 0.5f, 5f)); lines(Color(0xFF555555), w * 0.12f, h * 0.48f, 3, 5f) }
+        QuoteCard.Look.TYPEWRITER -> { drawRect(Color(0xFFEDE3CC)); lines(Color(0xFF2B2B2B), w * 0.14f, h * 0.25f, 5, 5f, w * 0.7f) }
+        QuoteCard.Look.INDEX_CARD -> { drawRect(Color(0xFFFFFDF6)); drawRect(Color(0xFFE57373), Offset(0f, h * 0.24f), Size(w, 1.5f)); for (i in 1..4) drawRect(Color(0xFF9EC5E8), Offset(0f, h * 0.24f + i * h * 0.17f), Size(w, 1f)) }
+        QuoteCard.Look.WORDPRINT -> { drawRect(Color(0xFF14213D)); for (i in 0 until 24) { val a = i / 24f * 6.283f; val r = h * (0.18f + (i * 37 % 11) / 40f); drawLine(Color(0xFFFFC46B), Offset(w / 2, h / 2), Offset(w / 2 + kotlin.math.cos(a) * r, h / 2 + kotlin.math.sin(a) * r), 1.5f) } }
+        QuoteCard.Look.SYSTEM -> { drawRect(Color(0xFF0B1630)); drawRect(Color(0xFF44AADD), Offset(3f, 3f), Size(w - 6f, h - 6f), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5f)); drawRect(Color(0xFF44AADD), Offset(w * 0.15f, h * 0.7f), Size(w * 0.5f, 3f)); lines(Color(0xFFBFE6FF), w * 0.15f, h * 0.3f, 2, 6f) }
+        QuoteCard.Look.BOOK -> { drawRect(androidx.compose.ui.graphics.Brush.linearGradient(listOf(Color(0xFFFFCF9C), Color(0xFFFF9A6B)))); drawRect(Color(0xFF3A2A40), Offset(w * 0.12f, h * 0.15f), Size(w * 0.22f, h * 0.7f)); lines(Color(0xFF2A1A10), w * 0.42f, h * 0.3f, 3, 6f, w * 0.45f) }
     }
 }

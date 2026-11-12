@@ -106,6 +106,7 @@ internal fun LogReadingSheet(
     fun lab(x: Double) = if (comic) "#${ComicIssues.label(x)}" else "Ch. ${ComicIssues.label(x)}"
 
     ModalBottomSheet(
+        dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,

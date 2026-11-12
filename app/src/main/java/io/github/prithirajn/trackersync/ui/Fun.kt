@@ -1,5 +1,11 @@
 package io.github.prithirajn.trackersync.ui
 
+import androidx.compose.runtime.getValue
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
@@ -167,16 +173,32 @@ fun trackerMarks(names: List<String>): List<String> {
 @Composable
 fun NavRow(icon: Int, title: String, summary: String?, summaryWarn: Boolean = false, trailing: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
     val c = Cp.colors
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    // The chevron slides along as if the row were about to open, and the icon key dips.
+    val nudge by androidx.compose.animation.core.animateDpAsState(if (pressed) 5.dp else 0.dp, Motion.bouncy(), label = "navNudge")
+    val dip by androidx.compose.animation.core.animateDpAsState(if (pressed) 2.dp else 0.dp, androidx.compose.animation.core.spring(dampingRatio = 0.5f, stiffness = 900f), label = "navDip")
+    val chevron by androidx.compose.animation.animateColorAsState(if (pressed) c.accentText else c.faint, Motion.fast(), label = "navChevron")
     Row(
         Modifier
             .fillMaxWidth()
-            .bouncyClickable(androidx.compose.ui.graphics.RectangleShape, pressedScale = 0.99f, role = Role.Button, onClickLabel = title, onClick = onClick)
+            .pressRow(source, title, onClick)
             .heightIn(min = 64.dp)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(36.dp).clip(CpShapes.control).background(c.accentTint), contentAlignment = Alignment.Center) {
-            LucideIcon(icon, Modifier.size(18.dp), c.accentText)
+        // A little moulded key with the icon on it, sitting on its ledge.
+        Box(Modifier.size(38.dp)) {
+            Box(Modifier.matchParentSize().padding(top = 2.dp).clip(CpShapes.control).background(c.keyLedge))
+            Box(
+                Modifier
+                    .size(38.dp, 36.dp)
+                    .offset(y = dip)
+                    .clip(CpShapes.control)
+                    .background(Brush.verticalGradient(listOf(c.keyTop, c.keyBottom)))
+                    .drawBehind { drawRect(Color.White.copy(alpha = if (c.isDark) 0.06f else 0.6f), size = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx())) },
+                contentAlignment = Alignment.Center,
+            ) { LucideIcon(icon, Modifier.size(18.dp), if (summaryWarn) c.errorText else c.text) }
         }
         HSpace(12)
         Column(Modifier.weight(1f)) {
@@ -185,8 +207,24 @@ fun NavRow(icon: Int, title: String, summary: String?, summaryWarn: Boolean = fa
         }
         trailing?.let { HSpace(8); it() }
         HSpace(4)
-        LucideIcon(io.github.prithirajn.trackersync.R.drawable.lucide_chevron_right, Modifier.size(16.dp), c.faint)
+        LucideIcon(io.github.prithirajn.trackersync.R.drawable.lucide_chevron_right, Modifier.size(16.dp).offset(x = nudge), chevron)
     }
+}
+
+/**
+ * A whole row as a touch target: an ink wash comes up under the finger, a click is felt on the
+ * way down, and it hands its press state to [source] so the row's parts can answer too.
+ */
+@Composable
+fun Modifier.pressRow(source: androidx.compose.foundation.interaction.MutableInteractionSource, label: String?, onClick: () -> Unit, enabled: Boolean = true): Modifier {
+    val c = Cp.colors
+    val view = androidx.compose.ui.platform.LocalView.current
+    val pressed by source.collectIsPressedAsState()
+    LaunchedEffect(pressed) { if (pressed && enabled) Haptics.tick(view) }
+    val wash by androidx.compose.animation.core.animateFloatAsState(if (pressed) 1f else 0f, if (pressed) tween(90) else tween(380), label = "rowWash")
+    return this
+        .drawBehind { if (wash > 0f) drawRect(c.text.copy(alpha = 0.06f * wash)) }
+        .clickable(source, indication = null, enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick)
 }
 
 // ---- A little celebration ----
