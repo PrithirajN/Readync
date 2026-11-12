@@ -121,6 +121,15 @@ fun QuoteShareSheet(
     var showMark by remember { mutableStateOf(BookShot.markOn(context)) }
     var studio by remember { mutableStateOf(false) }
     var page by remember { mutableStateOf(pageText) }
+    // No photo of its page: the words around it from the app's own copy of the book, when there is one.
+    LaunchedEffect(clip.id, text) {
+        if (page == null && book != null) {
+            val around = withContext(Dispatchers.IO) {
+                runCatching { io.github.prithirajn.trackersync.source.BookCopies.around(context, book.document, text, clip.spine) }.getOrNull()
+            }
+            if (page == null && around != null) page = around
+        }
+    }
     val where = remember(clip) {
         clip.chapter?.takeIf { it.isNotBlank() } ?: io.github.prithirajn.trackersync.sync.HighlightPosition.label(clip)
     }

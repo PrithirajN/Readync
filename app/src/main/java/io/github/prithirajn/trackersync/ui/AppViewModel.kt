@@ -2027,16 +2027,152 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     // ---- prices ----
 
-    /** Starts watching a book's price at Amazon.in, Bookswagon and Atlantic Books, and looks now. */
+    /** Starts watching a library book's price at Amazon.in, Bookswagon and Atlantic Books (on the Deals page), and looks now. */
+    /**
+     * A copy of the book in the app's own storage, from your OPDS catalogs (for the words around its
+     * quotes): fetched when there isn't one, removed when there is.
+     */
+    fun toggleBookCopy(document: String) {
+        val app = getApplication<Application>()
+        val b = store.snapshot.books[document] ?: return
+        val copies = io.github.prithirajn.trackersync.source.BookCopies
+        if (document in copies.busy.value) { notify("Already getting a copy of it"); return }
+        if (copies.has(app, document)) {
+            copies.remove(app, document)
+            notify("Removed the app's copy", b.displayTitle)
+            return
+        }
+        notify("Looking for it on your catalogs", b.displayTitle)
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { copies.get(app, b) } }
+            r.onSuccess { c -> notify("Kept a copy for quotes", "${b.displayTitle} · from ${c.server} · ${c.size / 1024} KB") }
+                .onFailure { e -> notify("Couldn't get a copy", e.message ?: "Something went wrong", error = true) }
+        }
+    }
+
+    /** Keeps catalog entry [entry] from [server] as the app's copy of library book [document]. */
+    fun keepCatalogCopy(document: String, server: io.github.prithirajn.trackersync.source.Opds.Server, entry: io.github.prithirajn.trackersync.source.Opds.Entry) {
+        val app = getApplication<Application>()
+        val b = store.snapshot.books[document] ?: return
+        val copies = io.github.prithirajn.trackersync.source.BookCopies
+        val acq = copies.epubOf(entry) ?: run { notify("It has no EPUB to keep", error = true); return }
+        notify("Getting a copy for quotes", b.displayTitle)
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { copies.fetch(app, b, io.github.prithirajn.trackersync.source.BookCopies.Found(server, entry, acq)) } }
+            r.onSuccess { notify("Kept a copy for quotes", b.displayTitle) }
+                .onFailure { e -> notify("Couldn't keep a copy", e.message ?: "Something went wrong", error = true) }
+        }
+    }
+
     fun watchPrice(document: String) {
+        val b = store.snapshot.books[document] ?: return
+        val already = document in store.snapshot.priceWatch
         store.update { s ->
             if (document in s.priceWatch) s
-            else s.copy(priceWatch = s.priceWatch + (document to io.github.prithirajn.trackersync.data.PriceWatch(document, since = System.currentTimeMillis() / 1000)))
+            else s.copy(priceWatch = s.priceWatch + (document to io.github.prithirajn.trackersync.data.PriceWatch(
+                document, since = System.currentTimeMillis() / 1000, title = b.displayTitle, author = b.author, isbn = b.isbn, cover = b.coverUrl,
+            )))
         }
-        checkPrice(document)
+        notify(if (already) "Already tracking its price" else "Tracking its price", "On Catalogs › Deals")
+        if (!already) checkPrice(document)
+    }
+
+    /**
+     * A book from a pasted Amazon.in, Bookswagon or Atlantic Books page: read, matched to your library
+     * when it's there (else tracked on its own), followed at that page, looked for at the other two
+     * stores, with [target] as the price you'd buy at. [done] gets what happened, to say.
+     */
+    fun trackFromLink(url: String, target: Double?, done: (String, Boolean) -> Unit) {
+        viewModelScope.launch {
+            val r = io {
+                runCatching {
+                    val f = io.github.prithirajn.trackersync.source.BookPrices.identify(url.trim())
+                    val s0 = store.snapshot
+                    val inLibrary = s0.books.values.firstOrNull { b ->
+                        (f.isbn != null && b.isbn?.filter { it.isDigit() } == f.isbn) || Matcher.sameBook(f.title, f.author, b.title ?: "", b.author)
+                    }
+                    val key = inLibrary?.document
+                        ?: s0.priceWatch.values.firstOrNull { w -> (f.isbn != null && w.isbn == f.isbn) || (w.title != null && Matcher.sameBook(f.title, f.author, w.title, w.author)) }?.document
+                        ?: ("price:" + java.util.UUID.randomUUID().toString())
+                    val now = System.currentTimeMillis() / 1000
+                    store.update { s ->
+                        val old = s.priceWatch[key]
+                        val w = (old ?: io.github.prithirajn.trackersync.data.PriceWatch(key, since = now)).copy(
+                            title = old?.title ?: inLibrary?.displayTitle ?: f.title, author = old?.author ?: inLibrary?.author ?: f.author,
+                            isbn = old?.isbn ?: inLibrary?.isbn ?: f.isbn, cover = old?.cover ?: inLibrary?.coverUrl ?: f.cover,
+                            links = (old?.links ?: emptyMap()) + (f.store to f.url), pinned = (old?.pinned ?: emptySet()) + f.store,
+                            history = ((old?.history ?: emptyList()).filter { it.store != f.store } + f.points).takeLast(400),
+                            target = target ?: old?.target, told = null,
+                        )
+                        s.copy(priceWatch = s.priceWatch + (key to w))
+                    }
+                    // The other two stores, now.
+                    io.github.prithirajn.trackersync.source.BookPrices.refresh(store, force = key)
+                    (if (inLibrary != null) "Tracking “${f.title}” (from your library)" else "Tracking “${f.title}”") to true
+                }.getOrElse { (it.message ?: "Couldn't read that page") to false }
+            }
+            done(r.first, r.second)
+        }
+    }
+
+    /**
+     * The books on a public Amazon.in wish list, each tracked (at its Amazon page, with the price on
+     * the list), matched to your library where they're in it. The other stores fill in over the next
+     * syncs. [done] gets what happened.
+     */
+    fun importWishList(url: String, done: (String, Boolean) -> Unit) {
+        viewModelScope.launch {
+            val r = io {
+                runCatching {
+                    val items = io.github.prithirajn.trackersync.source.BookPrices.wishList(url.trim())
+                    if (items.isEmpty()) return@runCatching "No books found on that list (only paperbacks, hardcovers, Kindle books and the like are taken)" to false
+                    var added = 0; var had = 0
+                    val now = System.currentTimeMillis() / 1000
+                    store.update { s ->
+                        var watch = s.priceWatch
+                        for (item in items) {
+                            val link = "https://www.amazon.in/dp/${item.asin}"
+                            val inLibrary = s.books.values.firstOrNull { b -> Matcher.sameBook(item.title, item.author, b.title ?: "", b.author) }
+                            val existing = watch.values.firstOrNull { w -> w.links["amazon"]?.contains(item.asin) == true || (inLibrary != null && w.document == inLibrary.document) }
+                            if (existing != null) { had++; continue }
+                            val key = inLibrary?.document ?: ("price:" + java.util.UUID.randomUUID().toString())
+                            val point = io.github.prithirajn.trackersync.data.PricePoint("amazon", now, item.price, null, item.price != null, item.format, link, item.title)
+                            watch = watch + (key to io.github.prithirajn.trackersync.data.PriceWatch(
+                                key, since = now, title = inLibrary?.displayTitle ?: item.title, author = inLibrary?.author ?: item.author,
+                                isbn = inLibrary?.isbn, cover = inLibrary?.coverUrl ?: item.cover,
+                                links = mapOf("amazon" to link), pinned = setOf("amazon"), history = listOfNotNull(point.takeIf { p -> p.price != null }),
+                            ))
+                            added++
+                        }
+                        s.copy(priceWatch = watch)
+                    }
+                    ("Added $added book${if (added == 1) "" else "s"} from the wish list" + (if (had > 0) " ($had already tracked)" else "") +
+                        ". Bookswagon and Atlantic Books are looked up over the next syncs.") to true
+                }.getOrElse { (it.message ?: "Couldn't read that list") to false }
+            }
+            done(r.first, r.second)
+        }
     }
 
     fun unwatchPrice(document: String) = store.update { it.copy(priceWatch = it.priceWatch - document) }
+
+    /** Moves a tracked book into your library, as Want to Read (one tracked on its own). */
+    fun addTrackedToLibrary(key: String, done: (String?) -> Unit) {
+        val w = store.snapshot.priceWatch[key] ?: return
+        val t = w.title ?: return
+        viewModelScope.launch {
+            val err = try {
+                io {
+                    val doc = ManualBooks.add(store, ManualBooks.Pick(title = t, author = w.author, coverUrl = w.cover, isbn = w.isbn, status = ReadStatus.TO_READ, fraction = 0.0))
+                    // The watch follows the book to its new place.
+                    store.update { s -> s.priceWatch[key]?.let { old -> s.copy(priceWatch = s.priceWatch - key + (doc to old.copy(document = doc))) } ?: s }
+                }
+                null
+            } catch (e: Exception) { e.message ?: "Couldn't add it" }
+            if (err == null) notify("Added to Want to Read", t)
+            done(err)
+        }
+    }
 
     /** Looks at the stores for this book now. [done] gets what went wrong, if nothing was found. */
     fun checkPrice(document: String, done: (String?) -> Unit = {}) {
@@ -2054,7 +2190,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Points a store at this exact page (a pasted product address), and looks again. Null when it's not one of the stores. */
     fun setPriceLink(document: String, url: String): String? {
         val shop = io.github.prithirajn.trackersync.source.BookPrices.shopOf(url) ?: return "That isn't an Amazon.in, Bookswagon or Atlantic Books page."
-        store.update { s -> s.priceWatch[document]?.let { w -> s.copy(priceWatch = s.priceWatch + (document to w.copy(links = w.links + (shop to url.trim())))) } ?: s }
+        store.update { s ->
+            s.priceWatch[document]?.let { w ->
+                // Your page for this store: followed as it is, and what was read from the old one let go.
+                s.copy(priceWatch = s.priceWatch + (document to w.copy(links = w.links + (shop to url.trim()), pinned = w.pinned + shop, history = w.history.filter { it.store != shop })))
+            } ?: s
+        }
         checkPrice(document)
         return null
     }

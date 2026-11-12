@@ -30,6 +30,7 @@ import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,7 +56,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 /** What the ⋯ menu on a book opens. */
-enum class BookAction { EDIT, COVER, DATES, PAGES, MERGE, SEPARATE, REMOVE, REREAD, WEBNOVEL, KOSYNC, DNF }
+enum class BookAction { EDIT, COVER, DATES, PAGES, MERGE, SEPARATE, REMOVE, REREAD, WEBNOVEL, KOSYNC, DNF, PRICE, COPY }
 
 /**
  * The companion app's ⋯ menu for a book: edit title & author, change cover, reading dates,
@@ -91,6 +92,19 @@ fun BookMenuButton(state: Snapshot, book: Book, webNovelLinked: Boolean = false,
             MenuItem(R.drawable.lucide_hash, "Print pages", trailing = pagesTrailing) { pick(BookAction.PAGES) }
             MenuItem(R.drawable.lucide_merge, "Merge a duplicate", trailing = likelyTrailing) { pick(BookAction.MERGE) }
             if (!webNovelLinked && !book.isMangaOrComic) MenuItem(R.drawable.lucide_globe, "Find it as a web novel") { pick(BookAction.WEBNOVEL) }
+            // Its price, tracked on Catalogs › Deals (nothing shows on the book itself).
+            val tracked = book.document in state.priceWatch
+            MenuItem(R.drawable.lucide_bell, if (tracked) "Price tracked (on Deals)" else "Track its price") { pick(BookAction.PRICE) }
+            // A copy of the book in the app's own storage (from your OPDS catalogs), for the words around quotes.
+            if (!book.isMangaOrComic) {
+                val copies by io.github.prithirajn.trackersync.source.BookCopies.copies.collectAsState()
+                val busy by io.github.prithirajn.trackersync.source.BookCopies.busy.collectAsState()
+                val has = book.document in copies
+                MenuItem(
+                    R.drawable.lucide_book_open,
+                    when { book.document in busy -> "Getting a copy…"; has -> "Remove the app's copy"; else -> "Keep a copy for quotes" },
+                ) { pick(BookAction.COPY) }
+            }
             if (state.kosync != null) {
                 val n = state.kosyncIds[book.document]?.size ?: 0
                 val linkedTrailing: (@Composable () -> Unit)? = if (n > 0) { @Composable { Text(n.toString(), style = CpType.body, color = c.quiet) } } else null
@@ -130,6 +144,8 @@ private fun MenuItem(
 fun BookActionSheet(vm: AppViewModel, state: Snapshot, book: Book, action: BookAction, onClose: () -> Unit, onRemoved: () -> Unit) {
     when (action) {
         BookAction.WEBNOVEL, BookAction.DNF -> {} // opened on the book itself
+        BookAction.PRICE -> androidx.compose.runtime.LaunchedEffect(book.document) { vm.watchPrice(book.document); onClose() }
+        BookAction.COPY -> androidx.compose.runtime.LaunchedEffect(book.document) { vm.toggleBookCopy(book.document); onClose() }
         BookAction.EDIT -> EditDetailsSheet(vm, book, onClose)
         BookAction.COVER -> CoverSheet(vm, book, onClose)
         BookAction.DATES -> DatesSheet(vm, book, onClose)

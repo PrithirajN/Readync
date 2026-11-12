@@ -40,7 +40,9 @@ object BookPrices {
 
     class PriceException(message: String) : Exception(message)
 
-    private fun get(url: String): String {
+    private fun get(url: String): String = fetch(url).body
+
+    private fun fetch(url: String): io.github.prithirajn.trackersync.net.HttpResponse {
         val r = Http.request("GET", url, mapOf(
             "Accept" to "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
             "Accept-Language" to "en-IN,en;q=0.9",
@@ -49,7 +51,7 @@ object BookPrices {
             throw PriceException("the store asked to check this isn't a robot; tried again later")
         }
         if (!r.ok) throw PriceException("HTTP ${r.code}")
-        return r.body
+        return r
     }
 
     private fun money(s: String?): Double? = s?.replace(",", "")?.replace(Regex("[^0-9.]"), "")?.trim('.')?.toDoubleOrNull()?.takeIf { it > 0 }
@@ -58,9 +60,34 @@ object BookPrices {
         book.isbn?.filter { it.isDigit() || it == 'X' }?.takeIf { it.length == 13 || it.length == 10 }
             ?: listOfNotNull(book.displayTitle, book.author).joinToString(" ")
 
-    private fun matches(book: Book, title: String?): Boolean =
-        title == null || book.isbn != null || Matcher.sameBook(book.displayTitle, book.author, title, null) ||
-            Matcher.baseTitle(title).lowercase().contains(Matcher.baseTitle(book.displayTitle).lowercase().take(24))
+    private fun letters(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+
+    /** The book's ISBN as 13 digits (an ISBN-10 converted), or null. */
+    private fun isbn13(book: Book): String? {
+        val d = book.isbn?.filter { it.isDigit() || it == 'X' || it == 'x' } ?: return null
+        if (d.length == 13) return d
+        if (d.length != 10) return null
+        val core = "978" + d.take(9)
+        val sum = core.mapIndexed { i, ch -> (ch - '0') * if (i % 2 == 0) 1 else 3 }.sum()
+        return core + ((10 - sum % 10) % 10)
+    }
+
+    /**
+     * Whether a store's [title] (and the [isbn] its page carries, when it does) is this book. The ISBN
+     * decides when both are known; otherwise the titles must agree (the main title, without series or
+     * subtitle, inside the store's), and a book number, where either has one, must be the same.
+     */
+    internal fun matches(book: Book, title: String?, isbn: String? = null): Boolean {
+        val mine = isbn13(book)
+        if (mine != null && isbn != null && isbn.length == 13) return isbn == mine
+        if (title.isNullOrBlank()) return false
+        if (Matcher.sameBook(book.displayTitle, book.author, title, null)) return true
+        val a = letters(Matcher.baseTitle(book.displayTitle)); val b = letters(Matcher.baseTitle(title))
+        if (a.length < 4 || b.length < 4) return false
+        val same = b.contains(a) || a.contains(b) || letters(title).contains(a)
+        val va = Matcher.volume(book.displayTitle); val vb = Matcher.volume(title)
+        return same && (va == null || vb == null || va == vb)
+    }
 
     /** Every store's price for [book] now (one point per store, and Kindle beside print on Amazon). Stores that fail are left out. */
     fun check(book: Book, watch: PriceWatch, now: Long = System.currentTimeMillis() / 1000): Pair<List<PricePoint>, List<String>> {
@@ -69,9 +96,9 @@ object BookPrices {
         for (s in shops) {
             try {
                 out += when (s.id) {
-                    "amazon" -> amazon(book, watch.links["amazon"], now)
-                    "bookswagon" -> bookswagon(book, watch.links["bookswagon"], now)
-                    else -> atlantic(book, watch.links["atlantic"], now)
+                    "amazon" -> amazon(book, watch.links["amazon"], now, "amazon" in watch.pinned)
+                    "bookswagon" -> bookswagon(book, watch.links["bookswagon"], now, "bookswagon" in watch.pinned)
+                    else -> atlantic(book, watch.links["atlantic"], now, "atlantic" in watch.pinned)
                 }
             } catch (e: Exception) {
                 problems += "${s.name}: ${e.message ?: "couldn't read it"}"
@@ -83,7 +110,7 @@ object BookPrices {
 
     // ---- Atlantic Books (Shopify) ----
 
-    private fun atlantic(book: Book, link: String?, now: Long): List<PricePoint> {
+    private fun atlantic(book: Book, link: String?, now: Long, pinned: Boolean = false): List<PricePoint> {
         val handle = link?.let { Regex("/products/([^/?#]+)").find(it)?.groupValues?.get(1) }
             ?: run {
                 val q = URLEncoder.encode(query(book), "UTF-8")
@@ -96,6 +123,7 @@ object BookPrices {
                     ?: return listOf(PricePoint("atlantic", now, null, inStock = false))
             }
         val p = JSONObject(get("https://atlanticbooks.com/products/$handle.js"))
+        if (!pinned && !matches(book, p.optString("title"))) return listOf(PricePoint("atlantic", now, null, inStock = false, url = if (link != null) "drop" else null))
         val v = p.optJSONArray("variants")?.optJSONObject(0)
         // Shopify gives prices in paise.
         val price = (v?.optLong("price") ?: p.optLong("price")).takeIf { it > 0 }?.let { it / 100.0 }
@@ -108,18 +136,32 @@ object BookPrices {
 
     private val BW_LINK = Regex("""href="((?:https://www\.bookswagon\.com)?/book/[^"]+/(\d{13}))"""")
 
-    private fun bookswagon(book: Book, link: String?, now: Long): List<PricePoint> {
-        val url = link ?: run {
+    private fun bookswagon(book: Book, link: String?, now: Long, pinned: Boolean = false): List<PricePoint> {
+        val isbn = isbn13(book)
+        fun abs(u: String) = if (u.startsWith("/")) "https://www.bookswagon.com$u" else u
+        fun titleOf(html: String) = Regex("""<h1[^>]*>\s*([^<]+)</h1>""").find(html)?.groupValues?.get(1)?.trim()
+        var url: String? = link
+        var page0: String? = null
+        var rejected = false
+        if (url != null) {
+            page0 = get(url)
+            // A page found earlier (not one you chose) that turns out to be another book is let go.
+            if (!pinned && !matches(book, titleOf(page0!!), Regex("/(\\d{13})").find(url)?.groupValues?.get(1))) { url = null; page0 = null; rejected = true }
+        }
+        if (url == null) {
             val q = URLEncoder.encode(query(book), "UTF-8").replace("+", "%20")
             val page = get("https://www.bookswagon.com/search-books/$q")
-            val isbn = book.isbn?.filter { it.isDigit() }
-            val hits = BW_LINK.findAll(page).map { it.groupValues[1] to it.groupValues[2] }.toList()
-            val pick = hits.firstOrNull { isbn != null && it.second == isbn } ?: hits.firstOrNull()
-                ?: return listOf(PricePoint("bookswagon", now, null, inStock = false))
-            pick.first.let { if (it.startsWith("/")) "https://www.bookswagon.com$it" else it }
+            val hits = BW_LINK.findAll(page).map { abs(it.groupValues[1]) to it.groupValues[2] }.distinctBy { it.second }.toList()
+            // The exact ISBN when it's there; else the first few results, read until one is this book.
+            val exact = hits.firstOrNull { isbn != null && it.second == isbn }
+            for ((u, i) in listOfNotNull(exact) + hits.filter { it != exact }.take(3)) {
+                val h = get(u)
+                if (matches(book, titleOf(h), i)) { url = u; page0 = h; break }
+            }
+            if (url == null || page0 == null) return listOf(PricePoint("bookswagon", now, null, inStock = false, url = if (rejected) "drop" else null))
         }
-        val html = get(url)
-        val title = Regex("""<h1[^>]*>\s*([^<]+)</h1>""").find(html)?.groupValues?.get(1)?.trim()
+        val html: String = page0!!
+        val title = titleOf(html)
         // Structured data first, then the page's own price labels.
         val ld = Regex(""""price"\s*:\s*"?([\d,.]+)"?""").find(html)?.groupValues?.get(1)
         val labelled = Regex("""(?is)(?:our\s*price|offer\s*price|lblOfferPrice|actualprice|sell(?:ing)?\s*price)[^₹]{0,200}₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)
@@ -134,7 +176,7 @@ object BookPrices {
 
     private val ASIN = Regex("""data-asin="([A-Z0-9]{10})"""")
 
-    private fun amazon(book: Book, link: String?, now: Long): List<PricePoint> {
+    private fun amazon(book: Book, link: String?, now: Long, pinned: Boolean = false): List<PricePoint> {
         val asin = link?.let { Regex("/(?:dp|gp/product|d)/([A-Z0-9]{10})").find(it)?.groupValues?.get(1) }
             ?: run {
                 val q = URLEncoder.encode(query(book), "UTF-8")
@@ -145,7 +187,7 @@ object BookPrices {
         val url = "https://www.amazon.in/dp/$asin"
         val html = get(url)
         val title = Regex("""id="productTitle"[^>]*>\s*([^<]+)<""").find(html)?.groupValues?.get(1)?.trim()
-        if (link == null && !matches(book, title)) return listOf(PricePoint("amazon", now, null, inStock = false))
+        if (!pinned && !matches(book, title)) return listOf(PricePoint("amazon", now, null, inStock = false, url = if (link == null) null else "drop"))
         val core = Regex("""(?s)id="(?:corePrice_feature_div|corePriceDisplay_desktop_feature_div|apex_desktop|booksHeaderSection|tmm-grid-swatch-PAPERBACK|price)".{0,2500}""").find(html)?.value ?: html
         val price = money(Regex("""a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(core)?.groupValues?.get(1))
             ?: money(Regex("""id="(?:price|newBuyBoxPrice|kindle-price)"[^>]*>\s*₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1))
@@ -161,6 +203,125 @@ object BookPrices {
         return out
     }
 
+    // ---- a book from a store's page ----
+
+    /** A book as one store's page describes it. */
+    data class Found(
+        val store: String, val url: String, val title: String, val author: String?, val isbn: String?, val cover: String?,
+        val points: List<PricePoint>,
+    )
+
+    private fun meta(html: String, prop: String): String? =
+        Regex("""<meta[^>]+(?:property|name)="$prop"[^>]+content="([^"]+)"""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
+            ?: Regex("""<meta[^>]+content="([^"]+)"[^>]+(?:property|name)="$prop"""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
+
+    private fun unescape(s: String) = android.text.Html.fromHtml(s, android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()
+
+    private fun isbnIn(html: String): String? =
+        Regex("""(?is)ISBN-13[^0-9]{0,40}(97[89][-\s]?[0-9][-0-9\s]{8,14})""").find(html)?.groupValues?.get(1)?.filter { it.isDigit() }?.takeIf { it.length == 13 }
+            ?: Regex("""(?is)ISBN-10[^0-9]{0,40}([0-9]{9}[0-9Xx])""").find(html)?.groupValues?.get(1)
+
+    /**
+     * Reads the book on a pasted Amazon.in, Bookswagon or Atlantic Books page: its title, author,
+     * ISBN, cover and price there. Short links (amzn.in…) are followed. Blocking.
+     */
+    fun identify(link: String, now: Long = System.currentTimeMillis() / 1000): Found {
+        val shop = shopOf(link) ?: throw PriceException("That isn't an Amazon.in, Bookswagon or Atlantic Books page")
+        return when (shop) {
+            "atlantic" -> {
+                val handle = Regex("/products/([^/?#]+)").find(link)?.groupValues?.get(1) ?: throw PriceException("That Atlantic Books address isn't a book's page")
+                val p = JSONObject(get("https://atlanticbooks.com/products/$handle.js"))
+                val v = p.optJSONArray("variants")?.optJSONObject(0)
+                val barcode = v?.optString("barcode")?.filter { it.isDigit() }?.takeIf { it.length == 13 || it.length == 10 }
+                    ?: v?.optString("sku")?.filter { it.isDigit() }?.takeIf { it.length == 13 && it.startsWith("97") }
+                val author = p.optJSONArray("tags")?.let { t -> (0 until t.length()).map { t.optString(it) }.firstOrNull { it.startsWith("author:", true) || it.startsWith("Author_", true) } }
+                    ?.substringAfter(':')?.substringAfter('_')?.trim()
+                val cover = p.optString("featured_image").ifBlank { null }?.let { if (it.startsWith("//")) "https:$it" else it }
+                val title = p.optString("title").ifBlank { throw PriceException("No book on that page") }
+                val fake = Book(document = "x", title = title, author = author, percentage = 0.0, status = null, timestamp = 0, isbn = barcode)
+                Found("atlantic", "https://atlanticbooks.com/products/$handle", title, author, barcode, cover, atlantic(fake, link, now, pinned = true))
+            }
+            "bookswagon" -> {
+                val r = fetch(link)
+                val url = r.url.ifBlank { link }
+                val html = r.body
+                val title = Regex("""<h1[^>]*>\s*([^<]+)</h1>""").find(html)?.groupValues?.get(1)?.let(::unescape)
+                    ?: meta(html, "og:title")?.let(::unescape) ?: throw PriceException("No book on that page")
+                val author = Regex("""(?is)(?:\bby\b|author)[^<]{0,30}<a[^>]*>([^<]{2,80})</a>""").find(html)?.groupValues?.get(1)?.let(::unescape)
+                val isbn = Regex("/(\\d{13})").find(url)?.groupValues?.get(1) ?: isbnIn(html)
+                val fake = Book(document = "x", title = title, author = author, percentage = 0.0, status = null, timestamp = 0, isbn = isbn)
+                Found("bookswagon", url, title, author, isbn, meta(html, "og:image"), bookswagon(fake, url, now, pinned = true))
+            }
+            else -> {
+                val r = fetch(link)
+                val asin = Regex("/(?:dp|gp/product|d)/([A-Z0-9]{10})").find(r.url)?.groupValues?.get(1)
+                    ?: Regex("/(?:dp|gp/product|d)/([A-Z0-9]{10})").find(link)?.groupValues?.get(1)
+                    ?: Regex("""name="ASIN"[^>]*value="([A-Z0-9]{10})"""").find(r.body)?.groupValues?.get(1)
+                    ?: throw PriceException("That Amazon address isn't a product's page")
+                val url = "https://www.amazon.in/dp/$asin"
+                val html = if (r.url.contains(asin)) r.body else get(url)
+                val title = Regex("""id="productTitle"[^>]*>\s*([^<]+)<""").find(html)?.groupValues?.get(1)?.let(::unescape)
+                    ?: throw PriceException("No product on that page (Amazon may have asked to check you're not a robot; try again in a bit)")
+                val author = Regex("""(?s)class="author[^"]*".{0,400}?<a[^>]*>([^<]{2,80})</a>""").find(html)?.groupValues?.get(1)?.let(::unescape)
+                val cover = Regex("""data-old-hires="(https[^"]+)"""").find(html)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+                    ?: Regex(""""hiRes":"(https[^"]+)"""").find(html)?.groupValues?.get(1)
+                    ?: Regex("""id="(?:landingImage|imgBlkFront|ebooksImgBlkFront)"[^>]*src="(https[^"]+)"""").find(html)?.groupValues?.get(1)
+                val isbn = isbnIn(html)
+                val fake = Book(document = "x", title = title, author = author, percentage = 0.0, status = null, timestamp = 0, isbn = isbn)
+                Found("amazon", url, title, author, isbn, cover, amazon(fake, url, now, pinned = true))
+            }
+        }
+    }
+
+    /** One book on an Amazon wish list. */
+    data class Wished(val asin: String, val title: String, val author: String?, val format: String?, val price: Double?, val cover: String?)
+
+    /**
+     * The books on a public Amazon.in wish list (other things on it left out: a book is one whose
+     * line says Paperback, Hardcover, Kindle and the like). Follows its pages, up to a few hundred items.
+     */
+    fun wishList(link: String): List<Wished> {
+        val first = fetch(link)
+        if (!first.url.contains("wishlist", true) && !first.url.contains("/hz/", true) && !link.contains("wishlist", true)) {
+            throw PriceException("That isn't a wish list's address (open the list, then Share › Copy link)")
+        }
+        val out = LinkedHashMap<String, Wished>()
+        var html = first.body
+        var pages = 0
+        while (true) {
+            // Each item: its id, then its name (with the product link), its byline, its price.
+            val ids = Regex("""id="itemName_([A-Z0-9]+)"""").findAll(html).map { it.groupValues[1] }.toList()
+            if (ids.isEmpty() && pages == 0 && html.contains("signin", true) && !html.contains("itemName_")) {
+                throw PriceException("That list is private: make it Public (or Shared) on Amazon, then paste its link again")
+            }
+            for (id in ids) {
+                // The name is the link's title (attributes in either order), else its text.
+                val name = Regex("""<a[^>]*id="itemName_$id"[^>]*>""").find(html)?.value
+                val titleAttr = name?.let { Regex("""title="([^"]*)"""").find(it)?.groupValues?.get(1) }
+                val title = titleAttr?.takeIf { it.isNotBlank() }?.let(::unescape)
+                    ?: Regex("""(?s)id="itemName_$id"[^>]*>([^<]+)<""").find(html)?.groupValues?.get(1)?.let(::unescape) ?: continue
+                val href = name?.let { Regex("""href="([^"]+)"""").find(it)?.groupValues?.get(1) }
+                val asin = href?.let { Regex("/dp/([A-Z0-9]{10})").find(it)?.groupValues?.get(1) } ?: continue
+                val byline = Regex("""(?s)id="item-byline-$id"[^>]*>(.*?)</span>""").find(html)?.groupValues?.get(1)?.replace(Regex("<[^>]+>"), " ")?.let(::unescape)?.replace(Regex("\\s+"), " ")
+                val format = byline?.let { Regex("""\(([^)]*)\)\s*$""").find(it)?.groupValues?.get(1) }
+                val bookish = format?.let { Regex("(?i)paperback|hardcover|hardback|kindle|mass market|board book|audible|audiobook|library binding|flexibound").containsMatchIn(it) } == true
+                if (!bookish) continue
+                val author = byline?.removePrefix("by ")?.substringBefore(" (")?.trim()?.takeIf { it.isNotBlank() }
+                val price = Regex("""(?s)id="itemPrice_$id".{0,300}?a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)?.let(::money)
+                    ?: Regex("""data-price="([\d.]+)"[^>]*data-itemid="$id"""").find(html)?.groupValues?.get(1)?.let(::money)
+                val cover = Regex("""(?s)id="itemImage_$id".{0,400}?src="(https[^"]+)"""").find(html)?.groupValues?.get(1)
+                out[asin] = Wished(asin, title, author, format, price, cover)
+            }
+            // More of the list, a page at a time.
+            val more = Regex("""name="showMoreUrl"[^>]*value="([^"]+)"""").find(html)?.groupValues?.get(1)
+                ?: Regex(""""showMoreUrl"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.get(1)
+            if (more.isNullOrBlank() || ++pages >= 15) break
+            html = runCatching { get(if (more.startsWith("/")) "https://www.amazon.in" + unescape(more) else unescape(more)) }.getOrNull() ?: break
+            Thread.sleep(500)
+        }
+        return out.values.toList()
+    }
+
     // ---- keeping watch ----
 
     /**
@@ -173,14 +334,20 @@ object BookPrices {
         val due = if (force != null) listOfNotNull(s0.priceWatch[force])
             else s0.priceWatch.values.filter { now - it.checkedAt >= EVERY_SEC }.sortedBy { it.checkedAt }.take(perRun)
         for (w in due) {
-            val book = store.snapshot.books[w.document] ?: continue
+            val book = w.book(store.snapshot) ?: continue
             val (points, problems) = runCatching { check(book, w, now) }.getOrElse { emptyList<PricePoint>() to listOf(it.message ?: "couldn't check") }
             store.update { s ->
                 val cur = s.priceWatch[w.document] ?: return@update s
-                // Pages the stores were found at are kept, so next time goes straight there.
-                val links = cur.links + points.filter { it.url != null && it.price != null && it.store !in cur.links && it.format != "Kindle" }.associate { it.store to it.url!! }
+                // Pages the stores were found at are kept, so next time goes straight there; a kept page
+                // that turned out to be another book is let go, with the prices read from it.
+                val wrong = points.filter { it.url == "drop" }.map { it.store }.toSet()
+                val found = points.filter { it.url != null && it.url != "drop" && it.price != null && it.format != "Kindle" }
+                val links = (cur.links - wrong) + found.filter { it.store !in cur.pinned }.associate { it.store to it.url!! }
+                val keep = cur.history.filter { h ->
+                    h.store !in wrong && (h.store in cur.pinned || h.title == null || matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) }))
+                }
                 s.copy(priceWatch = s.priceWatch + (w.document to cur.copy(
-                    history = (cur.history + points).takeLast(400),
+                    history = (keep + points.map { if (it.url == "drop") it.copy(url = null) else it }).takeLast(400),
                     checkedAt = now, links = links,
                     error = problems.takeIf { it.isNotEmpty() && points.none { p -> p.price != null } }?.joinToString("; "),
                 )))
@@ -206,7 +373,7 @@ object BookPrices {
                 val under = w.target?.let { p <= it } == true
                 val fell = earlier != null && p <= earlier * 0.9
                 if ((under || fell) && (w.told == null || p < w.told)) {
-                    s.books[doc]?.let { out += it to best }
+                    w.book(s)?.let { out += it to best }
                     watch = watch + (doc to w.copy(told = p))
                 }
             }

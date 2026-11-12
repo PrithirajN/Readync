@@ -152,7 +152,13 @@ object Opds {
 
     private fun resolve(base: String, href: String?): String? {
         if (href.isNullOrBlank()) return null
-        return runCatching { URI(base).resolve(href.trim().replace(" ", "%20")).toString() }.getOrNull() ?: href
+        // Template parts ({searchTerms}, {?query}…) aren't allowed in an address: set aside while it's joined to the base.
+        val held = ArrayList<String>()
+        val plain = Regex("\\{[^}]*\\}").replace(href.trim()) { m -> held += m.value; "TPL${held.size - 1}X" }
+        val joined = runCatching { URI(base).resolve(plain.replace(" ", "%20")).toString() }.getOrNull()
+            ?: runCatching { URL(URL(base), plain).toString() }.getOrNull()
+            ?: return href
+        return held.foldIndexed(joined) { i, acc, t -> acc.replace("TPL${i}X", t) }
     }
 
     private fun isAcq(rel: String?) = rel != null && rel.startsWith("http://opds-spec.org/acquisition")
@@ -384,7 +390,11 @@ object Opds {
 
     /** Searches one server: its results (books first), up to two pages. */
     fun search(context: Context, server: Server, query: String): List<Entry> {
-        val template = searchTemplate(context, server) ?: throw OpdsException("${server.name} has no search")
+        val template = searchTemplate(context, server)?.let { t ->
+            // Kept from before relative search addresses were joined to the server's: joined now.
+            if (t.startsWith("http://", true) || t.startsWith("https://", true)) t
+            else resolve(server.url, t)?.also { fixed -> put(context, server.copy(search = fixed)) } ?: t
+        } ?: throw OpdsException("${server.name} has no search")
         val url = template
             .replace("{searchTerms}", URLEncoder.encode(query, "UTF-8").replace("+", "%20"))
             // Optional OpenSearch parameters left empty.
@@ -403,11 +413,76 @@ object Opds {
      * it with). Blocking. The sign-in goes only to the server's own host, and redirects are
      * followed by hand so it isn't carried elsewhere.
      */
-    fun download(context: Context, server: Server, acq: Acquisition, title: String, progress: (Float) -> Unit = {}): Uri {
-        var url = acq.href
+    /** Where a download is: what it's doing, the file's name once known, bytes so far of how many (0 when the server doesn't say), and the speed. */
+    data class Progress(val stage: String, val name: String? = null, val done: Long = 0, val total: Long = 0, val bytesPerSec: Double = 0.0)
+
+    /** A finished download: where it is, its name, size and kind. */
+    data class Saved(val uri: Uri, val name: String, val size: Long, val type: String)
+
+    /**
+     * Downloads [acq] into Downloads/Readync, telling [progress] how it's going (a few times a second),
+     * and stops (removing the part written) when [cancel] is set. Blocking. The sign-in goes only to
+     * the server's own host, and redirects are followed by hand so it isn't carried elsewhere.
+     */
+    fun download(
+        context: Context, server: Server, acq: Acquisition, title: String,
+        cancel: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false),
+        progress: (Progress) -> Unit = {},
+    ): Saved {
+        val (conn, url) = connect(server, acq.href, cancel, progress)
+        val type = conn.contentType?.substringBefore(';')?.trim()?.takeIf { it != "application/octet-stream" } ?: acq.type ?: "application/octet-stream"
+        val disposition = conn.getHeaderField("Content-Disposition")
+        val fromHeader = disposition?.let { Regex("filename\\*?=(?:UTF-8'')?\"?([^\";]+)\"?", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1) }
+            ?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
+        val ext = extensionFor(acq.type ?: type, url)
+        val name = (fromHeader ?: (title.replace(Regex("[\\\\/:*?\"<>|]"), "").take(80).trim() + ext)).ifBlank { "book$ext" }
+        val total = conn.contentLengthLong.coerceAtLeast(0)
+        progress(Progress("Downloading", name, 0, total))
+        var target: Uri? = null
+        var file: File? = null
+        val cr = context.contentResolver
+        var written = 0L
+        try {
+            conn.inputStream.use { input ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, name)
+                        put(MediaStore.Downloads.MIME_TYPE, type)
+                        put(MediaStore.Downloads.RELATIVE_PATH, "Download/" + io.github.prithirajn.trackersync.Edition.name)
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    target = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw OpdsException("Couldn't make the file in Downloads")
+                    cr.openOutputStream(target!!)?.use { out -> written = copy(input, out, name, total, cancel, progress) } ?: throw OpdsException("Couldn't write to Downloads")
+                    progress(Progress("Saving", name, written, total))
+                    cr.update(target!!, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+                } else {
+                    val dir = File(context.getExternalFilesDir(null), "Books").apply { mkdirs() }
+                    file = File(dir, name)
+                    file!!.outputStream().use { out -> written = copy(input, out, name, total, cancel, progress) }
+                    target = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".pages", file!!)
+                }
+            }
+        } catch (e: Exception) {
+            // Nothing half-written is left behind.
+            target?.let { runCatching { cr.delete(it, null, null) } }
+            file?.let { runCatching { it.delete() } }
+            throw if (e is OpdsException) e else OpdsException(if (cancel.get()) "Cancelled" else "The download stopped: ${e.message ?: "connection lost"}")
+        } finally {
+            conn.disconnect()
+        }
+        return Saved(target!!, name, written, type)
+    }
+
+    /** Opens [href] on [server], following redirects by hand (the sign-in goes only to the server's own host). */
+    private fun connect(
+        server: Server, href: String, cancel: java.util.concurrent.atomic.AtomicBoolean, progress: (Progress) -> Unit,
+    ): Pair<HttpURLConnection, String> {
+        var url = href
         var conn: HttpURLConnection
         var hops = 0
+        progress(Progress("Connecting to ${server.name}"))
         while (true) {
+            if (cancel.get()) throw OpdsException("Cancelled")
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
                 connectTimeout = 20_000; readTimeout = 60_000
@@ -417,52 +492,72 @@ object Opds {
             val code = conn.responseCode
             if (code in 300..399 && hops++ < 5) {
                 val loc = conn.getHeaderField("Location") ?: break
-                url = URL(URL(url), loc).toString(); conn.disconnect(); continue
+                url = URL(URL(url), loc).toString(); conn.disconnect()
+                progress(Progress("Following the link to ${runCatching { URL(url).host }.getOrNull() ?: "the file"}"))
+                continue
             }
+            if (code == 401 || code == 403) { conn.disconnect(); throw OpdsException("${server.name} wouldn't hand over the file (it needs a sign-in, HTTP $code)") }
+            if (code == 404) { conn.disconnect(); throw OpdsException("${server.name} no longer has that file (HTTP 404)") }
             if (code !in 200..299) { conn.disconnect(); throw OpdsException("${server.name} answered HTTP $code for the file") }
             break
         }
-        val type = conn.contentType?.substringBefore(';')?.trim() ?: acq.type ?: "application/octet-stream"
-        val disposition = conn.getHeaderField("Content-Disposition")
-        val fromHeader = disposition?.let { Regex("filename\\*?=(?:UTF-8'')?\"?([^\";]+)\"?", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1) }
-            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-        val ext = extensionFor(acq.type ?: type, url)
-        val name = (fromHeader ?: (title.replace(Regex("[\\\\/:*?\"<>|]"), "").take(80).trim() + ext)).ifBlank { "book$ext" }
-        val total = conn.contentLengthLong
-        val target: Uri
-        conn.inputStream.use { input ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, name)
-                    put(MediaStore.Downloads.MIME_TYPE, acq.type ?: type)
-                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/" + io.github.prithirajn.trackersync.Edition.name)
-                    put(MediaStore.Downloads.IS_PENDING, 1)
-                }
-                val cr = context.contentResolver
-                target = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw OpdsException("Couldn't make the file in Downloads")
-                cr.openOutputStream(target)?.use { out -> copy(input, out, total, progress) } ?: throw OpdsException("Couldn't write to Downloads")
-                cr.update(target, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
-            } else {
-                val dir = File(context.getExternalFilesDir(null), "Books").apply { mkdirs() }
-                val f = File(dir, name)
-                f.outputStream().use { out -> copy(input, out, total, progress) }
-                target = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".pages", f)
-            }
-        }
-        conn.disconnect()
-        return target
+        return conn to url
     }
 
-    private fun copy(input: java.io.InputStream, out: java.io.OutputStream, total: Long, progress: (Float) -> Unit) {
+    /**
+     * Downloads [acq] into [file] (the app's own storage), for the app's own use. Blocking; nothing
+     * half-written is left behind.
+     */
+    fun downloadTo(
+        server: Server, acq: Acquisition, file: File,
+        cancel: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false),
+        progress: (Progress) -> Unit = {},
+    ): Long {
+        val (conn, _) = connect(server, acq.href, cancel, progress)
+        val total = conn.contentLengthLong.coerceAtLeast(0)
+        val part = File(file.parentFile, file.name + ".part")
+        try {
+            part.parentFile?.mkdirs()
+            val written = conn.inputStream.use { input -> part.outputStream().use { out -> copy(input, out, file.name, total, cancel, progress) } }
+            if (!part.renameTo(file)) { part.copyTo(file, overwrite = true); part.delete() }
+            return written
+        } catch (e: Exception) {
+            runCatching { part.delete() }
+            throw if (e is OpdsException) e else OpdsException(if (cancel.get()) "Cancelled" else "The download stopped: ${e.message ?: "connection lost"}")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun copy(
+        input: java.io.InputStream, out: java.io.OutputStream, name: String, total: Long,
+        cancel: java.util.concurrent.atomic.AtomicBoolean, progress: (Progress) -> Unit,
+    ): Long {
         val buf = ByteArray(64 * 1024)
         var done = 0L
+        val started = System.nanoTime()
+        var lastTold = 0L
+        // Speed over the last couple of seconds, so it settles rather than jumping.
+        val window = ArrayDeque<Pair<Long, Long>>()
         while (true) {
+            if (cancel.get()) throw OpdsException("Cancelled")
             val n = input.read(buf)
             if (n < 0) break
             out.write(buf, 0, n)
             done += n
-            if (total > 0) progress((done.toFloat() / total).coerceIn(0f, 1f))
+            val now = System.nanoTime()
+            window.addLast(now to done)
+            while (window.size > 2 && now - window.first().first > 2_000_000_000L) window.removeFirst()
+            if (now - lastTold > 200_000_000L) {
+                lastTold = now
+                val (t0, d0) = window.first()
+                val secs = (now - t0) / 1e9
+                val speed = if (secs > 0.05) (done - d0) / secs else done / ((now - started) / 1e9).coerceAtLeast(0.05)
+                progress(Progress("Downloading", name, done, total, speed))
+            }
         }
+        progress(Progress("Downloading", name, done, total, 0.0))
+        return done
     }
 
     /** A cover or thumbnail, with the sign-in when it's on the server's own host. Blocking. */

@@ -278,6 +278,8 @@ class SyncEngine(private val store: Store) {
                     runCatching { fillPastBooks() }
                     // Prices of the books you're watching, a few each sync (each at most twice a day).
                     runCatching { io.github.prithirajn.trackersync.source.BookPrices.refresh(store) }
+                    // A copy of a book you're reading, from your OPDS catalogs (one a sync), for the words around quotes.
+                    runCatching { io.github.prithirajn.trackersync.source.BookCopies.refresh(store.snapshot.books.values) }
                     runCatching { Releases.check(store) }
                     runCatching { SffRadar.refresh(store, force = false) }
                     if (store.snapshot.pending.isNotEmpty()) runCatching { pushPending() }

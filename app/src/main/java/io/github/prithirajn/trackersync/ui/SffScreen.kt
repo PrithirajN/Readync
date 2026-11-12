@@ -79,7 +79,7 @@ import java.time.format.TextStyle
 import java.util.Locale
 
 /** The SFF tab's views: ranked for you, newest first, by genre, and what you've kept. */
-private enum class SffView(val label: String) { FOR_YOU("For you"), LATEST("Latest"), GENRES("Genres"), SAVED("Saved") }
+private enum class SffView(val label: String) { FOR_YOU("For you"), LATEST("Latest"), SCREEN("Screen"), GENRES("Genres"), SAVED("Saved") }
 
 /** Each genre's colour, for its name over a story and its dot. */
 internal fun sectorColor(sec: Sector): Color = when (sec) {
@@ -103,7 +103,8 @@ internal fun genreName(sec: Sector): String = when (sec) {
  * The SFF tab: speculative-fiction news from a few dozen outlets, clubbed by story and ranked for
  * you (see [SffFeed]), set like a magazine. For you opens on the lead story across a big picture,
  * then the top stories, what's new about books on your shelves, new books as covers, and the rest
- * as a list, with a wide picture now and then. Latest is everything newest first; Genres is the five
+ * as a list, with a wide picture now and then. Latest is everything newest first; Screen is SFF films,
+ * series and adaptations; Genres is the five
  * genres and the news topics to follow, mute or open; Saved is what you've kept, what you've read,
  * alerts and sources.
  */
@@ -210,6 +211,29 @@ fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
                         item(key = "day-$d") { SectionHead(dayLabel(d)) }
                     }
                     item(key = "l-" + s.id) { ListStory(s, open, { menuFor = s }) }
+                }
+            }
+            view == SffView.SCREEN -> {
+                // SFF on screen: films, series and adaptations, best first, with a big picture now and then.
+                val screen = stories.filter { SffFeed.isScreen(it.cluster) }
+                item(key = "screen-head") { SectionHead("Films and series") }
+                if (screen.isEmpty()) item(key = "screen-empty") {
+                    EmptyNote(if (state.sffLoading) "Gathering film and TV news…" else "No film or TV news yet. New stories come in about every hour.")
+                }
+                val unread = screen.filter { !it.read }
+                val seen = screen.filter { it.read }
+                unread.forEachIndexed { i, s ->
+                    item(key = "s-" + s.id) {
+                        when {
+                            i == 0 && !s.lead.coverUrl.isNullOrBlank() -> LeadStory(s, open) { menuFor = s }
+                            i % 6 == 3 && !s.lead.coverUrl.isNullOrBlank() -> WideStory(s, open, { menuFor = s })
+                            else -> ListStory(s, open, { menuFor = s })
+                        }
+                    }
+                }
+                if (seen.isNotEmpty()) {
+                    item(key = "screen-read") { SectionHead("Already read") }
+                    for (s in seen.take(20)) item(key = "sr-" + s.id) { ListStory(s, open, { menuFor = s }) }
                 }
             }
             view == SffView.GENRES -> item(key = "genres") {

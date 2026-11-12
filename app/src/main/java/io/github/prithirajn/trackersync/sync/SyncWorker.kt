@@ -175,7 +175,7 @@ object Notices {
                     .setSmallIcon(R.drawable.lucide_bell)
                     .setContentTitle("${book.displayTitle} is $price")
                     .setContentText(listOfNotNull(shop, p.format, p.mrp?.let { m -> "was ₹${Math.round(m)}" }).joinToString(" · "))
-                    .setContentIntent(openApp(context, MainActivity.ACTION_OPEN_BOOK, book.document, 70))
+                    .setContentIntent(if (book.document in store.snapshot.books) openApp(context, MainActivity.ACTION_OPEN_BOOK, book.document, 70) else openApp(context, code = 70))
                     .setAutoCancel(true)
                     .build(),
             )

@@ -39,13 +39,18 @@ class TrackerSyncApp : Application() {
                     page = clip.pageIn(book?.pageCount), others = BS.othersFor(store.snapshot, clip),
                 ).let { c ->
                     // The real page around it, when you've photographed it.
-                    val found = store.snapshot.clipPages[clip.id]?.let { io.github.prithirajn.trackersync.sync.PageContext.find(it, clip.text) }
+                    // (or, without a photo, from the app's own copy of the book).
+                    val page = store.snapshot.clipPages[clip.id]
+                        ?: runCatching { io.github.prithirajn.trackersync.source.BookCopies.around(this, clip.document, clip.text, clip.spine) }.getOrNull()
+                    val found = page?.let { io.github.prithirajn.trackersync.sync.PageContext.find(it, clip.text) }
                     if (found != null) c.copy(before = found.before, after = found.after) else c
                 },
                 BS.saved(this).copy(format = BS.Format.SQUARE),
                 mark = BS.markOn(this),
             )
         }
+        // The app's own copies of books (from your OPDS catalogs), for the words around a quote.
+        io.github.prithirajn.trackersync.source.BookCopies.install(this)
         // Mihon's automatic backups, from the folder you chose.
         io.github.prithirajn.trackersync.ui.MihonFolder.install(this)
         io.github.prithirajn.trackersync.ui.KoSidecarFolder.install(this)

@@ -551,8 +551,9 @@ object SffArticleReader {
      * `<table>`, `<ul>`, `<ol>`, `<strong>`, `<em>`, `<a>`) and hydrating lazy-loaded images.
      */
     internal fun extractArticleFromHtml(html: String, item: SffFeedItem, url: String): ReadableArticle {
-        val ogImage = item.coverUrl ?: Regex("<meta[^>]+property=[\"']og:image[\"'][^>]+content=[\"'](https?://[^\"']+)[\"']", RegexOption.IGNORE_CASE)
-            .find(html)?.groupValues?.get(1)?.let { Html.decode(it) }
+        val ogImage = item.coverUrl ?: (Regex("<meta[^>]+property=[\"']og:image[\"'][^>]+content=[\"'](https?://[^\"']+)[\"']", RegexOption.IGNORE_CASE).find(html)
+            ?: Regex("<meta[^>]+content=[\"'](https?://[^\"']+)[\"'][^>]+property=[\"']og:image[\"']", RegexOption.IGNORE_CASE).find(html))
+            ?.groupValues?.get(1)?.let { Html.decode(it) }
         val ogAuthor = item.author ?: Regex("<meta[^>]+name=[\"']author[\"'][^>]+content=[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.get(1)?.let { Html.text(it).trim() }
 
@@ -702,6 +703,9 @@ object SffArticleReader {
         val tokenRegex = Regex(
             "(?is)<(figure|h[1-4]|p|blockquote|ul|ol|table|pre|hr)\\b[^>]*>(.*?)</\\1>|<img\\b[^>]+/>"
         )
+        // Blogger and older sites put text straight into <div>s split by <br><br>, with no <p> at all.
+        // Turn that loose text into real paragraphs (bold and italics kept) before reading the blocks.
+        html = paragraphize(html, tokenRegex)
         val out = ArrayList<String>()
         val seenImages = HashSet<String>()
         heroImageUrl?.let { seenImages += it }
@@ -776,6 +780,55 @@ object SffArticleReader {
             if (out.size >= 120) break
         }
         return out.joinToString("\n")
+    }
+
+    /**
+     * Wraps text that sits outside any block tag into `<p>` paragraphs. Div and section edges and
+     * double line breaks end a paragraph; a single `<br>` stays as a line break inside one.
+     */
+    private fun paragraphize(html: String, tokenRegex: Regex): String {
+        val out = StringBuilder(html.length + 256)
+        var last = 0
+        fun gap(text: String) {
+            if (text.isBlank()) return
+            val pieces = text
+                .replace(Regex("(?is)</?(div|section|center|article|main|header|footer|dl|dd|dt)\\b[^>]*>"), "\u0000")
+                .replace(Regex("(?is)(<br\\s*/?>\\s*(&nbsp;|\\u00A0)?\\s*){2,}"), "\u0000")
+                .split('\u0000')
+            for (piece in pieces) {
+                val trimmed = piece.trim()
+                    .replace(Regex("(?is)^(\\s*<br\\s*/?>)+"), "")
+                    .replace(Regex("(?is)(<br\\s*/?>\\s*)+$"), "")
+                    .trim()
+                val plain = Html.text(trimmed).replace('\u00A0', ' ').trim()
+                if (plain.isEmpty()) continue
+                out.append("<p>").append(balanceInline(trimmed)).append("</p>")
+            }
+        }
+        for (m in tokenRegex.findAll(html)) {
+            gap(html.substring(last, m.range.first))
+            out.append(m.value)
+            last = m.range.last + 1
+        }
+        gap(html.substring(last))
+        return out.toString()
+    }
+
+    /** Closes bold/italic tags a split left open, and drops closers whose opener fell in another piece. */
+    private fun balanceInline(piece: String): String {
+        var s = piece
+        for (tag in listOf("b", "strong", "i", "em", "a")) {
+            val tokens = Regex("(?i)<(/?)$tag\\b[^>]*>").findAll(s).toList()
+            var depth = 0
+            val drop = ArrayList<IntRange>()
+            for (t in tokens) {
+                if (t.groupValues[1].isEmpty()) depth++
+                else if (depth > 0) depth-- else drop += t.range
+            }
+            for (r in drop.asReversed()) s = s.removeRange(r)
+            repeat(depth) { s += "</$tag>" }
+        }
+        return s
     }
 
     /** Retains only safe inline formatting tags (`<strong>`, `<b>`, `<em>`, `<i>`, `<code>`, `<a href>`, `<br>`). */
@@ -886,7 +939,8 @@ object SffArticleReader {
 
         val mediaHtml = when {
             article.youtubeVideoId != null -> """<div class="hero video"><iframe src="https://www.youtube.com/embed/${article.youtubeVideoId}?playsinline=1" frameborder="0" allowfullscreen></iframe></div>"""
-            !hero.isNullOrBlank() -> """<div class="hero"><img src="${escapeAttr(hero)}" alt="" onerror="this.parentElement.style.display='none'"/></div>"""
+            // Tall pictures (book covers) are shown whole over a blurred copy of themselves instead of being cropped.
+            !hero.isNullOrBlank() -> """<div class="hero"><img class="hero-bg" src="${escapeAttr(hero)}" alt="" aria-hidden="true"/><img class="hero-img" src="${escapeAttr(hero)}" alt="" onload="if(this.naturalHeight>this.naturalWidth*1.05)this.parentElement.classList.add('tall')" onerror="this.parentElement.style.display='none'"/></div>"""
             else -> """<div class="hero-none"></div>"""
         }
         val rewrittenHtml = if (rewritten != null) {
@@ -941,7 +995,12 @@ object SffArticleReader {
                     #progress { position: fixed; top: 0; left: 0; height: 3px; width: 0; background: $accentHex; z-index: 9; transition: width .08s linear; }
 
                     .hero { width: 100%; aspect-ratio: 3 / 2; max-height: 62vh; background: $borderHex; overflow: hidden; }
+                    .hero { position: relative; }
                     .hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+                    .hero .hero-bg { display: none; }
+                    .hero.tall { aspect-ratio: auto; height: min(62vh, 520px); max-height: none; background: #000; }
+                    .hero.tall .hero-bg { display: block; position: absolute; inset: 0; filter: blur(28px) brightness(0.55); transform: scale(1.2); }
+                    .hero.tall .hero-img { position: relative; object-fit: contain; padding: 20px 0; box-sizing: border-box; }
                     .hero.video { position: relative; aspect-ratio: 16 / 9; background: #000; }
                     .hero.video iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
                     .hero-none { height: 12px; }
@@ -1026,7 +1085,7 @@ object SffArticleReader {
                         var ps = document.querySelectorAll('.body p');
                         for (var i = 0; i < ps.length && i < 6; i++) {
                             var t = (ps[i].textContent || '').trim();
-                            if (t.length >= 160 && /^[A-Za-z“"']/.test(t) && !ps[i].querySelector('img')) { ps[i].classList.add('lede'); break; }
+                            if (t.length >= 160 && /^[A-Za-z“"']/.test(t) && !/^(buy|order|pre-?order|format\/info|official)\b/i.test(t) && !ps[i].querySelector('img')) { ps[i].classList.add('lede'); break; }
                         }
                         // Tables scroll on their own instead of pushing the page wide.
                         document.querySelectorAll('.body table').forEach(function (t) {

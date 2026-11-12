@@ -53,94 +53,79 @@ internal fun rupees(v: Double): String {
 }
 
 /**
- * A book's prices, on its page: watch it, then each store's price now (against the printed one,
- * with what it's come down by), the lowest ever seen, how the best price has moved, the price you'd
- * buy at, and a store's exact page to point it to when it found the wrong edition.
+ * One tracked book, in a sheet from Deals: each store's price now (against the printed one, with
+ * what it's come down by), the lowest ever seen, how the best price has moved, the price you'd buy
+ * at, a store's exact page to point it to when it found the wrong edition, and into your library.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun PriceSection(vm: AppViewModel, state: Snapshot, book: Book) {
+fun DealSheet(vm: AppViewModel, state: Snapshot, key: String, onClose: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
-    val w = state.priceWatch[book.document]
+    val w = state.priceWatch[key] ?: return
+    val book = w.book(state)
+    val inLibrary = key in state.books
     var checking by remember { mutableStateOf(false) }
     var linking by remember { mutableStateOf(false) }
     var said by remember { mutableStateOf<String?>(null) }
-    Column(Modifier.fillMaxWidth().animateContentSize()) {
-        if (w == null) {
-            CpCard {
-                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Watch its price", style = CpType.bodyStrong, color = c.text)
-                        Quiet("Amazon.in, Bookswagon and Atlantic Books, checked twice a day. You hear when it drops.", maxLines = 3)
-                    }
-                    HSpace(10)
-                    PillButton("Watch", { vm.watchPrice(book.document) }, outlined = false)
-                }
-            }
-            return@Column
-        }
+    PlainSheet(book?.displayTitle ?: w.title ?: "Book", onClose) {
+        (book?.author ?: w.author)?.let { Quiet(it) }
+        VSpace(12)
         val best = w.best
         val lowest = w.lowest
-        CpCard {
-            Column(Modifier.padding(14.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        DeviceLabel("Best price now", color = c.quiet)
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(best?.price?.let { rupees(it) } ?: "–", fontFamily = Lora, fontWeight = FontWeight.Bold, fontSize = 30.sp, color = c.text)
-                            best?.let { b ->
-                                HSpace(8)
-                                Text(listOfNotNull(BookPrices.shop(b.store)?.name, b.format).joinToString(" · "), style = CpType.small, color = c.quiet, modifier = Modifier.padding(bottom = 6.dp))
-                            }
-                        }
-                        val bits = listOfNotNull(
-                            lowest?.let { "lowest seen ${rupees(it)}" },
-                            w.drop?.takeIf { it >= 0.01 }?.let { "↓ ${Math.round(it * 100)}% since you started watching" },
-                        )
-                        if (bits.isNotEmpty()) Text(bits.joinToString(" · "), style = CpType.small, color = if ((w.drop ?: 0.0) >= 0.05) c.good else c.quiet)
-                    }
-                    if (checking || (w.checkedAt == 0L && w.history.isEmpty())) CircularProgressIndicator(Modifier.size(18.dp), color = c.accent, strokeWidth = 2.dp)
-                }
-                // How the best price has moved, one point per check.
-                val line = remember(w.history) {
-                    w.history.filter { it.price != null && it.inStock }.groupBy { it.at }.toSortedMap().map { (at, ps) -> at to ps.minOf { it.price!! } }.takeLast(60)
-                }
-                if (line.size >= 2) {
-                    VSpace(10)
-                    Sparkline(line.map { it.second }, Modifier.fillMaxWidth().height(44.dp))
-                }
-                VSpace(12)
-                for (p in w.latest.sortedWith(compareBy({ it.price == null || !it.inStock }, { it.price ?: Double.MAX_VALUE }))) {
-                    StoreRow(p) { p.url?.let { u -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } } }
-                }
-                w.error?.let { VSpace(6); Quiet("Couldn't read the stores: $it", color = c.faint, maxLines = 3) }
-                VSpace(12)
-                TargetRow(w) { vm.setPriceTarget(book.document, it) }
-                VSpace(10)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PillButton(if (checking) "Checking…" else "Check now", {
-                        if (!checking) { checking = true; said = null; vm.checkPrice(book.document) { e -> checking = false; said = e?.let { "Couldn't read the stores: $it" } } }
-                    })
-                    PillButton("Wrong book?", { linking = !linking })
-                    PillButton("Stop watching", { vm.unwatchPrice(book.document) })
-                }
-                said?.let { VSpace(6); AnimatedQuiet(it, color = c.faint) }
-                if (linking) {
-                    VSpace(10)
-                    var url by remember { mutableStateOf("") }
-                    Quiet("Paste the book's page from Amazon.in, Bookswagon or Atlantic Books, and that store follows exactly that one.")
-                    VSpace(6)
-                    CpTextField(url, { url = it }, "Store page", placeholder = "https://www.amazon.in/dp/…", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
-                    VSpace(6)
-                    PillButton("Use this page", {
-                        val err = vm.setPriceLink(book.document, url)
-                        if (err == null) { linking = false; said = "Following that page now"; checking = true; vm.checkPrice(book.document) { checking = false } } else said = err
-                    }, outlined = false)
-                }
-                VSpace(6)
-                Quiet("Checked " + (if (w.checkedAt > 0) ago(w.checkedAt * 1000) else "not yet") + ". Prices are read from the stores' pages and can be off now and then.", color = c.faint)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            BookCover(book?.coverUrl ?: w.cover, book?.displayTitle ?: "", 56.dp, 84.dp)
+            HSpace(14)
+            Column(Modifier.weight(1f)) {
+                DeviceLabel("Best price now", color = c.quiet)
+                Text(best?.price?.let { rupees(it) } ?: "–", fontFamily = Lora, fontWeight = FontWeight.Bold, fontSize = 30.sp, color = c.text)
+                best?.let { b -> Text(listOfNotNull(BookPrices.shop(b.store)?.name, b.format).joinToString(" · "), style = CpType.small, color = c.quiet) }
+                val bits = listOfNotNull(
+                    lowest?.let { "lowest seen ${rupees(it)}" },
+                    w.drop?.takeIf { it >= 0.01 }?.let { "↓ ${Math.round(it * 100)}% since you started" },
+                )
+                if (bits.isNotEmpty()) Text(bits.joinToString(" · "), style = CpType.small, color = if ((w.drop ?: 0.0) >= 0.05) c.good else c.quiet)
             }
+            if (checking) CircularProgressIndicator(Modifier.size(18.dp), color = c.accent, strokeWidth = 2.dp)
         }
+        // How the best price has moved, one point per check.
+        val line = remember(w.history) {
+            w.history.filter { it.price != null && it.inStock }.groupBy { it.at }.toSortedMap().map { (_, ps) -> ps.minOf { it.price!! } }.takeLast(60)
+        }
+        if (line.size >= 2) { VSpace(12); Sparkline(line, Modifier.fillMaxWidth().height(44.dp)) }
+        VSpace(12)
+        for (p in w.latest.sortedWith(compareBy({ it.price == null || !it.inStock }, { it.price ?: Double.MAX_VALUE }))) {
+            StoreRow(p) { p.url?.let { u -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } } }
+        }
+        if (w.latest.isEmpty()) Quiet(if (w.checkedAt == 0L) "Looking at the stores…" else "Not found at any of the three yet.", color = c.faint)
+        w.error?.let { VSpace(6); Quiet("Couldn't read the stores: $it", color = c.faint, maxLines = 3) }
+        VSpace(14)
+        TargetRow(w) { vm.setPriceTarget(key, it) }
+        VSpace(12)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            PillButton(if (checking) "Checking…" else "Check now", {
+                if (!checking) { checking = true; said = null; vm.checkPrice(key) { e -> checking = false; said = e?.let { "Couldn't read the stores: $it" } } }
+            })
+            PillButton("Wrong book?", { linking = !linking })
+            if (inLibrary) PillButton("Open in library", { onClose(); AppActions.pending.value = AppAction.OpenBook(key) })
+            else PillButton("+ Want to read", { vm.addTrackedToLibrary(key) { e -> said = e ?: "Added to Want to Read" } })
+            PillButton("Stop tracking", { vm.unwatchPrice(key); onClose() }, danger = true)
+        }
+        said?.let { VSpace(6); AnimatedQuiet(it, color = c.faint) }
+        if (linking) {
+            VSpace(10)
+            var url by remember { mutableStateOf("") }
+            Quiet("Paste the book's page from Amazon.in, Bookswagon or Atlantic Books, and that store follows exactly that one.")
+            VSpace(6)
+            CpTextField(url, { url = it }, "Store page", placeholder = "https://www.amazon.in/dp/…", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
+            VSpace(6)
+            PillButton("Use this page", {
+                val err = vm.setPriceLink(key, url)
+                if (err == null) { linking = false; said = "Following that page now"; checking = true; vm.checkPrice(key) { checking = false } } else said = err
+            }, outlined = false)
+        }
+        VSpace(10)
+        Quiet("Checked " + (if (w.checkedAt > 0) ago(w.checkedAt * 1000) else "not yet") + ", and twice a day during syncs. Prices are read from the stores' pages and can be off now and then.", color = c.faint)
     }
 }
 
@@ -182,7 +167,7 @@ private fun StoreRow(p: PricePoint, onOpen: () -> Unit) {
 /** The price you'd buy it at: a few quick picks from the best price now, or any good drop. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun TargetRow(w: PriceWatch, onSet: (Double?) -> Unit) {
+internal fun TargetRow(w: PriceWatch, onSet: (Double?) -> Unit) {
     val c = Cp.colors
     val now = w.best?.price
     Text("Tell me when it's", style = CpType.label, color = c.text)
@@ -203,11 +188,21 @@ private fun TargetRow(w: PriceWatch, onSet: (Double?) -> Unit) {
             ) { Text(label, style = CpType.small, color = if (on) c.accentText else c.textMid) }
         }
     }
+    // Or your own price.
+    VSpace(8)
+    var own by remember(w.document) { mutableStateOf("") }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) {
+            CpTextField(own, { v -> own = v.filter { it.isDigit() }.take(6) }, "Your price (₹)", placeholder = w.target?.let { "${Math.round(it)}" } ?: "e.g. 299", keyboard = androidx.compose.ui.text.input.KeyboardType.Number)
+        }
+        HSpace(8)
+        PillButton("Set", { own.toDoubleOrNull()?.takeIf { it > 0 }?.let { onSet(it); own = "" } }, outlined = false)
+    }
 }
 
 /** The best price over time, a line with its lowest point marked. */
 @Composable
-private fun Sparkline(values: List<Double>, modifier: Modifier) {
+internal fun Sparkline(values: List<Double>, modifier: Modifier) {
     val c = Cp.colors
     Canvas(modifier) {
         val lo = values.min(); val hi = values.max()
@@ -221,49 +216,41 @@ private fun Sparkline(values: List<Double>, modifier: Modifier) {
     }
 }
 
-/** On a book's card: its best price, green with how far it's come down when it has. */
-@Composable
-fun PriceTag(w: PriceWatch?) {
-    val c = Cp.colors
-    val p = w?.best?.price ?: return
-    val drop = w.drop?.takeIf { it >= 0.05 }
-    val hit = w.target?.let { p <= it } == true
-    Row(
-        Modifier.clip(CpShapes.pill).background(if (drop != null || hit) c.good.copy(alpha = 0.16f) else c.divider).padding(horizontal = 8.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(rupees(p), style = CpType.small.copy(fontWeight = FontWeight.SemiBold), color = if (drop != null || hit) c.good else c.textMid)
-        drop?.let { HSpace(4); Text("↓${Math.round(it * 100)}%", style = CpType.small, color = c.good) }
-    }
-}
-
 /**
- * Deals: every watched book, the ones under your price first, then the biggest drops, each with its
- * best price and where; tap one to open it.
+ * Deals: add a book from a store link (or a whole Amazon wish list), then every tracked book, the
+ * ones under your price first, then the biggest drops, each with its best price and where; tap one
+ * for its stores, your price and the rest.
  */
 @Composable
-fun DealsList(state: Snapshot, onOpen: (String) -> Unit) {
+fun DealsList(vm: AppViewModel, state: Snapshot) {
     val c = Cp.colors
+    var open by remember { mutableStateOf<String?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
     val rows = remember(state.priceWatch, state.books) {
-        state.priceWatch.values.mapNotNull { w -> state.books[w.document]?.let { it to w } }
+        state.priceWatch.values.mapNotNull { w -> w.book(state)?.let { it to w } }
             .sortedWith(compareByDescending<Pair<Book, PriceWatch>> { (_, w) -> w.target?.let { t -> (w.best?.price ?: Double.MAX_VALUE) <= t } == true }
-                .thenByDescending { (_, w) -> w.drop ?: -1.0 })
+                .thenByDescending { (_, w) -> w.drop ?: -1.0 }.thenByDescending { (_, w) -> w.since })
     }
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BigButton("+ Add from a link", { adding = true }, Modifier.weight(1f))
+            BigButton("Amazon wish list", { importing = true }, Modifier.weight(1f), filled = false)
+        }
+        VSpace(14)
         if (rows.isEmpty()) {
             CpCard {
                 Column(Modifier.padding(18.dp)) {
-                    Text("No prices watched yet", style = CpType.bodyStrong, color = c.text)
-                    Quiet("Open a book (Want to Read is a good place) and tap Watch under its price. Amazon.in, Bookswagon and Atlantic Books are checked twice a day, and you hear when one drops.")
+                    Text("No prices tracked yet", style = CpType.bodyStrong, color = c.text)
+                    Quiet("Paste a book's page from Amazon.in, Bookswagon or Atlantic Books, import an Amazon wish list, or use Track its price in a book's ⋯ menu. Each is looked for at all three stores, checked twice a day, and you hear when one drops.")
                 }
             }
-            return@Column
         }
         for ((book, w) in rows) {
             val best = w.best
             val hit = w.target?.let { t -> (best?.price ?: Double.MAX_VALUE) <= t } == true
             Row(
-                Modifier.fillMaxWidth().clip(CpShapes.control).bouncyClickable(CpShapes.control, pressedScale = 0.99f, onClickLabel = "Open ${book.displayTitle}") { onOpen(book.document) }
+                Modifier.fillMaxWidth().clip(CpShapes.control).bouncyClickable(CpShapes.control, pressedScale = 0.99f, onClickLabel = "Open ${book.displayTitle}") { open = w.document }
                     .padding(vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -272,9 +259,11 @@ fun DealsList(state: Snapshot, onOpen: (String) -> Unit) {
                 Column(Modifier.weight(1f)) {
                     Text(book.displayTitle, style = CpType.bodyStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(
-                        listOfNotNull(best?.let { BookPrices.shop(it.store)?.name }, best?.format, w.lowest?.let { "lowest ${rupees(it)}" }, if (hit) "under your price" else null).joinToString(" · ").ifEmpty { if (w.checkedAt == 0L) "checking…" else "not found yet" },
+                        listOfNotNull(best?.let { BookPrices.shop(it.store)?.name }, best?.format, w.target?.let { "your price ${rupees(it)}" }, w.lowest?.let { "lowest ${rupees(it)}" })
+                            .joinToString(" · ").ifEmpty { if (w.checkedAt == 0L) "checking…" else "not found yet" },
                         style = CpType.small, color = if (hit) c.good else c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
+                    if (w.document !in state.books) Text("Not in your library", style = CpType.small, color = c.faint)
                 }
                 HSpace(8)
                 Column(horizontalAlignment = Alignment.End) {
@@ -285,5 +274,54 @@ fun DealsList(state: Snapshot, onOpen: (String) -> Unit) {
             }
             RowDivider()
         }
+    }
+    open?.let { k -> DealSheet(vm, state, k) { open = null } }
+    if (adding) AddDealSheet(vm) { adding = false }
+    if (importing) WishListSheet(vm) { importing = false }
+}
+
+/** A book from a store page: paste the link, optionally your price, and it's tracked at all three. */
+@Composable
+private fun AddDealSheet(vm: AppViewModel, onClose: () -> Unit) {
+    val c = Cp.colors
+    var url by remember { mutableStateOf("") }
+    var price by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    PlainSheet("Add from a link", onClose) {
+        Quiet("A book's page on Amazon.in, Bookswagon or Atlantic Books (share it from the store's app, then paste). The book is read from it, found at the other two stores, and tracked, whether or not it's in your library.")
+        VSpace(14)
+        CpTextField(url, { url = it.trim() }, "Store page", placeholder = "https://www.amazon.in/dp/…", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
+        VSpace(10)
+        CpTextField(price, { v -> price = v.filter { it.isDigit() }.take(6) }, "Tell me when it's under ₹ (optional)", placeholder = "e.g. 299", keyboard = androidx.compose.ui.text.input.KeyboardType.Number)
+        said?.let { (m, ok) -> VSpace(10); Text(m, style = CpType.small, color = if (ok) c.good else c.errorText) }
+        VSpace(16)
+        BigButton(if (busy) "Reading the page…" else "Track it", {
+            if (busy) return@BigButton
+            busy = true; said = null
+            vm.trackFromLink(url, price.toDoubleOrNull()) { m, ok -> busy = false; said = m to ok; if (ok) { url = ""; price = "" } }
+        }, enabled = url.isNotBlank() && BookPrices.shopOf(url) != null)
+        if (url.isNotBlank() && BookPrices.shopOf(url) == null) { VSpace(6); Quiet("That isn't an Amazon.in, Bookswagon or Atlantic Books address.", color = c.faint) }
+    }
+}
+
+/** An Amazon.in wish list's books, all tracked at once. */
+@Composable
+private fun WishListSheet(vm: AppViewModel, onClose: () -> Unit) {
+    val c = Cp.colors
+    var url by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    PlainSheet("Import an Amazon wish list", onClose) {
+        Quiet("Open the list on Amazon, Share › Copy link, and paste it here. The list has to be Public or Shared. Its books (paperbacks, hardcovers, Kindle books) are tracked; anything else on it is left out.")
+        VSpace(14)
+        CpTextField(url, { url = it.trim() }, "Wish list link", placeholder = "https://www.amazon.in/hz/wishlist/ls/…", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
+        said?.let { (m, ok) -> VSpace(10); Text(m, style = CpType.small, color = if (ok) c.good else c.errorText) }
+        VSpace(16)
+        BigButton(if (busy) "Reading the list…" else "Import", {
+            if (busy) return@BigButton
+            busy = true; said = null
+            vm.importWishList(url) { m, ok -> busy = false; said = m to ok }
+        }, enabled = url.isNotBlank() && BookPrices.shopOf(url) == "amazon")
     }
 }

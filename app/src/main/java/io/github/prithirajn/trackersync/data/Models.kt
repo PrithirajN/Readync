@@ -1336,7 +1336,18 @@ data class PriceWatch(
     val told: Double? = null,
     val since: Long = 0,
     val error: String? = null,
+    /** Stores whose page you chose yourself (Wrong book?): followed as they are, never second-guessed. */
+    val pinned: Set<String> = emptySet(),
+    /** The book itself, for one tracked without being in the library (and kept for those that are). */
+    val title: String? = null,
+    val author: String? = null,
+    val isbn: String? = null,
+    val cover: String? = null,
 ) {
+    /** The book to look for: from the library when it's there, else as the tracker knows it. */
+    fun book(s: Snapshot): Book? = s.books[document]
+        ?: title?.let { Book(document = document, title = it, author = author, percentage = 0.0, status = null, timestamp = since, coverUrl = cover, isbn = isbn) }
+
     /** The newest price at each store. */
     val latest: List<PricePoint> get() = history.groupBy { it.store + "|" + (it.format ?: "") }.values.map { it.maxBy { p -> p.at } }
     /** The cheapest in-stock price now, anywhere. */
@@ -1351,6 +1362,9 @@ data class PriceWatch(
     fun toJson(): org.json.JSONObject = org.json.JSONObject().put("d", document).put("target", target ?: org.json.JSONObject.NULL)
         .put("links", org.json.JSONObject(links)).put("history", org.json.JSONArray().also { a -> history.forEach { a.put(it.toJson()) } })
         .put("checkedAt", checkedAt).put("told", told ?: org.json.JSONObject.NULL).put("since", since).put("error", error ?: org.json.JSONObject.NULL)
+        .put("pinned", org.json.JSONArray(pinned.toList()))
+        .put("title", title ?: org.json.JSONObject.NULL).put("author", author ?: org.json.JSONObject.NULL)
+        .put("isbn", isbn ?: org.json.JSONObject.NULL).put("cover", cover ?: org.json.JSONObject.NULL)
 
     companion object {
         fun from(o: org.json.JSONObject): PriceWatch {
@@ -1359,6 +1373,9 @@ data class PriceWatch(
             return PriceWatch(
                 o.optString("d"), if (o.isNull("target")) null else o.optDouble("target"), links, h, o.optLong("checkedAt"),
                 if (o.isNull("told")) null else o.optDouble("told"), o.optLong("since"), if (o.isNull("error")) null else o.optString("error"),
+                o.optJSONArray("pinned")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() } ?: emptySet(),
+                if (o.isNull("title")) null else o.optString("title"), if (o.isNull("author")) null else o.optString("author"),
+                if (o.isNull("isbn")) null else o.optString("isbn"), if (o.isNull("cover")) null else o.optString("cover"),
             )
         }
     }

@@ -49,6 +49,21 @@ object SffFeed {
         Topic("serials", "Serials & manga", setOf("Serial & Manga Pulse"), setOf("manga", "web serial"), setOf("SERIALS_MANGA")),
     )
 
+    private val SCREEN_TITLE = Regex(
+        "(?i)\\b(trailer|teaser|season \\d+|episode|showrunner|casting|cast as|box office|netflix|hbo|max original|prime video|" +
+            "apple tv|disney\\+|peacock|paramount\\+|starz|film|movie|tv series|tv show|miniseries|limited series|premiere|renewed|cancell?ed|" +
+            "director|anime adaptation|live-action|on screen|streaming)\\b"
+    )
+
+    /** Whether a story is about SFF on screen: films, series and adaptations. */
+    fun isScreen(c: SffStoryCluster): Boolean =
+        c.perspectives.any { p -> p.tags.any { it.equals("Film & TV", true) } } ||
+            ((c.topicBadge == "SFF Adaptation" || c.perspectives.any { p -> p.tags.any { it.equals("Adaptation", true) } }) &&
+                c.perspectives.any { p -> SCREEN_TITLE.containsMatchIn(p.title) }) ||
+            (c.lead.category == "NEWS_AWARDS" || c.lead.category == "COMMUNITY") && c.perspectives.any { p ->
+                SCREEN_TITLE.containsMatchIn(p.aiHeadline ?: p.title) && SCREEN_TITLE.findAll(p.title + " " + (p.summary ?: "").take(400)).count() >= 2
+            }
+
     fun inTopic(c: SffStoryCluster, t: Topic): Boolean =
         c.topicBadge in t.badges ||
             c.perspectives.any { p -> p.category in t.categories || p.tags.any { it.lowercase() in t.tags } } ||

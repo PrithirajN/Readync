@@ -118,6 +118,7 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     var open by remember { mutableStateOf<Hit?>(null) }
     var only by remember { mutableStateOf<String?>(null) }
     var pasting by remember { mutableStateOf(false) }
+    var copiesOpen by remember { mutableStateOf(false) }
     // Search the catalogs, or the deals on books whose price you're watching.
     var mode by rememberSaveable { mutableStateOf("Search") }
 
@@ -173,12 +174,13 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
         }
 
         if (mode == "Deals") {
-            item(key = "deals") { DealsList(state) { doc -> AppActions.pending.value = AppAction.OpenBook(doc) } }
+            item(key = "deals") { DealsList(vm, state) }
         } else if (servers.isEmpty()) {
             item(key = "empty") { NoServers(onAdd = { addingNew = true }, onPaste = { pasting = true }, onSuggest = { name, url -> adding = Opds.Server(java.util.UUID.randomUUID().toString(), name, url) }) }
         } else if (searched.isEmpty()) {
             item(key = "servers-head") { CatalogHead("Your servers") }
             items(servers, key = { "srv-" + it.id }) { s -> ServerRow(s, onBrowse = { browsing = s }, onEdit = { adding = s }) }
+            item(key = "copies") { CopiesRow { copiesOpen = true } }
             item(key = "hint") {
                 Quiet(
                     "Type above and all ${servers.size} are searched at once. The same book on several servers shows once, with each place to get it.",
@@ -208,8 +210,16 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
                         }
                     }
                 }
-                status.entries.filter { it.value.error != null }.forEach { (id, st) ->
-                    servers.firstOrNull { it.id == id }?.let { Quiet("${it.name}: ${st.error}", Modifier.padding(horizontal = 16.dp), color = c.faint, maxLines = 2) }
+                // Servers that couldn't search: one line, the reasons when tapped.
+                val failed = status.entries.filter { it.value.error != null }
+                if (failed.isNotEmpty()) {
+                    var showWhy by remember { mutableStateOf(false) }
+                    Column(Modifier.padding(horizontal = 16.dp).bouncyClickable(RoundedCornerShape(8.dp), pressedScale = 0.99f, onClickLabel = "Why") { showWhy = !showWhy }) {
+                        Text("${failed.size} server${if (failed.size == 1) "" else "s"} couldn't search · ${if (showWhy) "hide" else "why?"}", style = CpType.small, color = c.quiet)
+                        if (showWhy) for ((id, st) in failed) servers.firstOrNull { it.id == id }?.let {
+                            Text("${it.name}: ${st.error}", style = CpType.small, color = c.faint, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                        }
+                    }
                 }
             }
             val still = status.values.any { it.running }
@@ -221,6 +231,7 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     open?.let { h -> HitSheet(vm, state, h) { open = null } }
     if (addingNew) ServerSheet(null, onClose = { addingNew = false })
     if (pasting) PasteServersSheet { pasting = false }
+    if (copiesOpen) CopiesSheet(vm, state) { copiesOpen = false }
     adding?.let { s -> ServerSheet(s, onClose = { adding = null }) }
     browsing?.let { s -> BrowseServer(vm, state, s) { browsing = null } }
 }
@@ -341,9 +352,9 @@ private fun HitSheet(vm: AppViewModel, state: Snapshot, h: Hit, onClose: () -> U
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val e = h.entry
-    var getting by remember { mutableStateOf<String?>(null) }
-    var progress by remember { mutableStateOf(0f) }
-    var got by remember { mutableStateOf<Pair<Uri, String?>?>(null) }
+    // The download under way (or just done): which file, from where, how it's going.
+    var dl by remember { mutableStateOf<Download?>(null) }
+    val cancel = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     var said by remember { mutableStateOf<String?>(null) }
     var more by remember { mutableStateOf(false) }
     val inLibrary = remember(state.books) { state.books.values.firstOrNull { Matcher.sameBook(e.title, e.authors.firstOrNull(), it.title ?: "", it.author) } }
@@ -378,31 +389,116 @@ private fun HitSheet(vm: AppViewModel, state: Snapshot, h: Hit, onClose: () -> U
                     VSpace(8)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         for (a in entry.acquisitions.distinctBy { it.format + it.rel }) {
-                            val key = server.id + a.href
-                            val busy = getting == key
-                            PillButton(if (busy) "${a.format} ${(progress * 100).toInt()}%" else "↓ ${a.format}" + if (a.rel?.endsWith("/buy") == true) " (buy)" else "", {
-                                if (getting != null) return@PillButton
-                                getting = key; progress = 0f; said = null
+                            val busy = dl?.let { it.running && it.server.id == server.id && it.acq.href == a.href } == true
+                            PillButton("↓ ${a.format}" + if (a.rel?.endsWith("/buy") == true) " (buy)" else "", {
+                                if (dl?.running == true) return@PillButton
+                                cancel.set(false); said = null
+                                dl = Download(server, a, Opds.Progress("Starting"), running = true)
                                 scope.launch {
-                                    val r = withContext(Dispatchers.IO) { runCatching { Opds.download(context.applicationContext, server, a, e.title) { p -> progress = p } } }
-                                    getting = null
-                                    r.onSuccess { uri -> got = uri to a.type; said = "Saved to Downloads › ${io.github.prithirajn.trackersync.Edition.name}" }
-                                        .onFailure { x -> said = x.message ?: "Couldn't download it" }
+                                    val r = withContext(Dispatchers.IO) {
+                                        runCatching { Opds.download(context.applicationContext, server, a, e.title, cancel) { p -> dl = dl?.copy(progress = p) } }
+                                    }
+                                    dl = dl?.copy(running = false, saved = r.getOrNull(), error = r.exceptionOrNull()?.message ?: if (r.isFailure) "Couldn't download it" else null)
                                 }
                             }, outlined = !busy)
+                        }
+                        // The book's in your library: keep this EPUB inside the app, for the words around its quotes.
+                        if (inLibrary != null && io.github.prithirajn.trackersync.source.BookCopies.epubOf(entry) != null) {
+                            PillButton("Keep in the app for quotes", { vm.keepCatalogCopy(inLibrary.document, server, entry); said = "Getting a copy for quotes…" })
                         }
                     }
                 }
             }
         }
         said?.let { VSpace(10); AnimatedQuiet(it, color = c.textMid) }
-        got?.let { (uri, type) ->
-            VSpace(10)
-            BigButton("Open it", {
-                val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, type ?: context.contentResolver.getType(uri) ?: "application/octet-stream")
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                if (runCatching { context.startActivity(Intent.createChooser(view, "Open with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isFailure) said = "No app here opens this kind of file."
-            })
+        dl?.let { d ->
+            VSpace(12)
+            DownloadCard(d, onCancel = { cancel.set(true) }, onDismiss = { dl = null }, onSaid = { said = it })
+        }
+    }
+}
+
+/** The app's own copies of books (for the words around quotes): how many, and the way in to them. */
+@Composable
+private fun CopiesRow(onOpen: () -> Unit) {
+    val c = Cp.colors
+    val copies by io.github.prithirajn.trackersync.source.BookCopies.copies.collectAsState()
+    Row(
+        Modifier.fillMaxWidth().bouncyClickable(RoundedCornerShape(0.dp), pressedScale = 0.99f, onClickLabel = "Copies for quotes") { onOpen() }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(c.divider), contentAlignment = Alignment.Center) {
+            LucideIcon(R.drawable.lucide_book_open, Modifier.size(18.dp), c.textMid)
+        }
+        HSpace(12)
+        Column(Modifier.weight(1f)) {
+            Text("Copies for quotes", style = CpType.bodyStrong, color = c.text, maxLines = 1)
+            Quiet(
+                if (copies.isEmpty()) "Books you're reading, kept inside the app for the lines around your quotes"
+                else "${copies.size} book${if (copies.size == 1) "" else "s"} · ${sizeLabel(copies.values.sumOf { it.size })}, inside the app",
+                maxLines = 2,
+            )
+        }
+        LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(18.dp), c.quiet)
+    }
+}
+
+private fun sizeLabel(bytes: Long): String = when {
+    bytes >= 1_000_000 -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1_000_000.0)
+    else -> "${(bytes / 1000).coerceAtLeast(1)} KB"
+}
+
+/**
+ * The copies: kept on their own for books you're reading (or not), each with where it came from and
+ * its size, and books you're reading that don't have one yet, to look for now.
+ */
+@Composable
+private fun CopiesSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
+    val c = Cp.colors
+    val context = LocalContext.current.applicationContext
+    val bc = io.github.prithirajn.trackersync.source.BookCopies
+    val copies by bc.copies.collectAsState()
+    val busy by bc.busy.collectAsState()
+    var auto by remember { mutableStateOf(bc.auto(context)) }
+    PlainSheet("Copies for quotes", onClose) {
+        Quiet("EPUBs from your catalogs, kept in the app's own storage (not in Downloads, not seen by other apps). Quote Studio's book photo and Fable's book-photo quotes use them for the real lines above and below your passage, when you haven't photographed its page.")
+        VSpace(14)
+        CpToggle(auto, { auto = it; bc.setAuto(context, it) }, "Keep copies of books you're reading")
+        Quiet("One book each sync, looked for on all your catalogs by title and author; a book that isn't found is tried again in a few days.", color = c.faint)
+        val missing = state.books.values
+            .filter { it.status == io.github.prithirajn.trackersync.data.ReadStatus.READING && it.document !in copies && !it.isMangaOrComic }
+            .sortedByDescending { it.timestamp }
+        if (missing.isNotEmpty()) {
+            VSpace(18)
+            Text("Reading, without a copy", style = CpType.label, color = c.text)
+            for (b in missing.take(12)) {
+                VSpace(8)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(b.displayTitle, style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        b.author?.let { Quiet(it, maxLines = 1) }
+                    }
+                    PillButton(if (b.document in busy) "Looking…" else "Find", { if (b.document !in busy) vm.toggleBookCopy(b.document) })
+                }
+            }
+        }
+        VSpace(18)
+        Text(if (copies.isEmpty()) "No copies yet" else "In the app · ${sizeLabel(copies.values.sumOf { it.size })}", style = CpType.label, color = c.text)
+        for (cp in copies.values.sortedByDescending { it.at }) {
+            val b = state.books[cp.document]
+            VSpace(8)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(b?.displayTitle ?: cp.title, style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Quiet("${cp.server} · ${sizeLabel(cp.size)}", maxLines = 1)
+                }
+                PillButton("Remove", { bc.remove(context, cp.document) })
+            }
+        }
+        if (copies.size > 1) {
+            VSpace(14)
+            BigButton("Remove all copies", { bc.removeAll(context) }, filled = false)
         }
     }
 }
@@ -638,6 +734,108 @@ private fun PasteServersSheet(onClose: () -> Unit) {
                     }
                 }
             }
+        }
+    }
+}
+
+/** A download in the book sheet: the file, the server, and how it's going or how it ended. */
+private data class Download(
+    val server: Opds.Server,
+    val acq: Opds.Acquisition,
+    val progress: Opds.Progress,
+    val running: Boolean,
+    val saved: Opds.Saved? = null,
+    val error: String? = null,
+)
+
+/** "4.2 MB", "820 KB". */
+private fun bytes(n: Long): String = when {
+    n >= 1_000_000_000 -> String.format(java.util.Locale.getDefault(), "%.2f GB", n / 1e9)
+    n >= 1_000_000 -> String.format(java.util.Locale.getDefault(), "%.1f MB", n / 1e6)
+    n >= 1_000 -> "${n / 1000} KB"
+    else -> "$n B"
+}
+
+/** "8 s", "2 min 10 s". */
+private fun duration(secs: Long): String = if (secs < 60) "$secs s" else "${secs / 60} min" + (if (secs % 60 > 0 && secs < 600) " ${secs % 60} s" else "")
+
+/**
+ * The download, in full: the format and the server, the file's name, a bar (filling, or moving
+ * when the server doesn't say the size), so much of so much, the speed and the time left, and
+ * Cancel. Once done: where it went and how big it is, to open, share or find in Downloads; or
+ * what went wrong.
+ */
+@Composable
+private fun DownloadCard(d: Download, onCancel: () -> Unit, onDismiss: () -> Unit, onSaid: (String) -> Unit) {
+    val c = Cp.colors
+    val context = LocalContext.current
+    val p = d.progress
+    val shape = RoundedCornerShape(16.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(c.surface).border(1.dp, if (d.error != null) c.warn else if (d.saved != null) c.good else c.accentRing, shape).padding(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Chip(d.acq.format, color = c.text, background = c.divider)
+            HSpace(8)
+            Text(d.server.name, style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            when {
+                d.running -> CircularProgressIndicator(Modifier.size(14.dp), color = c.accent, strokeWidth = 1.5.dp)
+                d.saved != null -> Text("✓ Saved", style = CpType.label, color = c.good)
+                else -> Text(if (d.error == "Cancelled") "Cancelled" else "Failed", style = CpType.label, color = c.warn)
+            }
+        }
+        (d.saved?.name ?: p.name)?.let { n ->
+            VSpace(8)
+            Text(n, style = CpType.bodyStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        if (d.running) {
+            VSpace(10)
+            if (p.total > 0) {
+                val frac = (p.done.toFloat() / p.total).coerceIn(0f, 1f)
+                androidx.compose.material3.LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth().height(6.dp).clip(CpShapes.pill), color = c.accent, trackColor = c.divider)
+            } else {
+                androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(6.dp).clip(CpShapes.pill), color = c.accent, trackColor = c.divider)
+            }
+            VSpace(8)
+            val line = when {
+                p.stage != "Downloading" -> p.stage + "…"
+                p.total > 0 -> {
+                    val left = if (p.bytesPerSec > 1) ((p.total - p.done) / p.bytesPerSec).toLong() else -1
+                    listOfNotNull(
+                        "${bytes(p.done)} of ${bytes(p.total)}",
+                        "${(p.done * 100 / p.total)}%",
+                        p.bytesPerSec.takeIf { it > 1 }?.let { "${bytes(it.toLong())}/s" },
+                        left.takeIf { it >= 0 }?.let { "about ${duration(it)} left" },
+                    ).joinToString(" · ")
+                }
+                else -> listOfNotNull(bytes(p.done), p.bytesPerSec.takeIf { it > 1 }?.let { "${bytes(it.toLong())}/s" }, "size not given by the server").joinToString(" · ")
+            }
+            Text(line, style = CpType.small, color = c.textMid)
+            VSpace(10)
+            PillButton("Cancel", onCancel)
+        }
+        d.saved?.let { s ->
+            VSpace(6)
+            Text("${bytes(s.size)} · ${s.type.substringAfter('/').substringBefore('+').uppercase().take(12)} · Downloads › ${io.github.prithirajn.trackersync.Edition.name}", style = CpType.small, color = c.quiet)
+            VSpace(12)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BigButton("Open", {
+                    val view = Intent(Intent.ACTION_VIEW).setDataAndType(s.uri, s.type)
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (runCatching { context.startActivity(Intent.createChooser(view, "Open with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isFailure) onSaid("No app here opens this kind of file.")
+                }, Modifier.weight(1f))
+                BigButton("Share", {
+                    val send = Intent(Intent.ACTION_SEND).setType(s.type).putExtra(Intent.EXTRA_STREAM, s.uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    runCatching { context.startActivity(Intent.createChooser(send, "Send the book").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }, Modifier.weight(1f), filled = false)
+                BigButton("Downloads", {
+                    runCatching { context.startActivity(Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                        .onFailure { onSaid("Couldn't open your Downloads here.") }
+                }, Modifier.weight(1f), filled = false)
+            }
+        }
+        d.error?.let { err ->
+            if (err != "Cancelled") { VSpace(6); Text(err, style = CpType.small, color = c.errorText) }
+            VSpace(8)
+            PillButton("Dismiss", onDismiss)
         }
     }
 }
