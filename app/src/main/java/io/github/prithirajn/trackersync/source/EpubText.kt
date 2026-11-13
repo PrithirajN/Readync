@@ -104,6 +104,64 @@ object EpubText {
     /** The EPUB's title and first author from its package file, or nulls. */
     fun metadata(bytes: ByteArray): Pair<String?, String?> = info(bytes).let { it.title to it.creator }
 
+    /** A chapter in the reading order: its contents title (or opening words), and where it starts as a share of the book's text. */
+    data class Heading(val title: String, val spine: Int, val share: Double)
+
+    /**
+     * The book's chapters with where each starts (0–1, by visible characters, the way a reader's
+     * place runs), titled from the contents (nav.xhtml or toc.ncx), else by their opening words.
+     * Empty when it can't be read.
+     */
+    fun outline(bytes: ByteArray): List<Heading> = runCatching {
+        val files = entries(bytes)
+        fun file(name: String) = files[name] ?: files.entries.firstOrNull { it.key.equals(name, true) }?.value
+        val container = file("META-INF/container.xml")?.let { String(it, Charsets.UTF_8) } ?: return emptyList()
+        val opfPath = tags(container, "rootfile").firstNotNullOfOrNull { it["full-path"] } ?: return emptyList()
+        val opf = file(opfPath)?.let { String(it, Charsets.UTF_8) } ?: return emptyList()
+        val dir = opfPath.substringBeforeLast('/', "")
+        val items = tags(opf, "item")
+        val manifest = items.mapNotNull { a -> a["id"]?.let { id -> a["href"]?.let { id to join(dir, it) } } }.toMap()
+        val spine = tags(opf, "itemref").mapNotNull { a -> a["idref"]?.let { manifest[it] } }
+        if (spine.isEmpty()) return emptyList()
+        // Each chapter's length in visible characters.
+        val lengths = spine.mapIndexed { i, path -> file(path)?.let { runCatching { Chapter.parse(i, String(it, Charsets.UTF_8))?.length }.getOrNull() } ?: 0 }
+        val total = lengths.sum().takeIf { it > 0 } ?: return emptyList()
+        val starts = DoubleArray(spine.size)
+        var run = 0
+        for (i in spine.indices) { starts[i] = run.toDouble() / total; run += lengths[i] }
+        fun clean(t: String) = unescape(t.replace(Regex("<[^>]+>"), " ")).replace(Regex("\\s+"), " ").trim()
+        // Titles from the contents: the first entry pointing at each chapter file.
+        val titles = HashMap<Int, String>()
+        val navPath = items.firstOrNull { (it["properties"] ?: "").split(' ').contains("nav") }?.get("href")?.let { join(dir, it) }
+        val ncxPath = items.firstOrNull { it["media-type"] == "application/x-dtbncx+xml" }?.get("href")?.let { join(dir, it) }
+        fun put(base: String, href: String, title: String) {
+            val i = spine.indexOf(join(base, href))
+            if (i >= 0 && title.isNotEmpty() && i !in titles) titles[i] = title.take(120)
+        }
+        navPath?.let { np -> file(np)?.let { String(it, Charsets.UTF_8) } }?.let { nav ->
+            val toc = Regex("""<nav\b[^>]*(?:toc)[^>]*>([\s\S]*?)</nav>""", RegexOption.IGNORE_CASE).find(nav)?.groupValues?.get(1) ?: nav
+            for (m in Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE).findAll(toc)) {
+                val href = attrs(m.groupValues[1])["href"] ?: continue
+                put(navPath.substringBeforeLast('/', ""), href, clean(m.groupValues[2]))
+            }
+        }
+        if (titles.isEmpty()) ncxPath?.let { np -> file(np)?.let { String(it, Charsets.UTF_8) } }?.let { ncx ->
+            for (m in Regex("""<navPoint\b[\s\S]*?<text>([\s\S]*?)</text>[\s\S]*?<content\b([^>]*)/?>""", RegexOption.IGNORE_CASE).findAll(ncx)) {
+                val src = attrs(m.groupValues[2])["src"] ?: continue
+                put(ncxPath.substringBeforeLast('/', ""), src, clean(m.groupValues[1]))
+            }
+        }
+        spine.indices.filter { lengths[it] > 0 }.map { i ->
+            val title = titles[i] ?: runCatching {
+                file(spine[i])?.let { Chapter.parse(i, String(it, Charsets.UTF_8)) }?.let { ch ->
+                    val n = minOf(ch.length, 400)
+                    String(ch.text, 0, n).replace(Regex("\\s+"), " ").trim().take(60)
+                }
+            }.getOrNull().orEmpty()
+            Heading(title, i, starts[i])
+        }
+    }.getOrDefault(emptyList())
+
     /**
      * What an EPUB says about itself: its title and author, and for a web novel saved as an EPUB
      * (by FanFicFare, WebToEpub, a CrossPoint plugin…) the story's link, from its details

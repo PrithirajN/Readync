@@ -58,6 +58,59 @@ object Highlights {
         return (HistoryImport.originName(HistoryImport.ORIGIN_PREFIX + src) ?: "Imported") + " history"
     }
 
+    private val INVISIBLE = Regex("[\u200B\u200C\u200D\u2060\uFEFF\u00AD]")
+    private val TAGS = Regex("(?i)</?(?:p|i|em|b|strong|span|div|a|sup|sub|small|u|font)\\b[^>]*>")
+    private val BR = Regex("(?i)<br\\s*/?>")
+    private val ENTITY = Regex("&(#\\d{1,7}|#x[0-9a-fA-F]{1,6}|amp|lt|gt|quot|apos|nbsp|mdash|ndash|hellip|lsquo|rsquo|ldquo|rdquo);")
+
+    /**
+     * A highlight's text made clean for a tracker: no invisible characters (zero-width spaces, soft
+     * hyphens), HTML entities (&amp;, &#8217;) turned back into characters, stray tags (<br>, <i>)
+     * dropped, a word split across a line ("exam-\nple") joined, single line breaks inside a
+     * paragraph made spaces, and runs of spaces made one. Paragraph breaks stay.
+     */
+    fun tidyText(raw: String): String {
+        var t = raw.replace(INVISIBLE, "").replace(BR, "\n").replace(TAGS, "")
+        t = ENTITY.replace(t) { m ->
+            when (val e = m.groupValues[1]) {
+                "amp" -> "&"; "lt" -> "<"; "gt" -> ">"; "quot" -> "\""; "apos" -> "'"; "nbsp" -> " "
+                "mdash" -> "\u2014"; "ndash" -> "\u2013"; "hellip" -> "\u2026"; "lsquo" -> "\u2018"; "rsquo" -> "\u2019"; "ldquo" -> "\u201C"; "rdquo" -> "\u201D"
+                else -> runCatching { String(Character.toChars(if (e.startsWith("#x")) e.drop(2).toInt(16) else e.drop(1).toInt())) }.getOrDefault(m.value)
+            }
+        }
+        t = t.replace('\u00A0', ' ').replace("\r\n", "\n").replace('\r', '\n')
+        t = t.replace(Regex("(\\p{L})-\\n(\\p{Ll})"), "$1$2")
+        t = t.replace(Regex("[ \\t]*\\n[ \\t]*\\n\\s*"), "\u0000").replace(Regex("\\s*\\n\\s*"), " ").replace('\u0000', '\n')
+            .replace(Regex("\\n"), "\n\n")
+        return t.replace(Regex("[ \\t]{2,}"), " ").trim()
+    }
+
+    /** [c] with its text and note tidied (see [tidyText]). */
+    fun tidy(c: Clipping): Clipping {
+        val text = tidyText(c.text)
+        val note = c.note?.let { tidyText(it) }?.takeIf { it.isNotEmpty() }
+        return if (text == c.text && note == c.note) c else c.copy(text = text, note = note)
+    }
+
+    /** A highlight's words for comparing across routes: letters and digits only, lower case. */
+    fun words(text: String): String = text.lowercase().filter { it.isLetterOrDigit() }.take(800)
+
+    /** What a tracker got for a highlight (its words and note), to notice when either changes. */
+    fun fingerprint(c: Clipping): Int = (words(c.text) + "\u0001" + (c.note ?: "").trim()).hashCode()
+
+    /**
+     * The same passage: the same words, or one inside the other, or a long shared start or end
+     * (two devices drawing the edges a word apart, or a highlight extended).
+     */
+    fun samePassage(a: String, b: String): Boolean {
+        if (a.isEmpty() || b.isEmpty()) return false
+        if (a == b) return true
+        val (short, long) = if (a.length <= b.length) a to b else b to a
+        if (short.length < 30) return false
+        if (short.length * 2 >= long.length && long.contains(short)) return true
+        return short.length >= 40 && (long.startsWith(short.take(40)) || long.endsWith(short.takeLast(40)))
+    }
+
     /** Every highlight and note across the library, newest first (books removed from it left out). */
     fun all(s: Snapshot): List<Item> {
         val docs = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).map { it.document }.toSet().filter { it in s.books }

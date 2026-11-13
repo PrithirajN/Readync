@@ -49,6 +49,14 @@ class MainActivity : ComponentActivity() {
         handle(intent)
     }
 
+    /** The pictures or videos shared in [intent]. */
+    @Suppress("DEPRECATION")
+    private fun media(intent: Intent): List<android.net.Uri>? {
+        val list = if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra<android.net.Uri>(Intent.EXTRA_STREAM)
+            else listOfNotNull(intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM))
+        return list?.takeIf { it.isNotEmpty() }?.take(20)
+    }
+
     /** Shortcuts, notifications and shared links all arrive here. */
     private fun handle(intent: Intent?) {
         val action = when (intent?.action) {
@@ -60,8 +68,18 @@ class MainActivity : ComponentActivity() {
             ACTION_SYNC -> AppAction.Sync
             ACTION_RELEASES -> AppAction.Releases
             ACTION_SFF -> AppAction.Sff(intent.getStringExtra(EXTRA_STORY))
-            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
-                ShareLinks.query(text)?.let { AppAction.AddFromShare(it) } ?: AppAction.AddBook
+            // Screenshots or a screen recording of a book post: its books found on Catalogs › Posts.
+            Intent.ACTION_SEND_MULTIPLE -> media(intent)?.let { io.github.prithirajn.trackersync.ui.PostShare.media.value = it; AppAction.Posts }
+            Intent.ACTION_SEND -> if (intent.type?.let { it.startsWith("image/") || it.startsWith("video/") } == true)
+                media(intent)?.let { io.github.prithirajn.trackersync.ui.PostShare.media.value = it; AppAction.Posts }
+            else intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
+                // A TikTok, Instagram or YouTube post: its books found on Catalogs › Posts.
+                val post = io.github.prithirajn.trackersync.source.PostBooks.linkIn(text)
+                    ?.takeIf { io.github.prithirajn.trackersync.source.PostBooks.platformOf(it) != null }
+                if (post != null) {
+                    io.github.prithirajn.trackersync.ui.PostShare.pending.value = post
+                    AppAction.Posts
+                } else ShareLinks.query(text)?.let { AppAction.AddFromShare(it) } ?: AppAction.AddBook
             }
             else -> null
         }

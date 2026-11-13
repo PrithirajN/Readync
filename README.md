@@ -43,6 +43,9 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 - **Public or private**, chosen per tracker.
 - **Books matched for you**, with covers and descriptions; pick with one tap when it's unclear.
 - **Real reading dates** sent to the trackers that take them.
+- **Never sent backwards**: trackers keep the furthest place you've reached. A big jump back (a reset device, the wrong copy opened) asks before it's used, and a finished book opened again asks "Reading it again?" once.
+- **One post per passage**: the same highlight arriving from two readers goes to each tracker once, and an edited one replaces its old entry where the tracker allows.
+- **The same book twice?** Two copies that look alike ask to be joined or kept apart; nothing is joined by itself.
 
 ### ✍️ Highlights, ratings and reviews
 - **Highlights and notes** go to every tracker that takes them (some are opt-in).
@@ -60,7 +63,7 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 </details>
 
 ### 📖 Any way you read
-- **E-readers**: CrossPoint Sync, or KOReader through a KOSync server.
+- **E-readers**: CrossPoint Sync, or KOReader through a KOSync server (your own included: a certificate you made is trusted once it's installed on the phone).
 - **KOReader highlights** from its own files on the same phone, or from HighlightSync / AnnotationSync on WebDAV.
 - **Moon+ Reader** through its WebDAV sync.
 - **Paper books**: photograph the page you're on, or scan the barcode to add one.
@@ -72,8 +75,15 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 
 - KOReader highlights can be put on a CrossPoint device **on their exact words**, and CrossPoint highlights can go back to KOReader through HighlightSync. A book known only by KOReader's ID can be named from its highlights' own words.
 - Web novels are linked from the link inside your EPUB (FanFicFare, WebToEpub) or found by title. The book page shows your chapter and how many are out past your copy.
-- Audiobooks keep pace with the ebook: **Resume in Spotify** starts from your place, and **Not the right spot?** fixes the match. A service also linked on your crosspoint-sync server is never sent the same thing twice.
+- Audiobooks keep pace with the ebook **chapter by chapter**: the audiobook's chapters are matched to the book's by their titles (from the server's ebook or a copy kept on the phone; the audio is never downloaded), so intros and credits don't throw the place off. **Match chapters** sets them by hand, **Resume in Spotify** starts from your place, and **Not the right spot?** fixes the match. A service also linked on your crosspoint-sync server is never sent the same thing twice.
 </details>
+
+### 📚 Your collection
+- **The books you own**, with format, price paid and where: scan the barcodes on your shelves, or mark any book. Owned books you haven't started wait off your trackers, with what they're worth.
+- **Series gaps**: the books missing between the ones you own, and the next one to read, with price tracking in a tap.
+- **Your shelves, drawn**: build your real bookcases (tall, cube grid, floating ledges, low), each spine as thick as its page count in its cover's colour, arranged by series, author, genre or colour. Tap a spine to pull it out.
+- **A calendar** of reading days, starts and finishes, books added, releases and price drops, and **stamps** for milestones.
+- **A journal page** for any book: cover taped on, your dates, stars, review and highlights, in handwriting, to share.
 
 ### 🎁 Made from your reading
 - **Quote cards**: ten looks, from Book card (15 layouts) and Book photo to System window and Wordprint, coloured from the cover.
@@ -96,10 +106,13 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 
 ### ✨ And more
 - **Catalogs**: the 50 newest books across all your OPDS servers, and every server searched at once, with download details and paste-a-list setup.
+- **Books in a post**: paste or share a TikTok, Instagram, Threads or YouTube post (or screenshots or a screen recording of one, read on your phone frame by frame) and the books it names are found (caption, the words on its picture, hashtags), checked against Google Books, then added to Want to Read or price-tracked.
 - **Copies for quotes**: books you're reading kept privately inside the app, for the lines around your quotes.
 - **Price tracker** for Amazon.in, Bookswagon and Atlantic Books, with your own target price.
 - **SFF news** set like a magazine, with a Screen view for films and series, and a clean reader.
+- **Library checks, a rating rubric, a top-books image and a reading-log export** on the Activity tab: books whose dates or page counts would throw your numbers off, scores on what matters to you beside your stars (with a gut-vs-rubric chart), your year's top 10 or 20 as one ranked image, and every book as an Excel or CSV file.
 - **Import your history** from Goodreads, StoryGraph, Hardcover, Seekquel or KOReader.
+- **Live Updates** (Android 16): a reading session's timer, a catalog download and a sync you started stay at the top of your notifications, with a chip by the clock.
 - **Widgets**, a Quick Settings tile and app shortcuts.
 - **Backups** locked with a password, or a data-only copy to move phones.
 - Optional **on-device AI**. Nothing leaves your phone.

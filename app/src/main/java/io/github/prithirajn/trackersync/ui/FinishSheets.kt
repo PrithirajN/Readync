@@ -1044,6 +1044,8 @@ fun SeekquelProgressCard(
 ) {
     val c = Cp.colors
     val from = io.github.prithirajn.trackersync.sync.Primary.name(ask.source)
+    // A jump back from the book's main source: the furthest position was kept.
+    val back = ask.fraction < book.percentage
     CpCard(modifier) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1052,11 +1054,12 @@ fun SeekquelProgressCard(
                     HSpace(12)
                 }
                 Column(Modifier.weight(1f)) {
-                    Eyebrow("$from has a different position")
+                    Eyebrow(if (back) "$from went back to ${ask.percent}%" else "$from has a different position")
                     if (showBook) Text(book.displayTitle, style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val theirs = "${ask.percent}%" + (ask.status?.takeIf { it != book.status }?.let { " · ${it.label}" } ?: "")
                     Quiet("$from $theirs · here ${book.percent}%", maxLines = 1)
-                    Quiet("Nothing goes to your trackers for this book until you choose." +
+                    if (back) Quiet("Kept at ${book.percent}%, the furthest you've read. Your trackers stay there unless you use the new position.", color = c.faint)
+                    else Quiet("Nothing goes to your trackers for this book until you choose." +
                         (if (book.origin == null && ask.source != "crosspoint") " Updating also updates CrossPoint" + (if (kosyncOn && ask.source != "kosync") " and KOSync" else "") + "." else ""),
                         color = c.faint)
                 }
@@ -1065,8 +1068,9 @@ fun SeekquelProgressCard(
             // Wraps on narrow phones: keep, take the new one, or set that source back to this one.
             androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillButton("Keep ${book.percent}%", onKeep)
-                PillButton("Update to ${ask.percent}%", onUse, outlined = false)
-                if (onMoveBack != null && io.github.prithirajn.trackersync.sync.Primary.canMoveBack(ask.source)) PillButton("Move $from back to ${book.percent}%", onMoveBack)
+                PillButton(if (back) "Use this position (${ask.percent}%)" else "Update to ${ask.percent}%", onUse, outlined = false)
+                if (onMoveBack != null && io.github.prithirajn.trackersync.sync.Primary.canMoveBack(ask.source))
+                    PillButton(if (back) "Set $from to ${book.percent}%" else "Move $from back to ${book.percent}%", onMoveBack)
             }
             // A source you trust: its positions taken from now on, no card.
             if (onAlways != null) {
@@ -1078,6 +1082,94 @@ fun SeekquelProgressCard(
                     Quiet("·", color = c.faint)
                     Text("all books", style = CpType.small, color = c.accent, modifier = Modifier.clip(CpShapes.control).clickable { onAlways(true) }.padding(4.dp))
                 }
+            }
+        }
+    }
+}
+
+/** Two books that look like one: join them (nothing is joined by itself) or keep them apart. */
+@Composable
+fun SameBookCard(
+    match: io.github.prithirajn.trackersync.sync.SameBook.Match,
+    onJoin: () -> Unit,
+    onApart: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = Cp.colors
+    fun from(b: Book) = when {
+        b.origin == null -> "CrossPoint"
+        else -> io.github.prithirajn.trackersync.sync.Primary.name(b.origin)
+    }
+    fun line(b: Book) = "${b.displayTitle}" + (b.author?.let { " · $it" } ?: "") + " — ${b.percent}% · from ${from(b)}" + (if (b.held) " · not sent yet" else "")
+    CpCard(modifier) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BookCover(match.keep.coverUrl ?: match.other.coverUrl, match.keep.displayTitle, 34.dp, 51.dp)
+                HSpace(12)
+                Column(Modifier.weight(1f)) {
+                    Eyebrow("These look like the same book")
+                    Quiet(line(match.keep), maxLines = 2)
+                    Quiet(line(match.other), maxLines = 2)
+                }
+            }
+            VSpace(6)
+            Quiet("Joining keeps the furthest place and every highlight under one book, and future syncs of either land there.", color = c.faint)
+            VSpace(10)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("Keep apart", onApart)
+                PillButton("Join", onJoin, outlined = false)
+            }
+        }
+    }
+}
+
+/** Books that came in but don't go to your trackers yet: turned on together, or left for now. */
+@Composable
+fun WaitingBooksCard(books: List<Book>, onTurnOn: () -> Unit, onLater: () -> Unit, modifier: Modifier = Modifier) {
+    val c = Cp.colors
+    CpCard(modifier) {
+        Column(Modifier.padding(14.dp)) {
+            Eyebrow("${books.size} book${if (books.size == 1) " isn't" else "s aren't"} going to your trackers yet")
+            Quiet(books.take(3).joinToString(", ") { it.displayTitle } + (if (books.size > 3) " and ${books.size - 3} more" else ""), maxLines = 2)
+            Quiet("They came from a reader's highlights or library, or arrived while new books start turned off. Each book's page can also turn it on alone.", color = c.faint)
+            VSpace(10)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("Not now", onLater)
+                PillButton("Turn them all on", onTurnOn, outlined = false)
+            }
+        }
+    }
+}
+
+/** A finished book a source says you're reading again: it stays finished until you say yes. */
+@Composable
+fun RereadAskCard(
+    book: Book,
+    ask: io.github.prithirajn.trackersync.data.ProgressAsk,
+    onYes: () -> Unit,
+    onNo: () -> Unit,
+    modifier: Modifier = Modifier,
+    showBook: Boolean = true,
+) {
+    val c = Cp.colors
+    val from = io.github.prithirajn.trackersync.sync.Primary.name(ask.source)
+    CpCard(modifier) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (showBook) {
+                    BookCover(book.coverUrl, book.displayTitle, 34.dp, 51.dp)
+                    HSpace(12)
+                }
+                Column(Modifier.weight(1f)) {
+                    Eyebrow("Reading it again?")
+                    if (showBook) Text(book.displayTitle, style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Quiet("$from has it at ${ask.percent}%. Here it stays finished, and nothing goes to your trackers, until you say yes.", color = c.faint)
+                }
+            }
+            VSpace(10)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("No, it's finished", onNo)
+                PillButton("Yes, reading again", onYes, outlined = false)
             }
         }
     }

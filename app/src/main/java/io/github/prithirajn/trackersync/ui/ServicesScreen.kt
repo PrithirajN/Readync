@@ -353,6 +353,8 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     model?.first?.substringBeforeLast('.')?.let { "$it · on this phone" } ?: "Off · add a model to try it",
                 ) { appSettings = false; page = "ai" }
                 RowDivider()
+                NavRow(R.drawable.lucide_hash, "Storage", "What the app keeps on this phone, and clearing it") { appSettings = false; page = "storage" }
+                RowDivider()
                 NavRow(R.drawable.lucide_refresh_cw, "App update", if (appVersion.isNotEmpty()) "Version $appVersion" else null) { appSettings = false; page = "update" }
             }
             VSpace(24)
@@ -389,7 +391,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
         SettingsSheet(
             when (p) {
                 "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"; "kohl" -> "KOReader highlights"
-                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "exports" -> "Export highlights"; "readwise" -> "Readwise"; "notion" -> "Notion"; "obsidian" -> "Obsidian"; else -> "App update"
+                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "exports" -> "Export highlights"; "readwise" -> "Readwise"; "notion" -> "Notion"; "obsidian" -> "Obsidian"; "storage" -> "Storage"; else -> "App update"
             },
             onClose = { page = null },
         ) {
@@ -430,6 +432,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 "sync" -> SyncSettingsCard(vm, state)
                 "ai" -> OnDeviceAiCard(vm, state)
                 "backup" -> { BackupCard(vm); VSpace(16); HistoryImportCard(vm) }
+                "storage" -> StorageCard(vm, onAi = { page = "ai" })
                 else -> AppUpdateCard(vm, state, appVersion)
             }
         }
@@ -3561,6 +3564,8 @@ private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
                         }
                     }
                 }
+                // Why what's waiting hasn't gone up yet, and when it will.
+                ThreadsAuto.nextNote(state)?.let { VSpace(8); Text(it, style = CpType.small, color = c.quiet) }
                 state.threadsError?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
 
                 ThreadsSection("Posting")

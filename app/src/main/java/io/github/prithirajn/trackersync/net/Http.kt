@@ -20,7 +20,22 @@ class HttpResponse(
 }
 
 /** The request never got an HTTP answer (offline, DNS, timeout, TLS). */
-class NetworkException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class NetworkException(message: String, cause: Throwable? = null) : Exception(friendly(message, cause), cause)
+
+/** A refused certificate said in words, with what to do (a home server's own certificate, usually). */
+private fun friendly(message: String, cause: Throwable?): String {
+    var e: Throwable? = cause
+    while (e != null) {
+        if (e is javax.net.ssl.SSLHandshakeException || e is java.security.cert.CertPathValidatorException || e is java.security.cert.CertificateException) {
+            return "The server's certificate isn't trusted (a home server's own certificate?). Install it on this phone as a CA certificate (Settings › Security › Encryption & credentials), or use the server's http:// address on your own network."
+        }
+        if (e is javax.net.ssl.SSLPeerUnverifiedException) {
+            return "The server's certificate is for a different name than the address you entered. Use the name on the certificate, or the server's http:// address on your own network."
+        }
+        e = e.cause
+    }
+    return message
+}
 
 /** The service rejected the saved login: the user has to sign in again. */
 class AuthException(message: String) : Exception(message)

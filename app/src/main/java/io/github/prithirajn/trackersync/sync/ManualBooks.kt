@@ -101,6 +101,8 @@ object ManualBooks {
                 timestamp = now / 1000,
                 startedAt = b.startedAt ?: now / 1000,
                 finishedAt = if (finishing) (b.finishedAt ?: now / 1000) else b.finishedAt,
+                // A book from your collection, now started: it goes to your trackers.
+                held = false,
             )))
         }
         queueEverywhere(store, document)
@@ -117,6 +119,8 @@ object ManualBooks {
                 currentPage = b.pageCount?.let { Math.round(fraction * it).toInt() },
                 status = if (percent >= 98) ReadStatus.FINISHED else ReadStatus.READING,
                 timestamp = now / 1000,
+                startedAt = b.startedAt ?: now / 1000,
+                held = false,
             )))
         }
         queueEverywhere(store, document)
@@ -132,6 +136,8 @@ object ManualBooks {
                 currentPage = if (finished) b.pageCount ?: b.currentPage else b.currentPage,
                 finishedAt = if (finished) now / 1000 else b.finishedAt,
                 timestamp = now / 1000,
+                startedAt = if (status == ReadStatus.TO_READ) b.startedAt else b.startedAt ?: now / 1000,
+                held = status == ReadStatus.TO_READ,
             )))
         }
         queueEverywhere(store, document)
@@ -324,6 +330,8 @@ object ProgressOverride {
         store.update { s ->
             s.copy(
                 progressAsks = s.progressAsks - document,
+                // Set lower by you: trackers further along are brought back to it (they never go back on their own).
+                backAt = if (!finished && fraction < b.percentage - 0.0005) s.backAt + (document to maxOf(sec, b.timestamp + 1)) else s.backAt,
                 // Seekquel's position you chose goes back to crosspoint-sync and KOSync (and so to the reader).
                 toCrossPoint = if (writeBack && b.origin == null) s.toCrossPoint + document else s.toCrossPoint,
                 toKosync = if (writeBack && b.origin == null && s.kosync != null) s.toKosync + document else s.toKosync,
@@ -353,6 +361,23 @@ object ProgressOverride {
         val status = ask.status?.takeIf { it == ReadStatus.FINISHED || it == ReadStatus.PAUSED || it == ReadStatus.DNF }
         set(store, document, status = status, now = now, exact = ask.fraction, writeBack = true)
         store.update { Primary.promoted(it, document, ask.source) }
+    }
+
+    /**
+     * "Reading it again?" › Yes: the finished read stays in your history, the book goes back to
+     * Reading at the reported position, and trackers that have it as Finished are moved to Reading.
+     */
+    fun rereadYes(store: Store, document: String, now: Long = System.currentTimeMillis()) {
+        val ask = store.snapshot.rereadAsks[document] ?: throw ServiceException("Nothing to answer")
+        store.update { s -> s.copy(rereads = s.rereads + (document to now / 1000), rereadAsks = s.rereadAsks - document) }
+        set(store, document, status = ReadStatus.READING, now = now, exact = ask.fraction.coerceAtMost(0.97))
+        store.update { Primary.promoted(it, document, ask.source) }
+    }
+
+    /** "Reading it again?" › No: the book stays finished, and this read isn't asked about again. */
+    fun rereadNo(store: Store, document: String) = store.update { s ->
+        val finishedAt = s.books[document]?.finishedAt ?: 0L
+        s.copy(rereadAsks = s.rereadAsks - document, rereadDenied = s.rereadDenied + (document to finishedAt))
     }
 
     /** "Keep": the position here stays; that source's isn't offered again until it changes. */

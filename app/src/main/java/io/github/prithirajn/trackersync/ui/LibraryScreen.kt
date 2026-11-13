@@ -301,6 +301,41 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
                 )
             }
         }
+        // Books that look like one another: Join or Keep apart (never joined by themselves).
+        val samePairs = io.github.prithirajn.trackersync.sync.SameBook.pairs(state)
+        for (m in samePairs.take(2)) {
+            item(key = "same-${m.key}") {
+                SameBookCard(
+                    m,
+                    onJoin = { vm.joinSameBook(m.keep.document, m.other.document) },
+                    onApart = { vm.keepBooksApart(m.keep.document, m.other.document) },
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                )
+            }
+        }
+        // Books not going to your trackers yet: one prompt, again only when more come in.
+        val waitingBooks = io.github.prithirajn.trackersync.sync.SameBook.waiting(state)
+        if (waitingBooks.size > state.waitingSeen) {
+            item(key = "waiting-books") {
+                WaitingBooksCard(
+                    waitingBooks,
+                    onTurnOn = { vm.turnOnWaiting() },
+                    onLater = { vm.dismissWaiting() },
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                )
+            }
+        }
+        // Finished books a source says you're reading again: one prompt each.
+        for ((b, ask) in state.rereadAsks.entries.mapNotNull { (d, a) -> state.books[d]?.let { it to a } }.sortedByDescending { it.second.updatedAt }.take(3)) {
+            item(key = "reread-${b.document}") {
+                RereadAskCard(
+                    b, ask,
+                    onYes = { vm.rereadYes(b.document) },
+                    onNo = { vm.rereadNo(b.document) },
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                )
+            }
+        }
         // Read in KOReader, highlights not set up: offered once (until "Not now" or set up).
         if (state.koSeenAt > 0 && !state.koNudgeOff && io.github.prithirajn.trackersync.sync.KoreaderDevice.highlightsMissing(state)) {
             item(key = "ko-nudge") {
@@ -976,6 +1011,14 @@ private fun BookSheet(
                     HandoffCard(pb, rb, onContinue = { vm.continueOnReader(m); if (book.document == m) onClose() }, onKeep = { vm.keepBothCopies(m) })
                 }
             }
+            remember(state.books, state.keptApart, book.document) { io.github.prithirajn.trackersync.sync.SameBook.pairFor(state, book.document) }?.let { m ->
+                VSpace(16)
+                SameBookCard(m, onJoin = { vm.joinSameBook(m.keep.document, m.other.document) }, onApart = { vm.keepBooksApart(m.keep.document, m.other.document) })
+            }
+            state.rereadAsks[book.document]?.let { ask ->
+                VSpace(16)
+                RereadAskCard(book, ask, onYes = { vm.rereadYes(book.document) }, onNo = { vm.rereadNo(book.document) }, showBook = false)
+            }
             state.progressAsks[book.document]?.let { ask ->
                 VSpace(16)
                 SeekquelProgressCard(book, ask, onUse = { vm.acceptSeekquelProgress(book.document) }, onKeep = { vm.denySeekquelProgress(book.document) }, showBook = false, kosyncOn = state.kosync != null,
@@ -1040,6 +1083,22 @@ private fun BookSheet(
                     AudiobookCard(vm, state, book)
                     // The app's own copy of it, for the lines around quotes: kept, coming, or why not.
                     CopyCard(vm, book)
+                    // Your rubric scores for it (when you've set up a rubric under Activity › Rating rubric).
+                    RubricCard(vm, state, book)
+                    // Owned: format, what you paid, where (for your collection, shelves and series gaps).
+                    OwnedCard(vm, state, book)
+                    // The book as one shareable card: its cover large, your stars, rubric and review; and its journal page.
+                    run {
+                        var coverCard by remember(book.document) { mutableStateOf(false) }
+                        var journal by remember(book.document) { mutableStateOf(false) }
+                        VSpace(12)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (book.status == io.github.prithirajn.trackersync.data.ReadStatus.FINISHED || book.rating != null) PillButton("Share a cover card", { coverCard = true })
+                            if (!book.isMangaOrComic && CollectionHooks.available) PillButton("Journal page", { journal = true })
+                        }
+                        if (coverCard) CoverCardSheet(state, book) { coverCard = false }
+                        if (journal) JournalSheet(state, book) { journal = false }
+                    }
                 
                 BookSection("Sync")
                     ThreadsBookCard(vm, state, book) { postingReview = true }

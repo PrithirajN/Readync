@@ -74,8 +74,20 @@ private fun Sheet(title: String, onClose: () -> Unit, content: @Composable () ->
  * Adding a physical book: searched on your Hardcover and Seekquel (your shelves ranked first), then their
  * catalogs as you search, each with its cover and details; or typed in when it's on neither.
  */
+/**
+ * Another way to add from the Add sheet, for a part of the app outside the public code: its own
+ * title and button, choices to pick between, and what adding does (a picked book, or one typed in).
+ */
+class AddMode(
+    val title: String,
+    val button: String,
+    val choices: List<String>,
+    val add: (vm: AppViewModel, picked: AppViewModel.AddCandidate?, title: String?, author: String?, pages: Int?, isbn: String?, choice: String, done: (String?, String?) -> Unit) -> Unit,
+)
+
 @Composable
-fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Unit, onAdded: (String) -> Unit, onLogManga: (() -> Unit)? = null) {
+fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Unit, onAdded: (String) -> Unit, onLogManga: (() -> Unit)? = null, mode: AddMode? = null) {
+    var format by remember { mutableStateOf(mode?.choices?.firstOrNull() ?: "") }
     val c = Cp.colors
     val context = LocalContext.current
     val sources = remember { vm.addSources() }
@@ -134,7 +146,7 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
         }
     }
 
-    Sheet("Add a book", onClose) {
+    Sheet(mode?.title ?: "Add a book", onClose) {
         val pick = picked
         if (pick == null && onLogManga != null) {
             // Manga and comics read elsewhere: logged by chapter or issue, counted as volumes.
@@ -158,15 +170,25 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
             CpTextField(pages, { v -> pages = v.filter { it.isDigit() }.take(5) }, "Pages in your copy", placeholder = "e.g. 352", keyboard = KeyboardType.Number)
             Quiet("Progress is counted against this. Without it you can still update by percentage.", Modifier.padding(top = 6.dp), color = c.faint)
             VSpace(16)
-            BigButton("Add to my library", {
+            if (mode != null && mode.choices.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (f in mode.choices) PillButton(f, { format = f }, outlined = format != f)
+                }
+                VSpace(12)
+            }
+            /** Adds it the way this sheet was opened for. */
+            fun add(done: (String?, String?) -> Unit) =
+                if (mode != null) mode.add(vm, pick, null, null, pages.toIntOrNull(), scanned, format, done)
+                else vm.addPhysicalBook(pick, pages.toIntOrNull(), isbn = scanned, done = done)
+            BigButton(mode?.button ?: "Add to my library", {
                 busy = true
-                vm.addPhysicalBook(pick, pages.toIntOrNull(), isbn = scanned) { doc, err -> busy = false; if (err == null && doc != null) onAdded(doc) }
+                add { doc, err -> busy = false; if (err == null && doc != null) onAdded(doc) }
             }, busy = busy)
             VSpace(8)
             if (scanned != null) {
                 BigButton("Add & scan next barcode", {
                     busy = true
-                    vm.addPhysicalBook(pick, pages.toIntOrNull(), isbn = scanned) { doc, err ->
+                    add { doc, err ->
                         busy = false
                         if (err == null && doc != null) {
                             picked = null
@@ -253,9 +275,10 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
             VSpace(10)
             CpTextField(pages, { v -> pages = v.filter { it.isDigit() }.take(5) }, "Pages", placeholder = "e.g. 352", keyboard = KeyboardType.Number)
             VSpace(14)
-            BigButton("Add to my library", {
+            BigButton(mode?.button ?: "Add to my library", {
                 busy = true
-                vm.addTypedBook(title, author, pages.toIntOrNull()) { doc, err -> busy = false; if (err == null && doc != null) onAdded(doc) }
+                if (mode != null) mode.add(vm, null, title, author, pages.toIntOrNull(), null, format) { doc, err -> busy = false; if (err == null && doc != null) onAdded(doc) }
+                else vm.addTypedBook(title, author, pages.toIntOrNull()) { doc, err -> busy = false; if (err == null && doc != null) onAdded(doc) }
             }, busy = busy, enabled = title.isNotBlank())
         }
     }

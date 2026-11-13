@@ -15,8 +15,8 @@ android {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 277
-        versionName = "1.98.2"
+        versionCode = 298
+        versionName = "2.8.2"
         // Only the processors phones and e-readers use (64-bit and older 32-bit ARM). The on-device
         // AI, text recognition and barcode libraries are native code, one copy per processor type, so
         // leaving out x86 (emulators, a few old tablets) takes away about half the APK.
@@ -114,6 +114,8 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
+    // Web page view in dark mode (algorithmic darkening) on WebViews that support it.
+    implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")

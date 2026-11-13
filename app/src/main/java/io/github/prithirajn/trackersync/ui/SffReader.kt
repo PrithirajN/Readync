@@ -630,6 +630,12 @@ private fun ArtifactReaderWebView(html: String, baseUrl: String?, background: Co
 @Composable
 private fun InAppArticleWebView(url: String, modifier: Modifier = Modifier, blockAds: Boolean = false) {
     var webView: WebView? by remember { mutableStateOf(null) }
+    // Dark like the app when the app is dark: the page darkened by the WebView itself (pages with their
+    // own dark look use it), on a dark background so it doesn't flash white while loading.
+    val dark = io.github.prithirajn.trackersync.ui.theme.Cp.colors.isDark
+    val pageBg = io.github.prithirajn.trackersync.ui.theme.Cp.colors.page
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    LaunchedEffect(Unit) { io.github.prithirajn.trackersync.source.AdBlockList.warm(appContext) }
     DisposableEffect(Unit) {
         onDispose {
             webView?.stopLoading()
@@ -639,12 +645,18 @@ private fun InAppArticleWebView(url: String, modifier: Modifier = Modifier, bloc
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
-            WebView(ctx).apply {
+            // A dark theme for the WebView's own context, which is what tells it to darken pages.
+            val themed = if (dark) android.view.ContextThemeWrapper(ctx, android.R.style.Theme_DeviceDefault_NoActionBar) else ctx
+            WebView(themed).apply {
                 webView = this
                 keepGestures(this)
+                setBackgroundColor(pageBg.toArgb())
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
+                if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.ALGORITHMIC_DARKENING)) {
+                    androidx.webkit.WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, dark)
+                }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val target = request?.url?.toString() ?: return false
@@ -656,6 +668,11 @@ private fun InAppArticleWebView(url: String, modifier: Modifier = Modifier, bloc
                         if (blockAds && request != null && SffArticleReader.shouldBlockRequest(request)) SffArticleReader.emptyAdResponse() else null
                     override fun onPageFinished(view: WebView?, url: String?) {
                         if (blockAds && view != null) SffArticleReader.injectCleanPageScript(view)
+                        // Older WebViews that can't darken a page: it asks for the site's own dark look,
+                        // and a light page is turned dark (pictures and videos kept as they are).
+                        if (dark && view != null && !androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.ALGORITHMIC_DARKENING)) {
+                            view.evaluateJavascript(SffArticleReader.DARK_PAGE_JS, null)
+                        }
                     }
                 }
                 loadUrl(url)

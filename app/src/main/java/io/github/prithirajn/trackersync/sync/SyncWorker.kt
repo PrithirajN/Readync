@@ -94,6 +94,25 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
  * Was the Astral Probe's return. The probe is gone from the SFF tab: a wake-up still queued from
  * before does nothing (kept so WorkManager can still find the class it saved).
  */
+/** A Threads check of its own, at the time the next waiting session is due (see ThreadsAuto). */
+class ThreadsWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val app = applicationContext as TrackerSyncApp
+        runCatching { io.github.prithirajn.trackersync.ui.ThreadsAuto.run(applicationContext, app.store) }
+        Result.success()
+    }
+
+    companion object {
+        fun schedule(context: Context, delaySec: Long) {
+            val req = OneTimeWorkRequestBuilder<ThreadsWorker>()
+                .setInitialDelay(delaySec, TimeUnit.SECONDS)
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork("threads-next", ExistingWorkPolicy.REPLACE, req)
+        }
+    }
+}
+
 class SffProbeWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = Result.success()
 
@@ -119,6 +138,7 @@ object Notices {
     private const val PRICES = "prices"
     private const val POSITIONS = "positions"
     private const val COPIES = "book-copies"
+    private const val POSTS = "social-posts"
 
     /** Opens the app; with [action] (and [document]) it goes straight to that thing. */
     fun openApp(context: Context, action: String? = null, document: String? = null, code: Int = 0): PendingIntent {
@@ -183,6 +203,31 @@ object Notices {
         }
     }
 
+    /** The app, for notices raised where no context is at hand (a tracker posting to Micro.blog). */
+    @Volatile var app: Context? = null
+
+    /**
+     * Something went up on a social site in your name (Threads, Micro.blog): what, and for which
+     * book, so nothing is posted without you knowing. Tapping it opens the book.
+     */
+    fun posted(service: String, what: String, document: String? = null) {
+        val context = app ?: return
+        if (!allowed(context)) return
+        channel(context, POSTS, "Posted to your socials")
+        NotificationManagerCompat.from(context).notify(
+            900 + ((service + what).hashCode() and 0xFFFF),
+            NotificationCompat.Builder(context, POSTS)
+                .setSmallIcon(R.drawable.ic_stat_sync)
+                .setContentTitle("Posted to $service")
+                .setContentText(what)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(what))
+                .setContentIntent(if (document != null) openApp(context, MainActivity.ACTION_OPEN_BOOK, document, 90) else openApp(context, code = 90))
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
     /** A sync kept a copy of a book you're reading for quotes (or couldn't find one). */
     fun bookCopy(context: Context, book: io.github.prithirajn.trackersync.data.Book, copy: io.github.prithirajn.trackersync.source.BookCopies.Copy?, why: String?) {
         if (!allowed(context)) return
@@ -238,7 +283,12 @@ object Notices {
     fun after(context: Context, settings: SyncSettings, result: SyncEngine.Result, store: io.github.prithirajn.trackersync.data.Store) {
         if (!allowed(context)) return
         val nm = NotificationManagerCompat.from(context)
-        if (result.needsAttention.isNotEmpty()) {
+        // Said once per signed-out set of services (not on every background sync until you sign in).
+        val signPrefs = context.getSharedPreferences("notices", Context.MODE_PRIVATE)
+        val signedOut = result.needsAttention.sorted().joinToString(", ")
+        if (signedOut.isEmpty()) signPrefs.edit().remove("lastSignIn").apply()
+        if (result.needsAttention.isNotEmpty() && signPrefs.getString("lastSignIn", null) != signedOut) {
+            signPrefs.edit().putString("lastSignIn", signedOut).apply()
             channel(context, SIGN_IN, "Sign-in needed")
             nm.notify(
                 1,
@@ -313,19 +363,24 @@ object Notices {
         probeBack(context, store)
         // Another source has a different position: that book's trackers wait for your choice, so say so (once per position).
         val asks = store.snapshot.progressAsks
+        // A jump back is said once (not again with every page turned below it); one further along, once per position.
+        fun askKey(d: String, a: io.github.prithirajn.trackersync.data.ProgressAsk, st: io.github.prithirajn.trackersync.data.Snapshot) =
+            if (st.books[d]?.let { a.fraction < it.percentage } == true) "${a.source}|back" else "${a.source}|${a.percent}"
         if (settings.notifyPositions) {
-            val fresh = asks.filter { (d, a) -> store.snapshot.asksNotified[d] != "${a.source}|${a.percent}" && store.snapshot.books.containsKey(d) }
+            val fresh = asks.filter { (d, a) -> store.snapshot.asksNotified[d] != askKey(d, a, store.snapshot) && store.snapshot.books.containsKey(d) }
             if (fresh.isNotEmpty()) {
                 channel(context, POSITIONS, "Different positions")
                 for ((i, e) in fresh.entries.take(3).withIndex()) {
                     val (doc, a) = e
                     val b = store.snapshot.books[doc] ?: continue
+                    val back = a.fraction < b.percentage
                     nm.notify(
                         300 + (doc.hashCode() and 0xFFFF),
                         NotificationCompat.Builder(context, POSITIONS)
                             .setSmallIcon(R.drawable.lucide_book_open)
-                            .setContentTitle("${Primary.name(a.source)} has a different position")
-                            .setContentText("${b.displayTitle}: ${a.percent}% there, ${b.percent}% here. Its trackers wait until you choose.")
+                            .setContentTitle(if (back) "${Primary.name(a.source)} went back to ${a.percent}%" else "${Primary.name(a.source)} has a different position")
+                            .setContentText(if (back) "${b.displayTitle}: kept at ${b.percent}%. Open the book to use the new position or keep this one."
+                                else "${b.displayTitle}: ${a.percent}% there, ${b.percent}% here. Its trackers wait until you choose.")
                             .setContentIntent(openApp(context, MainActivity.ACTION_OPEN_BOOK, doc, code = 30 + i))
                             .setAutoCancel(true)
                             .build(),
@@ -333,7 +388,32 @@ object Notices {
                 }
             }
         }
-        store.update { st -> st.copy(asksNotified = st.progressAsks.mapValues { (_, a) -> "${a.source}|${a.percent}" }) }
+        // A finished book being read again: asked once on the book, said once here.
+        val rereadAsks = store.snapshot.rereadAsks
+        if (settings.notifyPositions) {
+            val fresh = rereadAsks.filter { (d, _) -> "reread:$d" !in store.snapshot.asksNotified && store.snapshot.books.containsKey(d) }
+            if (fresh.isNotEmpty()) {
+                channel(context, POSITIONS, "Different positions")
+                for ((i, e) in fresh.entries.take(3).withIndex()) {
+                    val (doc, a) = e
+                    val b = store.snapshot.books[doc] ?: continue
+                    nm.notify(
+                        300 + ("reread:$doc".hashCode() and 0xFFFF),
+                        NotificationCompat.Builder(context, POSITIONS)
+                            .setSmallIcon(R.drawable.lucide_book_open)
+                            .setContentTitle("Reading it again?")
+                            .setContentText("${b.displayTitle} is at ${a.percent}% on ${Primary.name(a.source)}. It stays finished until you say yes.")
+                            .setContentIntent(openApp(context, MainActivity.ACTION_OPEN_BOOK, doc, code = 40 + i))
+                            .setAutoCancel(true)
+                            .build(),
+                    )
+                }
+            }
+        }
+        store.update { st ->
+            st.copy(asksNotified = st.progressAsks.mapValues { (d, a) -> askKey(d, a, st) } +
+                st.rereadAsks.keys.associate { "reread:$it" to "1" })
+        }
         if (settings.notifyFinished && result.finished.isNotEmpty()) {
             channel(context, FINISHED, "Finished books")
             for ((i, doc) in result.finished.take(3).withIndex()) {

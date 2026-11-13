@@ -75,6 +75,26 @@ fun ReadingTimerSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
     fun pause() { if (running) { banked += System.currentTimeMillis() - since; running = false } }
     fun resume() { if (!running) { since = System.currentTimeMillis(); running = true } }
 
+    // The session as a Live Update: its clock on the status-bar chip, Pause or Resume and End from
+    // the notification, while you're away from the app. Gone when the session closes.
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    androidx.compose.runtime.LaunchedEffect(running, page, banked) {
+        LiveUpdates.timer(
+            appContext, book.document, QuoteCard.shortTitle(book.displayTitle),
+            banked + if (running) System.currentTimeMillis() - since else 0L, running,
+            page, (page - startPage).coerceAtLeast(0), book.pageCount,
+        )
+    }
+    DisposableEffect(Unit) {
+        LiveUpdates.handlers["timer.pause"] = { pause() }
+        LiveUpdates.handlers["timer.resume"] = { resume() }
+        LiveUpdates.handlers["timer.end"] = { pause(); finishing = true }
+        onDispose {
+            listOf("timer.pause", "timer.resume", "timer.end").forEach { LiveUpdates.handlers.remove(it) }
+            LiveUpdates.cancel(appContext, LiveUpdates.TIMER_ID)
+        }
+    }
+
     Dialog(onDismissRequest = { if (secs < 5) onClose() else { pause(); finishing = true } }, properties = FullScreen) {
         DarkGadget {
             val c = Cp.colors

@@ -102,7 +102,8 @@ fun DealSheet(vm: AppViewModel, state: Snapshot, key: String, onClose: () -> Uni
         }
         for (sh in shopsInOrder) {
             val pts = w.latest.filter { it.store == sh.id }.sortedBy { if (it.format == "Kindle") 1 else 0 }
-            val shown = pts.ifEmpty { listOf(PricePoint(sh.id, 0, null, inStock = false)) }
+            // A page just chosen or pasted, not read yet: said so, not "not found".
+            val shown = pts.ifEmpty { listOf(PricePoint(sh.id, 0, null, inStock = false, url = w.links[sh.id], title = if (w.links[sh.id] != null) "checking" else null)) }
             for (p in shown) {
                 val listing = w.choices[sh.id]?.firstOrNull { it.url == p.url }
                 StoreRow(p, listing) { p.url?.let { u -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } } }
@@ -234,6 +235,7 @@ private fun StoreRow(p: PricePoint, listing: PriceListing? = null, onOpen: () ->
             Text(BookPrices.shop(p.store)?.name ?: p.store, style = CpType.body, color = c.text, maxLines = 1)
             Text(
                 when {
+                    p.price == null && p.title == "checking" -> "checking this page…"
                     p.price == null && p.url == null -> "not found"
                     !p.inStock -> "out of stock"
                     p.format == "Kindle" -> "Kindle edition"

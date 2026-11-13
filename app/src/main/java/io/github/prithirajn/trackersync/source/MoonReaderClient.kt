@@ -299,10 +299,18 @@ class MoonReaderClient(private val account: Account) {
          * no dash is all title.
          */
         fun guesses(fileName: String): List<Pair<String, String?>> {
-            val bare = fileName.replace(bookExt, "").replace('_', ' ').replace(Regex("\\s+"), " ").trim()
-            val parts = bare.split(Regex("\\s+[-–—]\\s+"), limit = 2)
+            val bare = fileName.substringAfterLast('/').replace(bookExt, "").replace('_', ' ')
+                // Copies' and downloads' marks: "(1)", "(123)", "[b0c4f2]", "(z-lib.org)", "(Anna's Archive)", "copy".
+                .replace(Regex("\\s*\\((\\d{1,4}|z-?lib[^)]*|anna[^)]*|libgen[^)]*|epub|retail|v\\d[^)]*)\\)\\s*$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s*\\[[0-9a-f]{6,}\\]", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+(copy|- copy)$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+"), " ").trim()
+            val parts = bare.split(Regex("\\s+[-–—]\\s+"))
             if (parts.size < 2 || parts.any { it.isBlank() }) return listOf(bare to null)
-            return listOf(parts[0].trim() to parts[1].trim(), parts[1].trim() to parts[0].trim())
+            val first = parts.first().trim()
+            val last = parts.last().trim()
+            // "Title - Author", "Author - Title", and "Author - Series 01 - Title".
+            return (listOf(first to last, last to first) + (if (parts.size > 2) listOf(bare to null) else emptyList())).distinct()
         }
     }
 }

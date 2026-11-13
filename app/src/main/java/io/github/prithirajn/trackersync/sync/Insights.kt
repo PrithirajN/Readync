@@ -55,7 +55,8 @@ object Insights {
     fun year(s: Snapshot, today: LocalDate, zone: ZoneId = ZoneId.systemDefault()): Year {
         val y = today.year
         val finished = s.books.values.filter { b ->
-            b.status == ReadStatus.FINISHED && !b.held &&
+            // Books brought in from a tracker's history or an export count too (held only means they aren't sent anywhere).
+            b.status == ReadStatus.FINISHED &&
                 (b.finishedAt ?: b.timestamp).let { t -> t > 0 && Instant.ofEpochSecond(t).atZone(zone).year == y }
         }.sortedByDescending { it.finishedAt ?: it.timestamp }
         val pages = finished.sumOf { it.pageCount ?: 0 }

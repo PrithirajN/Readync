@@ -169,9 +169,12 @@ class BookEditor(private val store: Store) {
         if (nb != b) queueEverywhere(document)
     }
 
-    /** "2026-10-29" as unix seconds at the start of that day on this phone. */
+    /**
+     * "2026-10-29" as unix seconds at noon that day on this phone: still that day in any time zone
+     * a tracker reads it in (midnight here is the day before in UTC, east of it).
+     */
     private fun dayStart(day: String): Long =
-        java.time.LocalDate.parse(day).atStartOfDay(java.time.ZoneId.systemDefault()).toEpochSecond()
+        java.time.LocalDate.parse(day).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toEpochSecond()
 
     /**
      * Other books that look like this one synced twice: the same title, and the same author
@@ -199,11 +202,28 @@ class BookEditor(private val store: Store) {
                 val key = io.github.prithirajn.trackersync.data.Link.key(t.id, into)
                 if (links[key]?.externalId == null && from.externalId != null) links[key] = from.copy(document = into)
             }
-            val merged = target.copy(aliases = (target.aliases + duplicate).distinct())
+            // The furthest place either copy reached stands (and a finish on either); details one lacks come from the other.
+            val further = dup.percentage > target.percentage + 0.0005 || (dup.status == io.github.prithirajn.trackersync.data.ReadStatus.FINISHED && target.status != io.github.prithirajn.trackersync.data.ReadStatus.FINISHED)
+            val base = if (further) target.copy(percentage = dup.percentage, status = dup.status, currentPage = dup.currentPage ?: target.currentPage, timestamp = maxOf(dup.timestamp, target.timestamp)) else target
+            val merged = base.copy(
+                aliases = (target.aliases + duplicate + dup.aliases).distinct(),
+                held = target.held && dup.held,
+                rating = target.rating ?: dup.rating, review = target.review ?: dup.review,
+                startedAt = listOfNotNull(target.startedAt, dup.startedAt).minOrNull(),
+                finishedAt = target.finishedAt ?: dup.finishedAt,
+                pageCount = target.pageCount ?: dup.pageCount, isbn = target.isbn ?: dup.isbn, coverUrl = target.coverUrl ?: dup.coverUrl,
+            )
+            // Its highlights (from every reader) come along, so they show and send under the one book.
+            fun moved(l: List<io.github.prithirajn.trackersync.source.Clipping>) = if (l.none { it.document == duplicate }) l else l.map { if (it.document == duplicate) it.copy(document = into) else it }
             s.copy(
                 books = s.books - duplicate + (into to merged),
                 links = links,
                 pending = s.pending.filterValues { it.document != duplicate },
+                cpClips = moved(s.cpClips), koClips = moved(s.koClips), kindleClips = moved(s.kindleClips), libbyClips = moved(s.libbyClips),
+                moonClips = moved(s.moonClips), historyClips = moved(s.historyClips), paperClips = moved(s.paperClips),
+                koHlDocs = s.koHlDocs.mapValues { (_, d) -> if (d == duplicate) into else d },
+                koSameAs = s.koSameAs.mapValues { (_, d) -> if (d == duplicate) into else d } + (duplicate to into),
+                progressAsks = s.progressAsks - duplicate, rereadAsks = s.rereadAsks - duplicate,
             )
         }
         queueEverywhere(into)

@@ -75,6 +75,18 @@ object KoHighlightSync {
 
     private fun textKey(t: String) = t.lowercase().filter { it.isLetterOrDigit() }.take(120)
 
+    /**
+     * A web article rather than a book: saved by KOReader's Wallabag plugin ("[w-id_123] Title",
+     * its wallabag folder) or News downloader (its news folder), or a saved web page.
+     */
+    internal fun isArticle(f: KoFile): Boolean {
+        val path = f.path.lowercase().replace('\\', '/')
+        val names = listOfNotNull(f.fileName, f.bookName, f.title, path.substringAfterLast('/')).map { it.lowercase() }
+        val name = names.first()
+        return names.any { it.startsWith("[w-id_") } || Regex("(^|/)(wallabag|news)(/|$)").containsMatchIn(path.substringBeforeLast('/', "")) ||
+            Regex("\\.(x?html?|mht|mhtml)(\\.sdr)?$").containsMatchIn(name)
+    }
+
     const val ORIGIN = "koreader"
 
     private val hex32 = Regex("[0-9a-f]{32}")
@@ -225,6 +237,9 @@ object KoHighlightSync {
         var created = 0
         for (f in files) {
             var b = match(s.copy(koHlDocs = docs, books = books), f)
+            // A web article read in KOReader (its Wallabag or News downloader): not a book, so not made
+            // into one, nor listed as unmatched. One you added here yourself still gets its highlights.
+            if (b == null && isArticle(f)) continue
             // Not here, but named (from its EPUB, KOReader's file, the file's own name, or names you gave):
             // added with its highlights, held back from trackers until you turn it on (where you are isn't known).
             if (b == null && f.annotations.any { !it.bookmark }) {

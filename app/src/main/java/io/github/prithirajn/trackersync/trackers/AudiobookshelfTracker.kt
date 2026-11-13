@@ -106,12 +106,29 @@ object AudiobookshelfTracker : Tracker {
         return get(session, "/api/me/progress/${Http.enc(id)}")
     }
 
-    /** The reading share in [p]: the listening one (through your calibration) for an audiobook, the reader's for an ebook-only item. */
+    /**
+     * Where reading and listening places map through for this audiobook: its chapters matched to
+     * the book's (worked out once, from the server's own ebook or the copy on this phone; the audio
+     * itself is never downloaded), and your "Not the right spot?" point.
+     */
+    private fun points(session: Session, link: Link): List<Anchors.Anchor> {
+        Anchors.ensureChapters(session, link, tracks = { tracks(session, link, withPlace = false) }, epub = { epub(session, link) })
+        return Anchors.points(session, link)
+    }
+
+    /** The book's EPUB: the copy kept on this phone, else the item's own ebook on the server. */
+    fun epub(session: Session, link: Link): ByteArray? {
+        Anchors.phoneCopy(link.document)?.let { return it }
+        val id = link.externalId ?: return null
+        return runCatching { Http.bytes(base(session) + "/api/items/${Http.enc(id)}/ebook", 200_000_000, mapOf("Authorization" to "Bearer ${session.data.str("token")}"), 60_000) }.getOrNull()
+    }
+
+    /** The reading share in [p]: the listening one (through the chapters and your calibration) for an audiobook, the reader's for an ebook-only item. */
     private fun share(session: Session, link: Link, p: JSONObject): Double? {
         val dur = p.num("duration") ?: 0.0
         if (dur <= 0) return fraction(p.num("ebookProgress")) ?: fraction(p.num("progress"))
         val audio = fraction(p.num("progress")).takeIf { (it ?: 0.0) > 0 } ?: p.num("currentTime")?.let { fraction(it / dur) }
-        return audio?.let { Anchors.audioToText(it, Anchors.of(session, link)) }
+        return audio?.let { Anchors.audioToText(it, points(session, link)) }
     }
 
     override fun state(session: Session, link: Link): RemoteState {
@@ -137,7 +154,7 @@ object AudiobookshelfTracker : Tracker {
     override fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility) {
         val f = percent.coerceIn(0, 100) / 100.0
         // The listening side through your calibration for this book; the ebook side stays your reading place.
-        val audio = Anchors.textToAudio(f, Anchors.of(session, link))
+        val audio = Anchors.textToAudio(f, points(session, link))
         // No isFinished here: with isFinished false, Audiobookshelf ignores the progress.
         val body = JSONObject().put("progress", audio).put("ebookProgress", f)
         duration(session, link)?.let { d -> body.put("duration", d).put("currentTime", (audio * d).coerceIn(0.0, d)) }
@@ -152,7 +169,7 @@ object AudiobookshelfTracker : Tracker {
     }
 
     /** The audiobook's chapters and where you're listening, for "Not the right spot?". */
-    fun tracks(session: Session, link: Link): Anchors.Tracks? {
+    fun tracks(session: Session, link: Link, withPlace: Boolean = true): Anchors.Tracks? {
         val id = link.externalId ?: return null
         val media = get(session, "/api/items/${Http.enc(id)}?expanded=1")?.obj("media") ?: return null
         val total = (media.num("duration")?.takeIf { it > 0 } ?: media.arr("audioFiles")?.objects()?.sumOf { it.num("duration") ?: 0.0 } ?: 0.0)
@@ -163,7 +180,7 @@ object AudiobookshelfTracker : Tracker {
                 val s = c.num("start") ?: 0.0
                 Anchors.Track(c.str("title") ?: "Chapter ${i + 1}", Math.round(s * 1000), Math.round(((c.num("end") ?: s) - s) * 1000).coerceAtLeast(0))
             }
-        val p = progress(session, link)
+        val p = if (withPlace) progress(session, link) else null
         return Anchors.Tracks(list, Math.round(total * 1000), p?.num("currentTime")?.let { Math.round(it * 1000) })
     }
 

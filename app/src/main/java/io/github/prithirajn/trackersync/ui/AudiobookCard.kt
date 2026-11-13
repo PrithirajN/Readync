@@ -41,6 +41,7 @@ private fun clock(ms: Long): String {
  * On a book's page, when it's matched to an audiobook (Audiobookshelf, Spotify): where you're
  * listening, Resume in Spotify, and "Not the right spot?" to say which track your reading place is at.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun AudiobookCard(vm: AppViewModel, state: Snapshot, book: Book) {
     val links = remember(state.links, state.services, book.document) { vm.audiobookLinks(state, book.document) }
@@ -58,6 +59,12 @@ fun AudiobookCard(vm: AppViewModel, state: Snapshot, book: Book) {
             vm.audiobookTracks(book.document, t.id) { r, e -> tracks = r; error = e; loading = false }
         }
         val anchored = remember(state.services, link) { Anchors.of(Session(state.service(t.id).credential), link) != null }
+        val chapterMap = remember(state.services, link) { Anchors.chapterMap(Session(state.service(t.id).credential), link.externalId) }
+        var linking by remember(t.id, book.document) { mutableStateOf(false) }
+        var linker by remember(t.id, book.document) { mutableStateOf<AppViewModel.ChapterLinker?>(null) }
+        var linkError by remember(t.id, book.document) { mutableStateOf<String?>(null) }
+        var editing by remember(t.id, book.document) { mutableStateOf<Int?>(null) }
+        var chosen by remember(t.id, book.document) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
         VSpace(16)
         CpCard {
             Column(Modifier.padding(16.dp)) {
@@ -77,10 +84,15 @@ fun AudiobookCard(vm: AppViewModel, state: Snapshot, book: Book) {
                                 if (anchored) " Matched to your reading by the track you picked." else "",
                             color = c.faint,
                         )
+                        chapterMap?.takeIf { it.pairs.isNotEmpty() }?.let { m ->
+                            VSpace(4)
+                            Quiet("Places go chapter by chapter: ${m.pairs.size} chapters matched" + (if (m.manual) " by you." else " by their titles."), color = c.faint)
+                        }
                     }
                 }
                 VSpace(10)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Wraps on narrow phones.
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (t.id == SpotifyTracker.id) {
                         PillButton(if (resuming) "Starting…" else "Resume in Spotify", {
                             if (!resuming) {
@@ -93,6 +105,67 @@ fun AudiobookCard(vm: AppViewModel, state: Snapshot, book: Book) {
                         }, outlined = false)
                     }
                     if (tr != null && tr.tracks.isNotEmpty()) PillButton("Not the right spot?", { picking = !picking })
+                    if (tr != null && tr.tracks.size > 1) PillButton(if (linking) "Close" else "Match chapters", {
+                        linking = !linking; editing = null; linkError = null
+                        if (linking && linker == null) vm.audiobookChapters(book.document, t.id) { l, e ->
+                            linker = l; linkError = e
+                            // Start from how they're matched now.
+                            if (l != null) chosen = l.map?.pairs.orEmpty().mapNotNull { p -> l.headings.indexOfFirst { it.spine == p.chapter }.takeIf { it >= 0 }?.let { p.track to it } }.toMap()
+                        }
+                    })
+                }
+                if (linking) {
+                    VSpace(12)
+                    val l = linker
+                    val le = linkError
+                    when {
+                        le != null -> Quiet(le, color = c.faint)
+                        l == null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(14.dp), color = c.faint, strokeWidth = 2.dp); HSpace(8); Quiet("Reading the book's chapters…")
+                        }
+                        else -> {
+                            Quiet("Tap a track to say which chapter of the book it reads. Tracks not in the book (credits, an intro) can stay unmatched; places in between are shared out evenly.", color = c.textMid)
+                            VSpace(8)
+                            for ((i, track) in l.tracks.tracks.withIndex()) {
+                                val h = chosen[i]?.let { l.headings.getOrNull(it) }
+                                Box(
+                                    Modifier.fillMaxWidth().clip(CpShapes.pill).background(c.divider.copy(alpha = if (editing == i) 0.7f else 0.35f))
+                                        .bouncyClickable(CpShapes.pill, pressedScale = 0.98f) { editing = if (editing == i) null else i }
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                ) {
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(track.name, style = CpType.body, color = c.text, modifier = Modifier.weight(1f), maxLines = 1)
+                                            Quiet(clock(track.startMs), color = c.faint)
+                                        }
+                                        Quiet(h?.let { "\u2192 ${it.title.ifBlank { "Part ${it.spine + 1}" }} (${Math.round(it.share * 100)}%)" } ?: "Not matched", color = if (h != null) c.textMid else c.faint, maxLines = 1)
+                                    }
+                                }
+                                if (editing == i) {
+                                    VSpace(6)
+                                    Column(Modifier.padding(start = 12.dp)) {
+                                        PillButton("Not in the book", { chosen = chosen - i; editing = null })
+                                        VSpace(6)
+                                        for ((hi, heading) in l.headings.withIndex()) {
+                                            Text(
+                                                "${heading.title.ifBlank { "Part ${heading.spine + 1}" }}  ·  ${Math.round(heading.share * 100)}%",
+                                                style = CpType.small, color = if (chosen[i] == hi) c.accent else c.text, maxLines = 1,
+                                                modifier = Modifier.fillMaxWidth().clip(CpShapes.control).bouncyClickable(CpShapes.control, pressedScale = 0.98f) {
+                                                    chosen = chosen + (i to hi); editing = null
+                                                }.padding(horizontal = 8.dp, vertical = 8.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                                VSpace(6)
+                            }
+                            VSpace(6)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                PillButton("Match automatically", { vm.setAudiobookChapters(book.document, t.id, l, null); linking = false; linker = null })
+                                PillButton("Save", { vm.setAudiobookChapters(book.document, t.id, l, chosen); linking = false }, outlined = false)
+                            }
+                        }
+                    }
                 }
                 said?.let { VSpace(8); Quiet(it, color = c.faint) }
                 if (picking && tr != null) {

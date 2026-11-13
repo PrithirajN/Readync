@@ -1697,6 +1697,12 @@ data class Snapshot(
     val clipPages: Map<String, String> = emptyMap(),
     /** Where a highlight went, per tracker ("service|clipId" -> the entry's id there), to update it later. */
     val clipRemote: Map<String, String> = emptyMap(),
+    /** The words each highlight had when it went to a tracker ("service|clipId" -> their fingerprint), to notice edits. */
+    val sentHash: Map<String, Int> = emptyMap(),
+    /** Each sent highlight's words (clipId -> letters and digits), so a copy that grew out of one since gone is known. */
+    val sentWords: Map<String, String> = emptyMap(),
+    /** Highlights a tracker refused ("service|clipId" -> times); after 3 they're left out so the rest still go. */
+    val clipFails: Map<String, Int> = emptyMap(),
     /** Highlights to send again ("service|clipId"), replacing the earlier entry where the tracker allows. */
     val resend: Set<String> = emptySet(),
     /** CrossPoint highlights you deleted here only (by id): not shown or sent. */
@@ -1712,6 +1718,10 @@ data class Snapshot(
     val clipChecked: Map<String, String> = emptyMap(),
     /** Books whose price you're watching (by document): where, what you'd pay, and every price seen. */
     val priceWatch: Map<String, PriceWatch> = emptyMap(),
+    /** Your rating rubric: the things you score books on ("Plot", "Characters"…), up to eight. Empty: off. */
+    val rubric: List<String> = emptyList(),
+    /** Each book's rubric scores (by document, then category), 1 to 10. */
+    val rubricScores: Map<String, Map<String, Int>> = emptyMap(),
     /** Positions the reader reported per book (newest last, a few hundred kept), to place highlights. */
     val positions: Map<String, List<PositionPoint>> = emptyMap(),
     /** What was sent to each tracker for each book ("service|document"), newest last. */
@@ -1730,6 +1740,18 @@ data class Snapshot(
     val progressAsks: Map<String, ProgressAsk> = emptyMap(),
     /** Seekquel positions you chose not to use (document -> percent), so they aren't asked again. */
     val progressDenied: Map<String, Int> = emptyMap(),
+    /** Finished books a source reports as being read again (past 5%): "Reading it again?" on the book, asked once. */
+    val rereadAsks: Map<String, ProgressAsk> = emptyMap(),
+    /** "No" to that (document -> the book's finish time then), so that read isn't asked about again. */
+    val rereadDenied: Map<String, Long> = emptyMap(),
+    /** Books you moved back yourself (document -> unix seconds): trackers further along are brought back to it. */
+    val backAt: Map<String, Long> = emptyMap(),
+    /** Pairs of books you said aren't the same ("docA|docB", sorted), so they aren't asked about again. */
+    val keptApart: Set<String> = emptySet(),
+    /** What parts of the app outside the public code keep (name -> their JSON), saved with the rest. */
+    val extras: Map<String, String> = emptyMap(),
+    /** How many books were waiting to be turned on when you said "Not now" (asked again when more come in). */
+    val waitingSeen: Int = 0,
     /**
      * Each book's main source (see Primary): the one it first came from unless another took over;
      * its other sources by rank (secondary, tertiary…); each other source's run of days reading

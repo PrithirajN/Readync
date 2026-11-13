@@ -37,6 +37,12 @@ internal val FullScreen = DialogProperties(usePlatformDefaultWidth = false, deco
 
 /** Padding that keeps a full-screen page's content clear of the bars and cut-outs. */
 internal fun Modifier.fullScreenSafe(): Modifier = composed {
+    // Some phones size a full-screen dialog's window to the whole display but place it under the
+    // status bar, so its bottom runs off the screen (buttons cut in half). The window is made to
+    // fill the screen from its very top, drawn under both bars, so the insets below line up.
+    val view = androidx.compose.ui.platform.LocalView.current
+    // Once per page (doing it on every redraw kept relaying the window out).
+    androidx.compose.runtime.LaunchedEffect(view) { fillDialogWindow(view) }
     val own = WindowInsets.safeDrawing.asPaddingValues()
     val app = LocalAppInsets.current
     val dir = LocalLayoutDirection.current
@@ -46,4 +52,29 @@ internal fun Modifier.fullScreenSafe(): Modifier = composed {
         end = max(own.calculateEndPadding(dir), app.calculateEndPadding(dir)),
         bottom = max(own.calculateBottomPadding(), app.calculateBottomPadding()),
     )
+}
+
+/** The dialog's window made to cover the whole screen from its top edge, drawn under the bars. */
+private fun fillDialogWindow(view: android.view.View) {
+    var v: android.view.ViewParent? = view as? android.view.ViewParent ?: view.parent
+    var window: android.view.Window? = (view as? androidx.compose.ui.window.DialogWindowProvider)?.window
+    while (window == null && v != null) {
+        window = (v as? androidx.compose.ui.window.DialogWindowProvider)?.window
+        v = v.parent
+    }
+    val w = window ?: return
+    runCatching {
+        w.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+        w.setGravity(android.view.Gravity.TOP or android.view.Gravity.START)
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(w, false)
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            val a = w.attributes
+            a.layoutInDisplayCutoutMode = if (android.os.Build.VERSION.SDK_INT >= 30)
+                android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            else android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            w.attributes = a
+        }
+        @Suppress("DEPRECATION")
+        run { w.statusBarColor = android.graphics.Color.TRANSPARENT; w.navigationBarColor = android.graphics.Color.TRANSPARENT }
+    }
 }

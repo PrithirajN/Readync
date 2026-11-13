@@ -889,6 +889,66 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 /** Enables all connected trackers for this book in a single action. */
+    // ---- For parts of the app outside the public code ----
+
+    internal val appStore get() = store
+
+    /** Runs [action] off the main thread, says [success] (or what went wrong), and syncs after when asked. */
+    internal fun runEdit(success: String?, syncAfter: Boolean = false, done: (String?) -> Unit = {}, action: () -> Unit) = edit(success, done, syncAfter, action)
+
+    /** Runs [block] in the background (the app's own scope), then [then] on the main thread with its result. */
+    internal fun <T> inBackground(block: () -> T, then: (kotlin.Result<T>) -> Unit) {
+        viewModelScope.launch { then(io { runCatching(block) }) }
+    }
+
+    /** "These look like the same book" › Join: the copy folds into the one that stays (furthest place, all highlights). */
+    fun joinSameBook(a: String, b: String) {
+        val s = store.snapshot
+        val x = s.books[a] ?: return
+        val y = s.books[b] ?: return
+        val m = io.github.prithirajn.trackersync.sync.SameBook.order(x, y)
+        merge(m.other.document, m.keep.document, stats = true) { err -> if (err == null) notify("Joined into \u201C${m.keep.displayTitle}\u201D") }
+    }
+
+    fun keepBooksApart(a: String, b: String) =
+        edit("Kept as two books", {}) { io.github.prithirajn.trackersync.sync.SameBook.keepApart(store, a, b) }
+
+    /** Every book waiting to be turned on goes to your trackers from now on. */
+    fun turnOnWaiting() {
+        viewModelScope.launch {
+            val n = io {
+                val list = io.github.prithirajn.trackersync.sync.SameBook.waiting(store.snapshot)
+                for (b in list) {
+                    if (b.held) SyncEngine.release(store, b.document) else turnOnTrackers(b.document)
+                }
+                list.size
+            }
+            notify("Turned on $n book${if (n == 1) "" else "s"}; they go to your trackers now")
+            syncNow(quiet = true)
+        }
+    }
+
+    /** "Not now": asked again only when more books are waiting. */
+    fun dismissWaiting() = edit(null, {}) {
+        store.update { s -> s.copy(waitingSeen = io.github.prithirajn.trackersync.sync.SameBook.waiting(s).size) }
+    }
+
+    /** Every linked tracker on for [document] (off ones turned back on, kept matches reused). */
+    private fun turnOnTrackers(document: String) {
+        val book = store.snapshot.books[document] ?: return
+        for (t in io.github.prithirajn.trackersync.trackers.Trackers.all) {
+            val svc = store.snapshot.service(t.id)
+            if (!svc.linked || !svc.enabled || book.origin == t.id) continue
+            val key = io.github.prithirajn.trackersync.data.Link.key(t.id, document)
+            val old = store.snapshot.links[key]
+            if (old == null || old.source == io.github.prithirajn.trackersync.data.LinkSource.NONE) {
+                if (old?.externalId != null) store.putLink(old.copy(source = io.github.prithirajn.trackersync.data.LinkSource.MANUAL, note = null))
+                else store.update { s -> s.copy(links = s.links - key) }
+                SyncEngine.queue(store, t.id, listOf(document))
+            }
+        }
+    }
+
     fun enableAllTrackers(document: String) {
         viewModelScope.launch {
             val book = store.snapshot.books[document] ?: return@launch
@@ -1158,6 +1218,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         edit("Using the new position; it goes to your trackers now", {}, syncAfter = true) {
             io.github.prithirajn.trackersync.sync.ProgressOverride.acceptSeekquel(store, document)
         }
+
+    /** "Reading it again?" on a finished book a source reports partway through. */
+    fun rereadYes(document: String) =
+        edit("Reading again; your trackers move it to Reading", {}, syncAfter = true) {
+            io.github.prithirajn.trackersync.sync.ProgressOverride.rereadYes(store, document)
+        }
+
+    fun rereadNo(document: String) =
+        edit("Kept as finished", {}) { io.github.prithirajn.trackersync.sync.ProgressOverride.rereadNo(store, document) }
 
     fun denySeekquelProgress(document: String) =
         edit(null, {}) { io.github.prithirajn.trackersync.sync.ProgressOverride.denySeekquel(store, document) }
@@ -2200,6 +2269,72 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return null
     }
 
+    /** Your rating rubric's categories (up to eight; empty turns it off). */
+    fun setRubric(categories: List<String>) {
+        store.update { it.copy(rubric = categories.map { c -> c.trim() }.filter { c -> c.isNotEmpty() }.distinctBy { c -> c.lowercase() }.take(8)) }
+    }
+
+    /** A book's score (1 to 10) for one rubric category; null clears it. */
+    fun setRubricScore(document: String, category: String, score: Int?) {
+        store.update { s ->
+            val cur = s.rubricScores[document].orEmpty()
+            val next = if (score == null) cur - category else cur + (category to score.coerceIn(1, 10))
+            s.copy(rubricScores = if (next.isEmpty()) s.rubricScores - document else s.rubricScores + (document to next))
+        }
+    }
+
+    /** Books found in a social post, onto your Want to Read (ones already in your library left as they are). */
+    fun addPostBooks(books: List<io.github.prithirajn.trackersync.source.PostBooks.Found>, done: (String) -> Unit) {
+        viewModelScope.launch {
+            var added = 0
+            var had = 0
+            for (f in books) {
+                val existing = store.snapshot.books.values.firstOrNull { b ->
+                    (f.isbn != null && b.isbn?.filter { it.isDigit() } == f.isbn) || Matcher.sameBook(f.title, f.author, b.title ?: "", b.author)
+                }
+                if (existing != null) { had++; continue }
+                val ok = runCatching {
+                    io { ManualBooks.add(store, ManualBooks.Pick(title = f.title, author = f.author, coverUrl = f.cover, isbn = f.isbn, pages = f.pages, fraction = 0.0, status = ReadStatus.TO_READ)) }
+                }.isSuccess
+                if (ok) added++
+            }
+            val msg = when {
+                added == 0 && had > 0 -> "Already in your library"
+                added == 0 -> "Couldn't add them"
+                else -> "Added $added to Want to Read" + if (had > 0) " ($had already there)" else ""
+            }
+            notify(msg)
+            done(msg)
+        }
+    }
+
+    /** Books found in a social post, their prices tracked on Catalogs › Deals (in your library or not). */
+    fun trackPostBooks(books: List<io.github.prithirajn.trackersync.source.PostBooks.Found>, done: (String) -> Unit) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis() / 1000
+            val keys = ArrayList<String>()
+            store.update { s0 ->
+                var s = s0
+                for (f in books) {
+                    val lib = s.books.values.firstOrNull { b -> (f.isbn != null && b.isbn?.filter { it.isDigit() } == f.isbn) || Matcher.sameBook(f.title, f.author, b.title ?: "", b.author) }
+                    val key = lib?.document
+                        ?: s.priceWatch.values.firstOrNull { w -> (f.isbn != null && w.isbn == f.isbn) || (w.title != null && Matcher.sameBook(f.title, f.author, w.title, w.author)) }?.document
+                        ?: ("price:" + java.util.UUID.randomUUID().toString())
+                    if (key in s.priceWatch) continue
+                    s = s.copy(priceWatch = s.priceWatch + (key to io.github.prithirajn.trackersync.data.PriceWatch(
+                        key, since = now, title = lib?.displayTitle ?: f.title, author = lib?.author ?: f.author, isbn = lib?.isbn ?: f.isbn, cover = lib?.coverUrl ?: f.cover,
+                    )))
+                    keys += key
+                }
+                s
+            }
+            val msg = if (keys.isEmpty()) "Already tracking their prices" else "Tracking ${keys.size} price${if (keys.size == 1) "" else "s"} on Deals"
+            notify(msg)
+            done(msg)
+            io { for (k in keys) runCatching { io.github.prithirajn.trackersync.source.BookPrices.refresh(store, force = k) } }
+        }
+    }
+
     /** A book found in an OPDS catalog, onto your Want to Read (or opened, if it's already here). */
     fun addFromCatalog(title: String, author: String?, cover: String?, done: (String?) -> Unit) {
         viewModelScope.launch {
@@ -2641,12 +2776,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             // Told as soon as your trackers are up to date; the extras finish quietly after.
             var told = false
+            // A sync you started shows as a Live Update (its step, the time it's taking) until your
+            // trackers are up to date; the extras after it run quietly.
+            val app = getApplication<Application>()
+            val started = System.currentTimeMillis()
+            val live = if (quiet) null else viewModelScope.launch {
+                var last: String? = "\u0000"
+                while (true) {
+                    val step = store.snapshot.syncStep
+                    if (step != last) { last = step; io.github.prithirajn.trackersync.ui.LiveUpdates.sync(app, step, started) }
+                    kotlinx.coroutines.delay(500)
+                }
+            }
             val result = io {
                 SyncEngine(store).runThen { r ->
                     told = true
+                    live?.cancel(); io.github.prithirajn.trackersync.ui.LiveUpdates.cancel(app, io.github.prithirajn.trackersync.ui.LiveUpdates.SYNC_ID)
                     if (!quiet) viewModelScope.launch { notify(r.message, error = r.needsAttention.isNotEmpty()) }
                 }
             }
+            live?.cancel(); io.github.prithirajn.trackersync.ui.LiveUpdates.cancel(app, io.github.prithirajn.trackersync.ui.LiveUpdates.SYNC_ID)
             if (!quiet && !told) notify(result.message, error = result.needsAttention.isNotEmpty())
             // New highlights out to Threads, when you've turned that on.
             io { runCatching { ThreadsAuto.run(getApplication(), store) } }
@@ -2681,6 +2830,64 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             done(r.getOrNull(), r.exceptionOrNull()?.message)
+        }
+    }
+
+    /** What "Match chapters" shows: the audiobook's tracks, the book's chapters (from its EPUB), and how they're matched now. */
+    data class ChapterLinker(
+        val tracks: io.github.prithirajn.trackersync.trackers.Anchors.Tracks,
+        val headings: List<io.github.prithirajn.trackersync.source.EpubText.Heading>,
+        val map: io.github.prithirajn.trackersync.trackers.Anchors.ChapterMap?,
+    )
+
+    fun audiobookChapters(document: String, trackerId: String, done: (ChapterLinker?, String?) -> Unit) {
+        viewModelScope.launch {
+            val r = io {
+                runCatching {
+                    val A = io.github.prithirajn.trackersync.trackers.Anchors
+                    val s = store.snapshot
+                    val link = s.link(trackerId, document) ?: return@runCatching null
+                    val session = Session(s.service(trackerId).credential)
+                    val isSpotify = trackerId == io.github.prithirajn.trackersync.trackers.SpotifyTracker.id
+                    val tracks = (if (isSpotify) io.github.prithirajn.trackersync.trackers.SpotifyTracker.tracks(session, link)
+                        else io.github.prithirajn.trackersync.trackers.AudiobookshelfTracker.tracks(session, link, withPlace = false))
+                        ?: throw io.github.prithirajn.trackersync.net.ServiceException("No chapters for this audiobook")
+                    val bytes = (if (isSpotify) A.phoneCopy(document) else io.github.prithirajn.trackersync.trackers.AudiobookshelfTracker.epub(session, link))
+                        ?: throw io.github.prithirajn.trackersync.net.ServiceException(
+                            if (isSpotify) "Keep a copy of the book first (⋯ › Keep a copy), so its chapters can be read" else "No EPUB for it on the server or this phone; keep a copy of the book first (⋯ › Keep a copy)")
+                    val headings = io.github.prithirajn.trackersync.source.EpubText.outline(bytes)
+                    if (headings.isEmpty()) throw io.github.prithirajn.trackersync.net.ServiceException("Couldn't read the book's chapters")
+                    if (session.changed) store.updateService(trackerId) { it.copy(credential = session.encode()) }
+                    ChapterLinker(tracks, headings, A.chapterMap(session, link.externalId))
+                }
+            }
+            done(r.getOrNull(), r.exceptionOrNull()?.message)
+        }
+    }
+
+    /** Chapters matched by hand ([pairs]: track index -> heading index); null goes back to matching them automatically. */
+    fun setAudiobookChapters(document: String, trackerId: String, linker: ChapterLinker, pairs: Map<Int, Int>?) {
+        viewModelScope.launch {
+            io {
+                val A = io.github.prithirajn.trackersync.trackers.Anchors
+                val s = store.snapshot
+                val link = s.link(trackerId, document) ?: return@io
+                val id = link.externalId ?: return@io
+                val session = Session(s.service(trackerId).credential)
+                val map = pairs?.let { p ->
+                    val total = linker.tracks.totalMs.coerceAtLeast(1)
+                    val list = p.entries.sortedBy { it.key }.mapNotNull { (ti, hi) ->
+                        val t = linker.tracks.tracks.getOrNull(ti) ?: return@mapNotNull null
+                        val h = linker.headings.getOrNull(hi) ?: return@mapNotNull null
+                        io.github.prithirajn.trackersync.trackers.Anchors.ChapterPair(ti, h.spine, h.share, t.startMs.toDouble() / total)
+                    }
+                    io.github.prithirajn.trackersync.trackers.Anchors.ChapterMap(list, manual = true, at = System.currentTimeMillis() / 1000)
+                }
+                A.setChapterMap(session, id, map)
+                store.updateService(trackerId) { it.copy(credential = session.encode()) }
+                if (trackerId != io.github.prithirajn.trackersync.trackers.SpotifyTracker.id) SyncEngine.queue(store, trackerId, listOf(document))
+            }
+            notify(if (pairs == null) "Chapters are matched automatically again" else "Chapters matched; places go chapter by chapter now")
         }
     }
 

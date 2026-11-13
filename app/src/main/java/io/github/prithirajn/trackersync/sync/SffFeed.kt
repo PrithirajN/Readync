@@ -86,7 +86,10 @@ object SffFeed {
         val briefing = sky.briefing.map { it.id }.toSet()
         val items = s.sffItems.filter {
             it.id !in briefing && sky.blockedSources.none { b -> it.source.equals(b, true) || it.source.startsWith("$b ·") } &&
-                io.github.prithirajn.trackersync.source.SffSources.isNews(it) && io.github.prithirajn.trackersync.source.SffSources.isEnglish(it)
+                io.github.prithirajn.trackersync.source.SffSources.isNews(it) && io.github.prithirajn.trackersync.source.SffSources.isEnglish(it) &&
+                // A general site's stories kept from before its filter was tightened are checked again.
+                io.github.prithirajn.trackersync.source.SffSources.newsFeeds.firstOrNull { f -> f.name == it.source }
+                    ?.let { f -> io.github.prithirajn.trackersync.source.SffSources.wanted(f, it) } ?: true
         }
         if (items.isEmpty()) return emptyList()
         val clusters = SffArtifactAi.clusterAndRank(items, s, now)

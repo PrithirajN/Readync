@@ -36,6 +36,12 @@ object Primary {
     /** More than this far ahead (0–1), a source takes over as the primary. */
     const val TAKEOVER_LEAD = 0.10
 
+    /** A drop bigger than this (0–1) from the main source is held, and the book asks before using it. */
+    const val BIG_DROP = 0.10
+
+    /** A finished book reported this far in (0–1) by any source asks "Reading it again?". */
+    const val REREAD_FROM = 0.05
+
     /** On this many days in a row of reading further, a source takes over as the primary. */
     const val TAKEOVER_DAYS = 3
 
@@ -142,6 +148,8 @@ object Primary {
         var streaks: HashMap<String, String>? = null
         var asks: HashMap<String, ProgressAsk>? = null
         var pending: HashMap<String, io.github.prithirajn.trackersync.data.Pending>? = null
+        var rereadAsks: HashMap<String, ProgressAsk>? = null
+        var denied: HashMap<String, Int>? = null
         var toCp = new.toCrossPoint
         var toKo = new.toKosync
         fun books() = books ?: HashMap(new.books).also { books = it }
@@ -150,6 +158,8 @@ object Primary {
         fun streaks() = streaks ?: HashMap(new.sourceStreaks).also { streaks = it }
         fun asks() = asks ?: HashMap(new.progressAsks).also { asks = it }
         fun pending() = pending ?: HashMap(new.pending).also { pending = it }
+        fun rereadAsks() = rereadAsks ?: HashMap(new.rereadAsks).also { rereadAsks = it }
+        fun denied() = denied ?: HashMap(new.progressDenied).also { denied = it }
         /** Nothing sent anywhere for [doc] because of this change. */
         fun unqueue(doc: String) {
             val p = pending()
@@ -161,12 +171,31 @@ object Primary {
             if (doc in toKo && doc !in old.toKosync) toKo = toKo - doc
         }
 
-        for ((doc, nb) in new.books) {
+        val nowSec = System.currentTimeMillis() / 1000
+        for ((doc, nb0) in new.books) {
+            // A device whose clock is ahead: its times put back to now (a "newer" report from the
+            // future would otherwise win over every real one after it), and a finish day too.
+            val nb = if (nb0 !== old.books[doc] && (nb0.timestamp > nowSec + 86_400 || (nb0.finishedAt ?: 0L) > nowSec + 86_400))
+                nb0.copy(timestamp = minOf(nb0.timestamp, nowSec), finishedAt = nb0.finishedAt?.let { minOf(it, nowSec) }).also { books()[doc] = it }
+            else nb0
             val source = if (src == BY_ORIGIN) nb.origin ?: continue else src
             val ob = old.books[doc]
             if (ob == null) {
                 // First seen: where it came from is its primary.
                 if (!new.primaries.containsKey(doc) && inferred(nb.origin) != source) primaries()[doc] = source
+                continue
+            }
+            // A finished book reported as being read again: it stays finished (and nothing goes to
+            // your trackers) until you say yes on the book. Asked once per read; under 5% (opened to
+            // look something up) isn't asked about at all.
+            if (ob.status == ReadStatus.FINISHED && nb.status != ReadStatus.FINISHED && !nb.isMangaOrComic && moved(ob, nb)) {
+                books()[doc] = positionOf(ob, nb)
+                unqueue(doc)
+                val finishedAt = ob.finishedAt ?: 0L
+                if (nb.percentage >= REREAD_FROM && nb.percentage < 0.98 && new.rereadDenied[doc] != finishedAt) {
+                    val was = rereadAsks()[doc]
+                    if (was == null || was.source == source || nb.percentage > was.fraction) rereadAsks()[doc] = ProgressAsk(nb.percentage, nb.status, nb.timestamp, source)
+                }
                 continue
             }
             val primary = of(old, doc)
@@ -175,7 +204,24 @@ object Primary {
                 continue
             }
             if (source == primary) {
-                if (moved(ob, nb)) fresh += doc
+                if (!moved(ob, nb)) continue
+                val grew = new.grewAt[doc] != old.grewAt[doc] || new.webNovels[doc]?.ongoing == true
+                val drop = ob.percentage - nb.percentage
+                if (drop > BIG_DROP && nb.status != ReadStatus.FINISHED && !grew && !nb.isMangaOrComic && !trusted(new, doc, source)) {
+                    // A big jump back (a reset device, a re-downloaded file, the wrong copy opened):
+                    // the furthest position stays; the book asks before using this one.
+                    books()[doc] = positionOf(ob, nb)
+                    unqueue(doc)
+                    val kept = new.progressDenied[doc]
+                    // "Keep" said to an earlier jump back: reports below here stay quiet until you pass it.
+                    if (kept == null || kept >= Math.round(ob.percentage * 100)) asks()[doc] = ProgressAsk(nb.percentage, nb.status, nb.timestamp, source)
+                    continue
+                }
+                fresh += doc
+                // Past where it was: an earlier "Keep" (to a jump back) has done its job.
+                new.progressDenied[doc]?.let { k -> if (k <= Math.round(nb.percentage * 100) && nb.percentage >= ob.percentage) denied().remove(doc) }
+                // The main source caught up: a waiting jump-back card from it is out of date.
+                new.progressAsks[doc]?.let { a -> if (a.source == source && a.fraction < ob.percentage) asks().remove(doc) }
                 continue
             }
             if (!moved(ob, nb)) {
@@ -226,11 +272,12 @@ object Primary {
                 asks()[doc] = ProgressAsk(nb.percentage, nb.status, nb.timestamp, source)
             }
         }
-        if (books == null && primaries == null && asks == null && pending == null && streaks == null) return new
+        if (books == null && primaries == null && asks == null && pending == null && streaks == null && rereadAsks == null && denied == null) return new
         return new.copy(
             books = books ?: new.books, primaries = primaries ?: new.primaries, sourceRanks = ranks ?: new.sourceRanks,
             sourceStreaks = streaks ?: new.sourceStreaks, progressAsks = asks ?: new.progressAsks, pending = pending ?: new.pending,
             toCrossPoint = toCp, toKosync = toKo,
+            rereadAsks = rereadAsks ?: new.rereadAsks, progressDenied = denied ?: new.progressDenied,
         )
     }
 

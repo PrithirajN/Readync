@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Home servers (a KOSync or Calibre-Web on a Raspberry Pi, Audiobookshelf, Jellyfin) often use a
+  certificate you made yourself. Installing it on the phone (Settings › Security › Encryption &
+  credentials › Install a certificate › CA certificate) lets the app trust it, as well as the usual
+  public ones. Plain http stays allowed, for addresses on your own network.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

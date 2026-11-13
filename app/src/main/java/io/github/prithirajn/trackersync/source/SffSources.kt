@@ -93,16 +93,16 @@ object SffSources {
      * [SFF_WORDS] ("series" and "book" are on every TV page), so a film site's other stories stay out.
      */
     val SCREEN_WORDS = listOf(
-        "fantasy", "science fiction", "sci-fi", "scifi", "horror", "dragon", "dystopia", "dystopian", "space opera",
-        "alien", "time travel", "time-travel", "vampire", "zombie", "apocalyp", "werewolf", "wizard", "witch", "sorcer",
-        "superpower", "robot", "android", "cyberpunk", "starship", "spaceship", "astronaut", "fairy tale", "mythic",
-        "adaptation", "based on the novel", "based on the book", "based on the bestselling", "novel by", "book series",
+        "fantasy", "science fiction", "sci-fi", "scifi", "horror", "dragon", "dragons", "dystopia", "dystopian", "space opera",
+        "aliens", "alien: earth", "time travel", "time-travel", "vampire", "vampires", "zombie", "zombies", "apocalypse", "post-apocalyptic",
+        "werewolf", "wizard", "wizards", "witch", "witches", "sorcerer", "sorcery", "superhero", "cyberpunk", "spaceship", "fairy tale",
+        "adaptation", "based on the novel", "based on the book", "based on the bestselling", "book series",
         "tolkien", "lord of the rings", "rings of power", "hobbit", "game of thrones", "house of the dragon",
-        "knight of the seven kingdoms", "westeros", "wheel of time", "witcher", "dune", "three-body", "3 body",
-        "foundation", "the expanse", "murderbot", "silo", "fallout", "the last of us", "star wars", "andor", "mandalorian",
-        "star trek", "doctor who", "stranger things", "his dark materials", "shadow and bone", "percy jackson",
-        "harry potter", "hogwarts", "narnia", "discworld", "earthsea", "sandman", "good omens", "outlander",
-        "godzilla", "kong", "blade runner", "predator", "avatar", "the matrix", "severance", "black mirror",
+        "knight of the seven kingdoms", "westeros", "wheel of time", "witcher", "dune: prophecy", "dune part", "three-body", "3 body problem",
+        "foundation season", "apple tv's foundation", "the expanse", "murderbot", "silo season", "apple tv's silo", "fallout season", "fallout tv",
+        "the last of us", "star wars", "andor", "mandalorian", "star trek", "doctor who", "stranger things", "his dark materials",
+        "shadow and bone", "percy jackson", "harry potter", "hogwarts", "narnia", "discworld", "earthsea", "sandman", "good omens",
+        "outlander", "godzilla", "blade runner", "predator", "the matrix", "severance season", "black mirror",
         "twilight zone", "pluribus", "lockwood", "carnival row", "the peripheral", "station eleven", "mickey 17",
         "project hail mary", "red rising", "mistborn", "cosmere", "sanderson", "le guin", "octavia butler", "n.k. jemisin",
     )
@@ -153,7 +153,7 @@ object SffSources {
         RssSource("BSFA", "https://www.bsfa.co.uk/feed/", "NEWS_AWARDS", listOf("Awards"), null, 1.0, null, listOf("https://www.bsfa.co.uk/?feed=rss2", "https://bsfa.co.uk/feed/")),
         // Adaptations (their speculative-fiction stories only)
         // SFF on screen: films and series (general film sites keep only their speculative-fiction stories)
-        RssSource("io9 · Gizmodo", "https://gizmodo.com/feed", "NEWS_AWARDS", listOf("Film & TV", "Adaptation"), null, 1.0, SCREEN_WORDS, listOf("https://gizmodo.com/io9/feed")),
+        RssSource("io9 · Gizmodo", "https://gizmodo.com/io9/feed", "NEWS_AWARDS", listOf("Film & TV", "Adaptation"), null, 1.0, SCREEN_WORDS, listOf("https://gizmodo.com/feed")),
         RssSource("Winter Is Coming", "https://winteriscoming.net/feed/", "NEWS_AWARDS", listOf("Film & TV", "Adaptation"), "CITADEL", 0.8, SFF_WORDS),
         RssSource("Den of Geek", "https://www.denofgeek.com/feed/", "NEWS_AWARDS", listOf("Film & TV"), null, 0.8, SCREEN_WORDS),
         RssSource("/Film", "https://www.slashfilm.com/feed/", "NEWS_AWARDS", listOf("Film & TV"), null, 0.8, SCREEN_WORDS),
@@ -253,7 +253,12 @@ object SffSources {
     internal fun wanted(feed: RssSource, item: SffFeedItem): Boolean {
         val words = feed.keywords ?: return true
         val text = " " + listOfNotNull(item.title, item.summary, item.tags.joinToString(" ")).joinToString(" ").lowercase() + " "
-        return words.any { text.contains(it) }
+        // Whole words only ("witch" isn't in "switch", "kong" isn't "Hong Kong"'s), stems ending in a dash.
+        return words.any { w ->
+            val stem = w.trim()
+            if (stem.endsWith("-")) text.contains(stem.dropLast(1))
+            else Regex("(?<![\\p{L}\\p{N}])" + Regex.escape(stem) + "(?![\\p{L}\\p{N}])").containsMatchIn(text)
+        }
     }
 
     internal fun parseRss(xml: String, feed: RssSource, limit: Int, now: Long): List<SffFeedItem> {

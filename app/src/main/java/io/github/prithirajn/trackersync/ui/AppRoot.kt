@@ -141,6 +141,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                             is AppAction.Sff -> pager.animateScrollToPage(Tab.SFF.ordinal)
                             // The Services tab opens the screen itself.
                             is AppAction.ServicePage -> pager.animateScrollToPage(Tab.SERVICES.ordinal)
+                            AppAction.Posts -> { AppActions.pending.value = null; pager.animateScrollToPage(Tab.CATALOGS.ordinal) }
                             else -> {
                                 if (pager.currentPage != Tab.LIBRARY.ordinal) pager.animateScrollToPage(Tab.LIBRARY.ordinal)
                             }
@@ -184,6 +185,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             }
         }
         Toaster(vm, Modifier.align(Alignment.BottomCenter))
+        CrashReport()
     }
     }
     }
@@ -246,6 +248,45 @@ private fun TabBar(current: Tab, onSelect: (Tab) -> Unit) {
             }
         }
     }
+}
+
+/**
+ * After the app closed on its own: what went wrong, offered to share (so it can be fixed) or let go.
+ */
+@Composable
+private fun CrashReport() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var report by remember { mutableStateOf(io.github.prithirajn.trackersync.CrashLog.pending(context)) }
+    val r = report ?: return
+    val c = Cp.colors
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { io.github.prithirajn.trackersync.CrashLog.dismiss(context); report = null },
+        containerColor = c.surface,
+        title = { Text("Readync closed unexpectedly", style = CpType.bodyStrong, color = c.text) },
+        text = {
+            Column {
+                Text(io.github.prithirajn.trackersync.CrashLog.headline(r), style = CpType.small, color = c.textMid)
+                VSpace(8)
+                Text("Share the report so it can be fixed. It says what went wrong in the app and your phone's model, nothing of your books or accounts.", style = CpType.small, color = c.quiet)
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton({
+                runCatching {
+                    context.startActivity(android.content.Intent.createChooser(
+                        android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_SUBJECT, "Readync crash report")
+                            .putExtra(android.content.Intent.EXTRA_TEXT, r),
+                        "Share the report",
+                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+                io.github.prithirajn.trackersync.CrashLog.dismiss(context); report = null
+            }) { Text("Share report", color = c.accentText) }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton({ io.github.prithirajn.trackersync.CrashLog.dismiss(context); report = null }) { Text("Dismiss", color = c.textMid) }
+        },
+    )
 }
 
 /**

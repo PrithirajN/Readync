@@ -172,5 +172,8 @@ object MicroblogTracker : Tracker {
                 .put("post-status", JSONArray().put("published")))
         val r = Http.request("POST", "$BASE/micropub", mapOf("Authorization" to auth(session), "Content-Type" to "application/json", "Accept" to "application/json"), post.toString())
         checkAnswer(r, name, "posting the highlights")
+        io.github.prithirajn.trackersync.sync.Notices.posted(
+            "Micro.blog", "${entries.size} highlight${if (entries.size == 1) "" else "s"} from \u201C$title\u201D", link.document,
+        )
     }
 }

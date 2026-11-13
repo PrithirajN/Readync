@@ -105,9 +105,30 @@ object SffArticleReader {
         if (AD_HOSTS.any { d -> host == d || host.endsWith(".$d") }) {
             return true
         }
+        // The public list ad blockers use (about 80,000 ad and tracker addresses), once it's been fetched.
+        if (AdBlockList.blocks(host)) return true
         val full = uri.toString()
         return AD_PATH_REGEX.containsMatchIn(full)
     }
+
+    /** For WebViews that can't darken pages: the site's dark look asked for, else a light page inverted (media turned back). */
+    const val DARK_PAGE_JS = """
+        (function () {
+            var m = document.createElement('meta'); m.name = 'color-scheme'; m.content = 'dark';
+            (document.head || document.documentElement).appendChild(m);
+            document.documentElement.style.colorScheme = 'dark';
+            setTimeout(function () {
+                var bg = getComputedStyle(document.body || document.documentElement).backgroundColor || '';
+                var n = (bg.match(/\d+/g) || [255, 255, 255]).slice(0, 3).map(Number);
+                var light = (n[0] * 299 + n[1] * 587 + n[2] * 114) / 1000 > 150 || bg === 'rgba(0, 0, 0, 0)';
+                if (!light || document.getElementById('ts-dark')) return;
+                var st = document.createElement('style'); st.id = 'ts-dark';
+                st.textContent = 'html{filter:invert(0.92) hue-rotate(180deg);background:#fff}' +
+                    'img,video,picture,iframe,svg image,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}';
+                document.head.appendChild(st);
+            }, 300);
+        })();
+    """
 
     /** Empty 204 response returned for blocked ad/tracker requests in `shouldInterceptRequest`. */
     fun emptyAdResponse(): WebResourceResponse =
@@ -201,6 +222,22 @@ object SffArticleReader {
                         if (b.children.length > 40) continue;
                         var t = (b.innerText || '').slice(0, 300);
                         if (t.length < 300 && /^\s*(advertisement|sponsored|get .* texts)/i.test(t)) b.style.setProperty('display', 'none', 'important');
+                    }
+                    // Ad slots of any kind (custom tags too) that hold nothing but an "Advertisement" label:
+                    // the slot and the empty boxes around it go, so no tall blank space is left.
+                    var any = document.body ? document.body.querySelectorAll('*') : [];
+                    for (var k = 0; k < any.length; k++) {
+                        var a = any[k];
+                        if (a.children.length > 60 || a.tagName === 'BODY' || a.tagName === 'MAIN' || a.tagName === 'ARTICLE') continue;
+                        var at = (a.innerText || '').replace(/\s+/g, ' ').trim();
+                        if (at.length > 60 || !/^(advertisement|ad|sponsored)( advertisement)?$/i.test(at)) continue;
+                        var top = a;
+                        while (top.parentElement && top.parentElement.tagName !== 'BODY' && top.parentElement.tagName !== 'ARTICLE' && top.parentElement.tagName !== 'MAIN') {
+                            var pt = (top.parentElement.innerText || '').replace(/\s+/g, ' ').trim();
+                            if (pt.length > 60) break;
+                            top = top.parentElement;
+                        }
+                        top.style.setProperty('display', 'none', 'important');
                     }
                     [document.documentElement, document.body].forEach(function(e) {
                         if (!e) return;

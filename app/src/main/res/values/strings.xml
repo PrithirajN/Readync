@@ -17,4 +17,5 @@
     <string name="shortcut_sync">Sync now</string>
     <string name="shortcut_sync_long">Sync everything now</string>
     <string name="widget_description">Your current book, when it last synced, and a sync button.</string>
+    <string name="share_find_books">Find the books</string>
 </resources>

@@ -75,6 +75,8 @@ fun ActivityScreen(vm: AppViewModel, state: Snapshot) {
             }
         }
         activityInsights(vm, state)
+        // Library checks, your rating rubric, the top-books image and the reading-log export.
+        shelfprintTools(vm, state)
         // What's new in your series.
         item(key = "releases") { VSpace(8); ReleasesCard(vm, state) }
         item(key = "log-head") {

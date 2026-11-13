@@ -255,11 +255,16 @@ class Store(private val file: File, private val secrets: Secrets) {
         })
         o.put("clipPages", JSONObject().also { r -> s.clipPages.forEach { (k, v) -> r.put(k, v) } })
         o.put("clipRemote", JSONObject().also { r -> s.clipRemote.forEach { (k, v) -> r.put(k, v) } })
+        o.put("sentHash", JSONObject().also { r -> s.sentHash.forEach { (k, v) -> r.put(k, v) } })
+        o.put("sentWords", JSONObject().also { r -> s.sentWords.forEach { (k, v) -> r.put(k, v) } })
+        o.put("clipFails", JSONObject().also { r -> s.clipFails.forEach { (k, v) -> r.put(k, v) } })
         o.put("resend", JSONArray().also { a -> s.resend.forEach { a.put(it) } })
         o.put("clipHidden", JSONArray().also { a -> s.clipHidden.forEach { a.put(it) } })
         o.put("checkHighlights", s.checkHighlights).put("spoilerPublic", s.spoilerPublic)
         o.put("priceWatch", JSONObject().also { r -> s.priceWatch.forEach { (k, v) -> r.put(k, v.toJson()) } })
         o.put("clipChecked", JSONObject().also { r -> s.clipChecked.forEach { (k, v) -> r.put(k, v) } })
+        o.put("rubric", org.json.JSONArray(s.rubric))
+        o.put("rubricScores", JSONObject().also { r -> s.rubricScores.forEach { (d, m) -> r.put(d, JSONObject().also { x -> m.forEach { (k, v) -> x.put(k, v) } }) } })
         o.put("sent", JSONObject().also { r -> s.sent.forEach { (k, evs) -> r.put(k, JSONArray().also { a -> evs.forEach { a.put(it.toJson()) } }) } })
         o.put("positions", JSONObject().also { r ->
             s.positions.forEach { (d, pts) ->
@@ -277,6 +282,16 @@ class Store(private val file: File, private val secrets: Secrets) {
             }
         })
         o.put("progressDenied", JSONObject().also { r -> s.progressDenied.forEach { (k, v) -> r.put(k, v) } })
+        o.put("rereadAsks", JSONObject().also { r ->
+            s.rereadAsks.forEach { (k, v) ->
+                r.put(k, JSONObject().put("fraction", v.fraction).put("status", v.status?.name ?: JSONObject.NULL).put("updatedAt", v.updatedAt).put("source", v.source))
+            }
+        })
+        o.put("rereadDenied", JSONObject().also { r -> s.rereadDenied.forEach { (k, v) -> r.put(k, v) } })
+        o.put("backAt", JSONObject().also { r -> s.backAt.forEach { (k, v) -> r.put(k, v) } })
+        o.put("keptApart", JSONArray(s.keptApart.toList()))
+        o.put("extras", JSONObject().also { r -> s.extras.forEach { (k, v) -> r.put(k, v) } })
+        o.put("waitingSeen", s.waitingSeen)
         o.put("primaries", JSONObject().also { r -> s.primaries.forEach { (k, v) -> r.put(k, v) } })
         o.put("sourceRanks", JSONObject().also { r -> s.sourceRanks.forEach { (k, v) -> r.put(k, JSONArray(v)) } })
         o.put("sourceStreaks", JSONObject().also { r -> s.sourceStreaks.forEach { (k, v) -> r.put(k, v) } })
@@ -564,12 +579,19 @@ class Store(private val file: File, private val secrets: Secrets) {
                 }.toMap()
             } ?: emptyMap(),
             clipRemote = o.obj("clipRemote")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            sentHash = o.obj("sentHash")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) } } ?: emptyMap(),
+            sentWords = o.obj("sentWords")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            clipFails = o.obj("clipFails")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) } } ?: emptyMap(),
             resend = o.optJSONArray("resend")?.strings()?.toSet() ?: emptySet(),
             clipHidden = o.optJSONArray("clipHidden")?.strings()?.toSet() ?: emptySet(),
             checkHighlights = o.optBoolean("checkHighlights", false),
             priceWatch = o.obj("priceWatch")?.let { r -> r.keys().asSequence().mapNotNull { k -> r.optJSONObject(k)?.let { k to io.github.prithirajn.trackersync.data.PriceWatch.from(it) } }.toMap() } ?: emptyMap(),
             spoilerPublic = o.optString("spoilerPublic", "hold").ifEmpty { "hold" },
             clipChecked = o.obj("clipChecked")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            rubric = o.optJSONArray("rubric")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } } ?: emptyList(),
+            rubricScores = o.obj("rubricScores")?.let { r ->
+                r.keys().asSequence().associateWith { d -> r.optJSONObject(d)?.let { x -> x.keys().asSequence().associateWith { x.optInt(it) } } ?: emptyMap() }
+            } ?: emptyMap(),
             sent = o.obj("sent")?.let { r ->
                 r.keys().asSequence().associateWith { k ->
                     val a = r.optJSONArray(k) ?: JSONArray()
@@ -604,6 +626,22 @@ class Store(private val file: File, private val secrets: Secrets) {
                 }.toMap()
             } ?: emptyMap(),
             progressDenied = o.obj("progressDenied")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) } } ?: emptyMap(),
+            rereadAsks = o.obj("rereadAsks")?.let { r ->
+                r.keys().asSequence().mapNotNull { k ->
+                    val v = r.optJSONObject(k) ?: return@mapNotNull null
+                    k to ProgressAsk(
+                        v.optDouble("fraction").takeIf { !it.isNaN() } ?: return@mapNotNull null,
+                        v.str("status")?.let { n -> runCatching { ReadStatus.valueOf(n) }.getOrNull() },
+                        v.optLong("updatedAt"),
+                        v.str("source") ?: "crosspoint",
+                    )
+                }.toMap()
+            } ?: emptyMap(),
+            rereadDenied = o.obj("rereadDenied")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
+            backAt = o.obj("backAt")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
+            keptApart = o.optJSONArray("keptApart")?.strings()?.toSet() ?: emptySet(),
+            extras = o.obj("extras")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            waitingSeen = o.optInt("waitingSeen", 0),
             primaries = o.obj("primaries")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
             sourceRanks = o.obj("sourceRanks")?.let { r -> r.keys().asSequence().associateWith { k -> r.optJSONArray(k)?.strings() ?: emptyList() } } ?: emptyMap(),
             sourceStreaks = o.obj("sourceStreaks")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),

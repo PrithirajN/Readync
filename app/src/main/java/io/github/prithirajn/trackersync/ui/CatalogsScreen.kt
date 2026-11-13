@@ -140,6 +140,10 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     }
     // Search the catalogs, or the deals on books whose price you're watching.
     var mode by rememberSaveable { mutableStateOf("Search") }
+    val sharedPost by PostShare.pending.collectAsState()
+    LaunchedEffect(sharedPost) { if (sharedPost != null) mode = "Posts" }
+    val sharedMedia by PostShare.media.collectAsState()
+    LaunchedEffect(sharedMedia) { if (sharedMedia != null) mode = "Posts" }
 
     // Every server at once, a moment after you stop typing; results come in as each answers.
     LaunchedEffect(query, servers.map { it.id }) {
@@ -196,7 +200,7 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
                     IconCircleButton(R.drawable.lucide_plus, "Add a server", { addingNew = true }, tint = c.accentText)
                 }
                 VSpace(12)
-                Segmented(listOf("Search", "Deals"), mode, { if (it == "Deals" && state.priceWatch.isNotEmpty()) "Deals · ${state.priceWatch.size}" else it }, { mode = it }, Modifier.fillMaxWidth())
+                Segmented(listOf("Search", "Posts", "Deals"), mode, { if (it == "Deals" && state.priceWatch.isNotEmpty()) "Deals · ${state.priceWatch.size}" else it }, { mode = it }, Modifier.fillMaxWidth())
                 if (servers.isNotEmpty() && mode == "Search") {
                     VSpace(12)
                     val clear: (@Composable () -> Unit)? = if (query.isNotEmpty()) { { IconCircleButton(R.drawable.lucide_x, "Clear", { query = "" }) } } else null
@@ -207,6 +211,9 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
 
         if (mode == "Deals") {
             item(key = "deals") { DealsList(vm, state) }
+        } else if (mode == "Posts") {
+            // Books in a TikTok, Instagram or YouTube post.
+            item(key = "posts") { PostBooksView(vm, state) }
         } else if (servers.isEmpty()) {
             item(key = "empty") { NoServers(onAdd = { addingNew = true }, onPaste = { pasting = true }, onSuggest = { name, url -> adding = Opds.Server(java.util.UUID.randomUUID().toString(), name, url) }) }
         } else if (searched.isEmpty()) {
@@ -379,13 +386,17 @@ private fun CatalogCover(server: Opds.Server, url: String?, title: String, width
         if (url != null && value == null) {
             value = withContext(Dispatchers.IO) {
                 Opds.image(server, url)?.let { b ->
-                    // Full size unless it's very large (a phone-width tile wants ~500 px).
+                    // Sharp at a tile's size (about 400 px wide) but no bigger: dozens of full-size covers
+                    // held at once ran the phone out of memory and closed the app.
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeByteArray(b, 0, b.size, bounds)
                     var sample = 1
-                    while (bounds.outWidth / (sample * 2) >= 600) sample *= 2
-                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                    runCatching { BitmapFactory.decodeByteArray(b, 0, b.size, opts)?.asImageBitmap() }.getOrNull()
+                    while (bounds.outWidth / (sample * 2) >= 400) sample *= 2
+                    val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = android.graphics.Bitmap.Config.RGB_565 }
+                    runCatching { BitmapFactory.decodeByteArray(b, 0, b.size, opts) }.getOrNull()?.let { bmp ->
+                        // Still too wide (an odd size the halving missed): scaled down to 480 px.
+                        if (bmp.width > 480) android.graphics.Bitmap.createScaledBitmap(bmp, 480, (bmp.height * 480f / bmp.width).toInt().coerceAtLeast(1), true).also { if (it !== bmp) bmp.recycle() } else bmp
+                    }?.asImageBitmap()
                 }
             }?.also { coverMemory.put(url, it) }
         }
@@ -397,7 +408,10 @@ private fun CatalogCover(server: Opds.Server, url: String?, title: String, width
     }
 }
 
-private val coverMemory = android.util.LruCache<String, ImageBitmap>(80)
+/** Covers kept for the session, by size: about 24 MB at most (it used to be 80 covers, however big). */
+private val coverMemory = object : android.util.LruCache<String, ImageBitmap>(24 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: ImageBitmap): Int = (value.width * value.height * 2).coerceAtLeast(1)
+}
 
 /** A found book: cover, title, author and series, its formats, and the servers that have it. */
 @OptIn(ExperimentalLayoutApi::class)
@@ -504,10 +518,28 @@ private fun HitSheet(vm: AppViewModel, state: Snapshot, h: Hit, onClose: () -> U
                                 cancel.set(false); said = null
                                 dl = Download(server, a, Opds.Progress("Starting"), running = true)
                                 scope.launch {
+                                    // The download as a Live Update too (progress on the chip, Cancel), so you can leave the app.
+                                    val app = context.applicationContext
+                                    val key = server.id + "|" + a.href
+                                    var lastShown = 0L
+                                    LiveUpdates.handlers["download.cancel:$key"] = { cancel.set(true) }
                                     val r = withContext(Dispatchers.IO) {
-                                        runCatching { Opds.download(context.applicationContext, server, a, e.title, cancel) { p -> dl = dl?.copy(progress = p) } }
+                                        runCatching {
+                                            Opds.download(app, server, a, e.title, cancel) { p ->
+                                                dl = dl?.copy(progress = p)
+                                                val t = System.currentTimeMillis()
+                                                if (t - lastShown >= 800 || (p.total > 0 && p.done >= p.total)) {
+                                                    lastShown = t
+                                                    LiveUpdates.download(app, key, p.name ?: e.title, server.name, p.stage, p.done, p.total, p.bytesPerSec)
+                                                }
+                                            }
+                                        }
                                     }
-                                    dl = dl?.copy(running = false, saved = r.getOrNull(), error = r.exceptionOrNull()?.message ?: if (r.isFailure) "Couldn't download it" else null)
+                                    LiveUpdates.handlers.remove("download.cancel:$key")
+                                    val saved = r.getOrNull()
+                                    if (saved != null) LiveUpdates.downloaded(app, key, saved.name, saved.uri, saved.type)
+                                    else LiveUpdates.cancel(app, LiveUpdates.downloadId(key))
+                                    dl = dl?.copy(running = false, saved = saved, error = r.exceptionOrNull()?.message ?: if (r.isFailure) "Couldn't download it" else null)
                                 }
                             }, outlined = !busy)
                         }

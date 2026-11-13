@@ -21,6 +21,8 @@ sealed interface AppAction {
     data class Sff(val storyId: String? = null) : AppAction
     /** One of the Services tab's screens ("kohl": KOReader highlights). */
     data class ServicePage(val page: String) : AppAction
+    /** Catalogs › Posts, with a shared post's link (in [PostShare]). */
+    data object Posts : AppAction
 }
 
 object AppActions {

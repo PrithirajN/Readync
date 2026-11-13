@@ -8,6 +8,7 @@ import io.github.prithirajn.trackersync.data.Store
 import io.github.prithirajn.trackersync.sync.Highlights
 import io.github.prithirajn.trackersync.sync.KoHighlightSync
 import io.github.prithirajn.trackersync.sync.ThreadsClient
+import io.github.prithirajn.trackersync.sync.ThreadsWorker
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -71,14 +72,29 @@ object ThreadsAuto {
     }
 
     /** What's waiting to be posted (oldest first). */
-    fun waiting(s: Snapshot): List<Pair<Highlights.Item, Book>> = items(s)
-        .filter { (i, _) ->
-            val id = i.clip.id
-            i.clip.document in s.threadsBooks &&
-                id !in s.threadsSeen && id !in s.threadsPosted && (s.threadsFails[id] ?: 0) < MAX_TRIES &&
-                (s.threadsNotes || !isNote(id)) && i.clip.text.isNotBlank()
-        }
-        .sortedBy { it.first.clip.createdAt }
+    fun waiting(s: Snapshot): List<Pair<Highlights.Item, Book>> {
+        val all = items(s)
+        // The same passage from another reader (CrossPoint's and KOReader's copies): posted once.
+        val postedWords = all.filter { it.first.clip.id in s.threadsPosted }
+            .groupBy({ it.first.clip.document }, { Highlights.words(it.first.clip.text) })
+        val picked = HashMap<String, MutableList<String>>()
+        return all
+            .filter { (i, _) ->
+                val id = i.clip.id
+                i.clip.document in s.threadsBooks &&
+                    id !in s.threadsSeen && id !in s.threadsPosted && (s.threadsFails[id] ?: 0) < MAX_TRIES &&
+                    (s.threadsNotes || !isNote(id)) && i.clip.text.isNotBlank()
+            }
+            .sortedBy { it.first.clip.createdAt }
+            .filter { (i, _) ->
+                if (isNote(i.clip.id)) return@filter true
+                val w = Highlights.words(i.clip.text)
+                val doc = i.clip.document
+                val dupe = postedWords[doc].orEmpty().any { Highlights.samePassage(it, w) } || picked[doc].orEmpty().any { Highlights.samePassage(it, w) }
+                if (!dupe) picked.getOrPut(doc) { ArrayList() } += w
+                !dupe
+            }
+    }
 
     /**
      * The post's words. With its picture (which shows the passage): your note, then the book, so
@@ -187,10 +203,50 @@ object ThreadsAuto {
      * Over and ready to post: nothing new from it for half an hour since the last of it came in,
      * plus a few minutes chosen for each session (so posts don't go up like clockwork).
      */
-    private fun ready(s: Snapshot, x: Session, now: Long): Boolean {
-        val arrived = x.items.maxOf { s.threadsArrived[it.clip.id] ?: now }
+    private fun ready(s: Snapshot, x: Session, now: Long): Boolean = now >= readyAt(s, x, now)
+
+    /**
+     * When a session can go up: half an hour after its last highlight was made (or, when the
+     * highlight carries no time, first seen), plus its few minutes. A highlight made an hour ago
+     * and only now synced is ready straight away; it doesn't wait for the app to see it twice.
+     */
+    private fun readyAt(s: Snapshot, x: Session, now: Long): Long {
+        val arrived = x.items.maxOf { i ->
+            val seen = s.threadsArrived[i.clip.id] ?: now
+            val made = i.clip.createdAt.takeIf { it in 1..now }
+            if (made != null) minOf(seen, made) else seen
+        }
         val jitter = ((x.items.first().clip.id.hashCode() and 0x7FFFFFFF) % (20 * 60)).toLong()
-        return now >= arrived + (if (s.threadsPerSession) SETTLE_S else 5 * 60L) + jitter
+        return arrived + (if (s.threadsPerSession) SETTLE_S else 5 * 60L) + jitter
+    }
+
+    /** Why what's waiting hasn't gone up, and when it will, in a line (null with nothing waiting). */
+    fun nextNote(s: Snapshot, now: Long = System.currentTimeMillis() / 1000): String? {
+        val list = sessions(s)
+        if (list.isEmpty()) return null
+        val fmt = java.time.format.DateTimeFormatter.ofPattern("h:mm a")
+        fun at(t: Long) = fmt.format(java.time.Instant.ofEpochSecond(t).atZone(java.time.ZoneId.systemDefault())).lowercase()
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        if (s.settings.isQuiet(hour)) return "Waiting for your quiet hours to end (from ${s.settings.quietTo}:00)"
+        val log = s.threadsPostLog.filter { it > now - DAY }.sorted()
+        if (log.size >= s.threadsPerDay) return "Today's ${s.threadsPerDay} are up; the next goes around ${at(log.first() + DAY)}"
+        val next = list.minOf { readyAt(s, it, now) }
+        return if (next <= now) "Going up with the next check (within a few minutes)"
+        else "Next goes up around ${at(next)}, once the reading session is over"
+    }
+
+    /**
+     * A check of its own when the next session is due (not left to the next sync, which Android
+     * can put off for hours), or when the day's limit frees a slot.
+     */
+    private fun scheduleNext(context: Context, s: Snapshot, now: Long) {
+        val list = runCatching { sessions(s) }.getOrDefault(emptyList())
+        if (list.isEmpty() || s.threadsToken == null) return
+        val log = s.threadsPostLog.filter { it > now - DAY }.sorted()
+        var due = list.minOf { readyAt(s, it, now) }
+        if (log.size >= s.threadsPerDay) due = maxOf(due, log.first() + DAY)
+        val delay = (due - now).coerceIn(60L, 12 * 3600L)
+        ThreadsWorker.schedule(context, delay)
     }
 
     /** "this evening's", from when the session started. */
@@ -365,6 +421,7 @@ object ThreadsAuto {
             ThreadsClient.postCarousel(user, token, reviewText(book, wording), images, topic(store, book), spoiler)
             store.update { it.copy(threadsReviewed = it.threadsReviewed + (document to System.currentTimeMillis() / 1000), threadsError = null) }
             store.log(null, "Posted your review of \u201C${book.displayTitle}\u201D to Threads")
+            io.github.prithirajn.trackersync.sync.Notices.posted("Threads", "Your review of \u201C${book.displayTitle}\u201D", document)
             null
         } catch (e: Exception) {
             val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
@@ -392,6 +449,7 @@ object ThreadsAuto {
             ThreadsClient.postCarousel(user, token, text.take(480), images, topic(store, book), spoiler)
             store.update { it.copy(threadsError = null) }
             store.log(null, "Posted your recap of \u201C${book.displayTitle}\u201D to Threads")
+            io.github.prithirajn.trackersync.sync.Notices.posted("Threads", "Your recap of \u201C${book.displayTitle}\u201D", document)
             null
         } catch (e: Exception) {
             val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
@@ -442,6 +500,7 @@ object ThreadsAuto {
                 )
             }
             store.log(null, "Posted ${ids.size} highlight${if (ids.size == 1) "" else "s"} from \u201C${x.book.displayTitle}\u201D to Threads")
+            io.github.prithirajn.trackersync.sync.Notices.posted("Threads", "${ids.size} highlight${if (ids.size == 1) "" else "s"} from \u201C${x.book.displayTitle}\u201D", x.book.document)
             null
         } catch (e: Exception) {
             val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
@@ -457,6 +516,12 @@ object ThreadsAuto {
      * happened in a line, or null when there was nothing to do. Blocking; network.
      */
     fun run(context: Context, store: Store, only: String? = null): String? {
+        val r = runOnce(context, store, only)
+        runCatching { scheduleNext(context, store.snapshot, System.currentTimeMillis() / 1000) }
+        return r
+    }
+
+    private fun runOnce(context: Context, store: Store, only: String? = null): String? {
         val s0 = store.snapshot
         if (s0.threadsToken == null || s0.threadsUserId == null) return null
         if (only == null && s0.threadsBooks.isEmpty()) return null
@@ -520,6 +585,7 @@ object ThreadsAuto {
                         )
                     }
                     store.log(null, "Posted a highlight from “${book.displayTitle}” to Threads (${look.label})")
+                    io.github.prithirajn.trackersync.sync.Notices.posted("Threads", "A highlight from “${book.displayTitle}” (${look.label} card)", book.document)
                 } catch (e: Exception) {
                     val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
                     problem = if (signIn) "Threads needs a new token: paste one under Services › Threads." else (e.message ?: "Couldn't post to Threads")

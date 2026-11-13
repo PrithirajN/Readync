@@ -22,9 +22,16 @@ class TrackerSyncApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // What went wrong, written down if the app ever closes on its own (offered to share next time).
+        CrashLog.install(this)
         // Look like the system WebView, which is what signed in to StoryGraph and Goodreads.
         Http.defaultUserAgent = runCatching { WebSettings.getDefaultUserAgent(this) }.getOrDefault(Http.defaultUserAgent)
         store = Store(File(filesDir, "tracker-sync.json"), KeystoreSecrets())
+        // Last time's crash, in the sync log too (once).
+        CrashLog.pending(this)?.let { r ->
+            val line = "Readync closed unexpectedly: " + CrashLog.headline(r)
+            if (store.snapshot.log.none { it.message == line }) store.log(null, line, error = true)
+        }
         // The on-device model, when one is set up (Services → On-device AI); loaded on first use.
         io.github.prithirajn.trackersync.ai.Ai.provider = { io.github.prithirajn.trackersync.ai.LocalModel.get(this) }
         // Web novel sites behind a bot check are read through an unseen browser instead.
@@ -51,6 +58,8 @@ class TrackerSyncApp : Application() {
         }
         // The app's own copies of books (from your OPDS catalogs), for the words around a quote.
         io.github.prithirajn.trackersync.source.BookCopies.install(this)
+        // Posts made in your name (Threads, Micro.blog) are told about in a notification.
+        io.github.prithirajn.trackersync.sync.Notices.app = this
         io.github.prithirajn.trackersync.source.BookCopies.onBackground = { book, copy, why ->
             io.github.prithirajn.trackersync.sync.Notices.bookCopy(this, book, copy, why)
         }

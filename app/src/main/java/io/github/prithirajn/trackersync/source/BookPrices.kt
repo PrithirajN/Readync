@@ -100,7 +100,9 @@ object BookPrices {
         if (Matcher.sameBook(book.displayTitle, book.author, title, null)) return true
         val a = letters(Matcher.baseTitle(book.displayTitle)); val b = letters(Matcher.baseTitle(title))
         if (a.length < 4 || b.length < 4) return false
-        val same = b.contains(a) || a.contains(b) || letters(title).contains(a)
+        // The store's title starts with the book's (so "El Portal de… / The Gate of…" isn't the English book).
+        val full = letters(title)
+        val same = b.startsWith(a) || a.startsWith(b) || full.startsWith(a)
         val va = Matcher.volume(book.displayTitle); val vb = Matcher.volume(title)
         return same && (va == null || vb == null || va == vb)
     }
@@ -241,8 +243,11 @@ object BookPrices {
         }
         if (url == null) {
             for (qRaw in queries(book)) {
+                // Bookswagon's search takes the words as a slug ("the-gate-of-the-feral-gods"); the encoded form as a fallback.
+                val slug = qRaw.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
                 val q = URLEncoder.encode(qRaw, "UTF-8").replace("+", "%20")
-                val page = runCatching { get("https://www.bookswagon.com/search-books/$q") }.getOrNull() ?: continue
+                val page = listOf("https://www.bookswagon.com/search-books/$slug", "https://www.bookswagon.com/search-books/$q", "https://www.bookswagon.com/search-books?q=$q")
+                    .distinct().firstNotNullOfOrNull { u -> runCatching { get(u) }.getOrNull()?.takeIf { BW_LINK.containsMatchIn(it) } } ?: continue
                 val hits = BW_LINK.findAll(page).map { abs(it.groupValues[1]) to it.groupValues[2] }.distinctBy { it.second }.toList()
                 // The exact ISBN first, then the first few results: each that is this book kept as a listing.
                 val exact = hits.firstOrNull { isbn != null && it.second == isbn }
@@ -332,13 +337,10 @@ object BookPrices {
         }
         val url = "https://www.amazon.in/dp/$asin"
         html!!
-        val core = Regex("""(?s)id="(?:corePrice_feature_div|corePriceDisplay_desktop_feature_div|apex_desktop|booksHeaderSection|tmm-grid-swatch-PAPERBACK|price)".{0,2500}""").find(html)?.value ?: html
-        val price = money(Regex("""a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(core)?.groupValues?.get(1))
-            ?: money(Regex("""id="(?:price|newBuyBoxPrice|kindle-price)"[^>]*>\s*₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1))
-            ?: money(Regex(""""priceAmount"\s*:\s*([\d.]+)""").find(html)?.groupValues?.get(1))
-        val mrp = money(Regex("""(?s)M\.R\.P\.?:?.{0,300}?a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1))
+        val price = amazonPrice(html)
+        val mrp = amazonMrp(html)
         val unavailable = Regex("""(?i)Currently unavailable|Temporarily out of stock""").containsMatchIn(html) && price == null
-        val format = Regex("""(?s)id="productSubtitle"[^>]*>\s*([A-Za-z ]+)""").find(html)?.groupValues?.get(1)?.trim()?.takeIf { it.length < 30 }
+        val format = amazonFormat(html)
         val out = arrayListOf(PricePoint("amazon", now, price, mrp?.takeIf { price == null || it > price }, !unavailable && price != null, format ?: "Print", url, title))
         // The Kindle edition's price, from the formats offered beside it.
         Regex("""(?s)Kindle Edition.{0,600}?₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)?.let(::money)
@@ -347,11 +349,47 @@ object BookPrices {
         return out
     }
 
+    /**
+     * The price you'd pay on an Amazon page for the format it's open on: the buying options' own
+     * data (a "NEW" offer), the hidden base price, then the buy box's "price to pay" (never the M.R.P.,
+     * an EMI, a cashback or another product's price elsewhere on the page). A reading far under the
+     * page's M.R.P. is taken as a misread and dropped.
+     */
+    private fun amazonPrice(html: String): Double? {
+        val mrp = amazonMrp(html)
+        val buyBox = Regex("""(?s)id="(?:corePriceDisplay_desktop_feature_div|corePrice_feature_div|apex_offerDisplay_desktop|apex_desktop)".{0,3000}""").find(html)?.value.orEmpty()
+        val candidates = sequence {
+            Regex("""(?s)twister-plus-buying-options-price-data[^>]*>\s*(\{.*?\}|\[.*?\])\s*</""").find(html)?.groupValues?.get(1)?.let { j ->
+                Regex(""""displayPrice"\s*:\s*"[^"\d]*([\d,]+(?:\.\d+)?)"[^}]*"buyingOptionType"\s*:\s*"NEW"""").find(j)?.groupValues?.get(1)?.let { yield(money(it)) }
+                Regex(""""priceAmount"\s*:\s*([\d.]+)""").find(j)?.groupValues?.get(1)?.let { yield(money(it)) }
+            }
+            Regex("""id="(?:attach-base-product-price|twister-plus-price-data-price)"[^>]*value="([\d.]+)"""").find(html)?.groupValues?.get(1)?.let { yield(money(it)) }
+            Regex("""(?s)class="[^"]*(?:priceToPay|apexPriceToPay)[^"]*".{0,600}?a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(buyBox)?.groupValues?.get(1)?.let { yield(money(it)) }
+            Regex("""(?s)class="a-price-whole">\s*([\d,]+)""").find(buyBox)?.groupValues?.get(1)?.let { yield(money(it)) }
+            Regex("""id="(?:price|newBuyBoxPrice|price_inside_buybox)"[^>]*>\s*₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)?.let { yield(money(it)) }
+        }
+        return candidates.filterNotNull().firstOrNull { mrp == null || it >= mrp * 0.25 }
+    }
+
+    /** The page's M.R.P. (the printed price, struck through). */
+    private fun amazonMrp(html: String): Double? =
+        money(Regex("""(?s)M\.R\.P\.?:?.{0,300}?a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1))
+
+    /** The format the Amazon page is for: its subtitle, the "Format:" line, the selected format swatch, or the binding in its data. */
+    private fun amazonFormat(html: String): String? =
+        Regex("""(?s)id="productSubtitle"[^>]*>\s*([A-Za-z ]+)""").find(html)?.groupValues?.get(1)?.trim()?.takeIf { it.length in 3..29 }
+            ?: Regex("""(?s)Format:\s*(?:</[^>]+>\s*)*(?:<[^>]+>\s*)*([A-Za-z][A-Za-z ]{2,28})""").find(html)?.groupValues?.get(1)?.trim()
+            ?: Regex("""id="tmm-grid-swatch-([A-Z_]+)"[^>]*class="[^"]*\bselected""").find(html)?.groupValues?.get(1)?.let(::swatchName)
+            ?: Regex("""class="[^"]*\bselected[^"]*"[^>]*id="tmm-grid-swatch-([A-Z_]+)"""").find(html)?.groupValues?.get(1)?.let(::swatchName)
+            ?: Regex("""(?s)class="[^"]*swatchElement selected[^"]*".{0,400}?<span>\s*([A-Za-z][A-Za-z ]{2,28})\s*</span>""").find(html)?.groupValues?.get(1)?.trim()
+            ?: Regex(""""binding"\s*:\s*"([A-Za-z ]{3,28})"""").find(html)?.groupValues?.get(1)
+
+    private fun swatchName(id: String) = id.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+
     /** An Amazon product page as a listing: its format, publisher, pages and price. */
     private fun amazonListing(asin: String, html: String, title: String?): PriceListing {
-        val format = Regex("""(?s)id="productSubtitle"[^>]*>\s*([A-Za-z ]+)""").find(html)?.groupValues?.get(1)?.trim()?.takeIf { it.length < 30 }
-            ?: Regex("""(?s)id="(?:tmm-grid-swatch-(HARDCOVER|PAPERBACK))"[^>]*class="[^"]*selected""").find(html)?.groupValues?.get(1)?.lowercase()?.replaceFirstChar { it.uppercase() }
-        val price = money(Regex("""a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1))
+        val format = amazonFormat(html)
+        val price = amazonPrice(html)
         return PriceListing("amazon", "https://www.amazon.in/dp/$asin", title, format, publisherIn(html)?.substringBefore(";")?.trim(), pagesIn(html), editionOf(title), price)
     }
 
@@ -540,6 +578,13 @@ object BookPrices {
             val book = w.book(store.snapshot) ?: continue
             val (points, problems) = runCatching { check(book, w, now) }.getOrElse { emptyList<PricePoint>() to listOf(it.message ?: "couldn't check") }
             val found2 = lastListings().filterValues { it.isNotEmpty() }
+            // A print price under 40% of every other store's is a misread (another product's price,
+            // an EMI…), not a deal: kept without a price, so it neither leads nor sets off an alert.
+            val others = points.filter { it.price != null && it.inStock && it.format != "Kindle" }
+            val points2 = points.map { p ->
+                val rest = others.filter { it.store != p.store }.mapNotNull { it.price }
+                if (p.price != null && p.format != "Kindle" && rest.isNotEmpty() && p.price < rest.min() * 0.4) p.copy(price = null, inStock = false) else p
+            }
             store.update { s ->
                 val cur = s.priceWatch[w.document] ?: return@update s
                 // Pages the stores were found at are kept, so next time goes straight there; a kept page
@@ -547,11 +592,16 @@ object BookPrices {
                 val wrong = points.filter { it.url == "drop" }.map { it.store }.toSet()
                 val found = points.filter { it.url != null && it.url != "drop" && it.price != null && it.format != "Kindle" }
                 val links = (cur.links - wrong) + found.filter { it.store !in cur.pinned }.associate { it.store to it.url!! }
+                // Earlier misreads (a price under 40% of every other store's at the same check) are let go too.
+                val byCheck = cur.history.groupBy { it.at }
                 val keep = cur.history.filter { h ->
+                    val rest = byCheck[h.at].orEmpty().filter { it.store != h.store && it.price != null && it.inStock && it.format != "Kindle" }.mapNotNull { it.price }
+                    h.price == null || h.format == "Kindle" || rest.isEmpty() || h.price >= rest.min() * 0.4
+                }.filter { h ->
                     h.store !in wrong && (h.store in cur.pinned || h.title == null || matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) }))
                 }
                 s.copy(priceWatch = s.priceWatch + (w.document to cur.copy(
-                    history = (keep + points.map { if (it.url == "drop") it.copy(url = null) else it }).takeLast(400),
+                    history = (keep + points2.map { if (it.url == "drop") it.copy(url = null) else it }).takeLast(400),
                     checkedAt = now, links = links, choices = cur.choices + found2,
                     error = problems.takeIf { it.isNotEmpty() && points.none { p -> p.price != null } }?.joinToString("; "),
                 )))

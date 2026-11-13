@@ -2832,11 +2832,94 @@ class SyncEngine(private val store: Store) {
         val s = store.snapshot
         if (!highlightsOn(t, s)) return emptyList()
         val since = s.service(t.id).highlightsSince
-        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden && !KoHighlightSync.isNote(it.id) }
-            .map { HighlightPosition.withPage(edited(it, s.clipEdits), s.books[it.document]) }
+        val all = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden && !KoHighlightSync.isNote(it.id) }
+            .map { Highlights.tidy(HighlightPosition.withPage(edited(it, s.clipEdits), s.books[it.document])) }
+        val fresh = all
             .filter { val key = "${t.id}|${it.id}"; it.createdAt >= since && key !in s.sentClippings && key !in s.resend }
             // Waiting to be checked, marked not to send, or a spoiler held back from this tracker.
             .filter { !SpoilerCheck.blocked(s, it.id) && SpoilerCheck.prepare(t, s, it) != null }
+        return onePerPassage(t, all, fresh)
+    }
+
+    /**
+     * One post per passage on each tracker. The same words reaching here by another route
+     * (CrossPoint's and KOReader's copies of one highlight, an echo of one sent across, Moon+…)
+     * count as already sent there; a new copy that grew out of one since gone from the reader (the
+     * highlight redrawn or extended) replaces that one's entry where the tracker can. Of several
+     * copies arriving together, the earliest goes. Deleted highlights stay on trackers.
+     */
+    private fun onePerPassage(
+        t: Tracker,
+        all: List<io.github.prithirajn.trackersync.source.Clipping>,
+        candidates: List<io.github.prithirajn.trackersync.source.Clipping>,
+    ): List<io.github.prithirajn.trackersync.source.Clipping> {
+        if (candidates.isEmpty()) return candidates
+        val s = store.snapshot
+        val prefix = "${t.id}|"
+        val present = all.associateBy { it.id }
+        val docs = candidates.map { it.document }.toSet()
+        // What this tracker already has, per book: (clip id, its words then or now).
+        val have = HashMap<String, MutableList<Pair<String, String>>>()
+        for (k in s.sentClippings) {
+            if (!k.startsWith(prefix)) continue
+            val id = k.substring(prefix.length)
+            val c = present[id] ?: continue
+            if (c.document in docs) have.getOrPut(c.document) { ArrayList() } += id to Highlights.words(c.text)
+        }
+        // Gone ones (no longer on any reader) that this tracker has: only their stored words are left
+        // ("document\u0001words"), so a redrawn copy in the same book can take over their entry.
+        val gone = s.sentWords.mapNotNull { (id, v) ->
+            val doc = v.substringBefore('\u0001')
+            if (doc in docs && id !in present && "$prefix$id" in s.sentClippings) Triple(id, doc, v.substringAfter('\u0001')) else null
+        }
+        val out = ArrayList<io.github.prithirajn.trackersync.source.Clipping>()
+        val dupes = HashMap<String, String>() // new id -> the id it's a copy of (already there)
+        val grown = HashMap<String, String>() // new id -> the gone id it replaces
+        for (c in candidates.sortedBy { it.createdAt }) {
+            val w = Highlights.words(c.text)
+            if (w.isEmpty()) { out += c; continue }
+            val there = have[c.document]?.firstOrNull { Highlights.samePassage(it.second, w) }
+            if (there != null) { dupes[c.id] = there.first; continue }
+            // Arriving together with one already picked: the earlier goes, this one waits a sync (then it's a copy).
+            if (out.any { it.document == c.document && Highlights.samePassage(Highlights.words(it.text), w) }) continue
+            val was = gone.firstOrNull { (id, doc, words) -> doc == c.document && id !in grown.values && Highlights.samePassage(words, w) && s.clipRemote["$prefix$id"] != null }
+            if (was != null && t.updatesHighlights) grown[c.id] = was.first
+            out += c
+        }
+        if (dupes.isNotEmpty() || grown.isNotEmpty()) store.update { st ->
+            var sent = st.sentClippings
+            var remote = st.clipRemote
+            var hashes = st.sentHash
+            var resend = st.resend
+            for ((id, of) in dupes) {
+                sent = sent + "$prefix$id"
+                st.clipRemote["$prefix$of"]?.let { remote = remote + ("$prefix$id" to it) }
+                present[id]?.let { hashes = hashes + ("$prefix$id" to Highlights.fingerprint(it)) }
+            }
+            // Sent as a replacement of the gone one's entry (the "send again" path reads clipRemote).
+            for ((id, of) in grown) {
+                st.clipRemote["$prefix$of"]?.let { remote = remote + ("$prefix$id" to it) - "$prefix$of" }
+                resend = resend + "$prefix$id"
+            }
+            st.copy(sentClippings = sent, clipRemote = remote, sentHash = hashes, resend = resend)
+        }
+        if (dupes.isNotEmpty()) store.log(t.id, "${dupes.size} highlight${if (dupes.size == 1) " was" else "s were"} already there from another reader; not sent twice")
+        return out.filter { it.id !in grown }
+    }
+
+    /**
+     * Highlights whose words or note changed since they went to [t] (edited here, or on the reader
+     * with the same highlight kept): sent again, replacing the entry there, where [t] can update one.
+     */
+    private fun queueEdited(t: Tracker, all: List<io.github.prithirajn.trackersync.source.Clipping>) {
+        if (!t.updatesHighlights) return
+        val s = store.snapshot
+        val changed = all.mapNotNull { c ->
+            val key = "${t.id}|${c.id}"
+            val was = s.sentHash[key] ?: return@mapNotNull null
+            key.takeIf { was != Highlights.fingerprint(c) && key in s.sentClippings && key !in s.resend && s.clipRemote[key] != null }
+        }
+        if (changed.isNotEmpty()) store.update { it.copy(resend = it.resend + changed) }
     }
 
     private fun pushHighlights(onlyDocument: String? = null): Int {
@@ -2850,7 +2933,8 @@ class SyncEngine(private val store: Store) {
         val clips = (s0.cpClips + s0.paperClips + s0.kindleClips + s0.libbyClips + s0.moonClips + s0.historyClips + s0.koClips)
             // KOReader's notes on bookmarks have no passage: they stay here, not sent as quotes.
             .filter { it.id !in s0.clipHidden && (onlyDocument == null || it.document == onlyDocument) && !KoHighlightSync.isNote(it.id) }
-            .map { HighlightPosition.withPage(edited(it, s0.clipEdits), s0.books[it.document]) }
+            // Cleaned for the trackers: no invisible characters, HTML entities or stray tags.
+            .map { Highlights.tidy(HighlightPosition.withPage(edited(it, s0.clipEdits), s0.books[it.document])) }
         if (clips.isEmpty()) return 0
         val sent = java.util.concurrent.atomic.AtomicInteger(0)
         // Every tracker at once; on each one the highlights still go out a few at a time, a little
@@ -2860,15 +2944,27 @@ class SyncEngine(private val store: Store) {
             val on = highlightsOn(t, store.snapshot)
             // CrossPoint's own highlights go from the server where it's linked there too (it has them; KOReader's and paper ones it doesn't).
             val cpIds = if (t.id in store.snapshot.serverLinked) store.snapshot.cpClips.map { it.id }.toSet() else emptySet()
+            // Edited since sent: queued to replace the entry there.
+            queueEdited(t, clips)
+            // Fingerprints are taken from your words as they are here (not as made ready for this tracker, spoilers hidden…).
+            val rawById = clips.associateBy { it.id }
             val snap = store.snapshot
-            val fresh = clips.filter {
+            val fresh0 = clips.filter {
                 val key = "${t.id}|${it.id}"
-                it.id !in cpIds && (key in snap.resend || (on && it.createdAt >= svc.highlightsSince && key !in snap.sentClippings))
+                it.id !in cpIds && (key in snap.resend || (on && it.createdAt >= svc.highlightsSince && key !in snap.sentClippings)) &&
+                    // Refused 3 times (sent again by hand still tries).
+                    ((snap.clipFails[key] ?: 0) < CLIP_TRIES || key in snap.resend)
             }
                 // With Check highlights before sending: unchecked ones wait (one sent by hand goes anyway),
                 // "don't send" ones stay here, and spoilers go as this tracker can take them (or not at all).
                 .filter { "${t.id}|${it.id}" in snap.resend || !SpoilerCheck.blocked(snap, it.id) }
                 .mapNotNull { SpoilerCheck.prepare(t, snap, it) }
+            // Copies of a passage already there (from another reader) aren't posted again; sent-again ones go as they are.
+            val (againFirst, newFirst) = fresh0.partition { "${t.id}|${it.id}" in snap.resend }
+            val dedupedNew = onePerPassage(t, clips, newFirst)
+            // A redrawn copy now takes over a gone one's entry: it moved to the "send again" list.
+            val promoted = newFirst.filter { it !in dedupedNew && "${t.id}|${it.id}" in store.snapshot.resend }
+            val fresh = againFirst + promoted + dedupedNew
             if (fresh.isEmpty()) return@inParallel
             val session = Session(svc.credential).also { it.visibility = svc.visibility }
             try {
@@ -2892,6 +2988,28 @@ class SyncEngine(private val store: Store) {
                     fun pace() { if (byHand && posted++ > 0) Thread.sleep(BY_HAND_GAP_MS + (Math.random() * BY_HAND_JITTER_MS).toLong()) }
                     // The position the last entry went out at: where the tracker's progress is left.
                     var lastAt: Int? = null
+                    /**
+                     * One highlight posted. One the tracker refuses (too long, characters it won't take)
+                     * doesn't hold up the rest: a long one is tried again cut to $LONG_CLIP characters,
+                     * and after $CLIP_TRIES syncs it's left out. A busy or rate-limited tracker stops for now.
+                     */
+                    fun post(c: io.github.prithirajn.trackersync.source.Clipping, clipPct: Int, previous: String?): kotlin.Result<String?> {
+                        val key = "${t.id}|${c.id}"
+                        fun transient(e: Exception) = e is AuthException || e is NetworkException ||
+                            Regex("(?i)rate.?limit|busy|too many|try again|retry|timed? ?out|HTTP 5\\d\\d").containsMatchIn(e.message ?: "")
+                        val first = try { return kotlin.Result.success(t.postHighlight(session, link, clipPct, c, previous)) } catch (e: Exception) { if (transient(e)) throw e; e }
+                        if (c.text.length > LONG_CLIP) {
+                            try {
+                                val id = t.postHighlight(session, link, clipPct, c.copy(text = c.text.take(LONG_CLIP).trimEnd() + "\u2026"), previous)
+                                store.log(t.id, "$name: a long highlight went cut to $LONG_CLIP characters (${t.name} didn't take it whole)")
+                                return kotlin.Result.success(id)
+                            } catch (e: Exception) { if (transient(e)) throw e }
+                        }
+                        val n = (store.snapshot.clipFails[key] ?: 0) + 1
+                        store.update { s -> s.copy(clipFails = s.clipFails + (key to n), resend = s.resend - key) }
+                        store.log(t.id, "$name: ${t.name} didn't take a highlight (${first.message})" + if (n >= CLIP_TRIES) "; left out from now on" else "; trying again next sync", error = true)
+                        return kotlin.Result.failure(first)
+                    }
                     val positions = ArrayList<Int>()
                     try {
                         // Sent again: replace the earlier entry where the tracker allows, else post anew.
@@ -2900,10 +3018,12 @@ class SyncEngine(private val store: Store) {
                             val key = "${t.id}|${c.id}"
                             val previous = store.snapshot.clipRemote[key]
                             val clipPct = at(c)
-                            val id = t.postHighlight(session, link, clipPct, c, previous)
+                            val r = post(c, clipPct, previous)
+                            if (r.isFailure) continue
+                            val id = r.getOrNull()
                             // A new entry (not an edit of the old one in place) moves the progress there.
                             if (id == null || id != previous) lastAt = clipPct
-                            record(key, id)
+                            record(key, id, rawById[c.id] ?: c)
                             val first = key !in store.snapshot.sentClippings && previous == null
                             val what = when {
                                 previous != null && id == previous -> "highlight updated"
@@ -2921,13 +3041,17 @@ class SyncEngine(private val store: Store) {
                                     pace()
                                     if (byHand) byHandSent["${t.id}|$doc"] = (byHandSent["${t.id}|$doc"] ?: 0) + 1
                                     val clipPct = at(c)
-                                    record("${t.id}|${c.id}", t.postHighlight(session, link, clipPct, c, null))
+                                    val r = post(c, clipPct, null)
+                                    if (r.isFailure) continue
+                                    val id = r.getOrNull()
+                                    record("${t.id}|${c.id}", id, rawById[c.id] ?: c)
                                     lastAt = clipPct
                                     positions += clipPct
                                 }
                             } else {
                                 t.postHighlights(session, link, pct, sortedNew)
                                 store.update { s -> s.copy(sentClippings = s.sentClippings + sortedNew.map { "${t.id}|${it.id}" }) }
+                                stampSent(t.id, sortedNew.map { rawById[it.id] ?: it })
                             }
                         }
                         // Entries that also set your progress (Goodreads, StoryGraph) went out at the
@@ -2978,11 +3102,21 @@ class SyncEngine(private val store: Store) {
     }
 
     /** Marks one highlight sent to one tracker, keeping the entry's id there when it gave one. */
-    private fun record(key: String, remoteId: String?) = store.update { s ->
+    private fun record(key: String, remoteId: String?, clip: io.github.prithirajn.trackersync.source.Clipping? = null) = store.update { s ->
         s.copy(
             sentClippings = s.sentClippings + key,
             resend = s.resend - key,
             clipRemote = if (remoteId != null) s.clipRemote + (key to remoteId) else s.clipRemote,
+            sentHash = if (clip != null) s.sentHash + (key to Highlights.fingerprint(clip)) else s.sentHash,
+            sentWords = if (clip != null) s.sentWords + (clip.id to clip.document + "\u0001" + Highlights.words(clip.text)) else s.sentWords,
+        )
+    }
+
+    /** What went to [trackerId] for these highlights, so a later edit (or a redrawn copy) is noticed. */
+    private fun stampSent(trackerId: String, clips: List<io.github.prithirajn.trackersync.source.Clipping>) = store.update { s ->
+        s.copy(
+            sentHash = s.sentHash + clips.associate { "$trackerId|${it.id}" to Highlights.fingerprint(it) },
+            sentWords = s.sentWords + clips.associate { it.id to it.document + "\u0001" + Highlights.words(it.text) },
         )
     }
 
@@ -3023,6 +3157,11 @@ class SyncEngine(private val store: Store) {
             cp != null && cp in setOf(ReadStatus.FINISHED, ReadStatus.DNF, ReadStatus.PAUSED) -> cp
             else -> ReadStatus.READING
         }
+        // Opened, not read (under 1%, a book tapped by mistake or looked into): trackers don't get it as
+        // Reading yet. It goes once you pass 1%, or straight away when you set it to Reading yourself.
+        if (target == ReadStatus.READING && book.percentage < 0.01 && book.manualAt == null && !rereading && !ManualBooks.isManual(book) &&
+            remote.status != ReadStatus.READING && remote.status != ReadStatus.FINISHED && remote.status != ReadStatus.DNF
+        ) return null
         val visibility = store.snapshot.service(tracker.id).visibility
         var did: String? = null
         var progressSent = false
@@ -3063,10 +3202,15 @@ class SyncEngine(private val store: Store) {
                     // "Move it back" chosen for this book: sent even though the tracker is further along.
                     val forcedBack = "${tracker.id}|${book.document}" in store.snapshot.moveBack
                     if (forcedBack) store.update { s -> s.copy(moveBack = s.moveBack - "${tracker.id}|${book.document}") }
-                    val behind = tracker.readsProgress && remote.percent != null && percent < remote.percent && !grewSince && !rereading && !forcedBack
+                    // Set lower by you (or a jump back you chose to use) since this tracker was last updated.
+                    val chosenBack = (store.snapshot.backAt[book.document] ?: 0L) * 1000 > link.updatedAt
+                    // Trackers never go back on their own: further along there (read back), or further
+                    // along in what this app last sent (trackers that can't be read back).
+                    val there = if (tracker.readsProgress) remote.percent else link.lastPercent
+                    val behind = there != null && percent < there && !grewSince && !rereading && !forcedBack && !chosenBack
                     when {
                         skipProgress -> Unit
-                        behind -> note = "${tracker.name} is further along (${remote.percent}%)"
+                        behind -> note = if (tracker.readsProgress) "${tracker.name} is further along (${remote.percent}%)" else "${tracker.name} already has $there% from here; it isn't moved back"
                         // Already there: read back where possible, else what this app last sent.
                         // Already there (read back): recorded as what it has, so it shows like the others.
                         tracker.readsProgress && remote.percent == percent -> alreadyThere = true
@@ -3081,6 +3225,7 @@ class SyncEngine(private val store: Store) {
                             did = (did?.let { "$it, " } ?: "") + "$percent%"
                             if (carried) {
                                 store.update { s -> s.copy(sentClippings = s.sentClippings + carry.map { "${tracker.id}|${it.id}" }) }
+                                stampSent(tracker.id, carry)
                                 did += " with ${carry.size} highlight${if (carry.size == 1) "" else "s"}"
                                 carriedCount = carry.size
                             }
@@ -3580,6 +3725,12 @@ class SyncEngine(private val store: Store) {
         }
         private val lock = ReentrantLock()
 
+        /** Times a tracker may refuse one highlight before it's left out. */
+        private const val CLIP_TRIES = 3
+
+        /** A highlight longer than this is tried again cut to it when a tracker refuses it whole. */
+        private const val LONG_CLIP = 1000
+
         private const val COVER_LOOKUPS_PER_RUN = 10
         /** Past books looked up per sync (genres and moods, then page counts and covers), and the time allowed. */
         private const val PAST_BOOKS_PER_RUN = 8
@@ -3629,9 +3780,11 @@ class SyncEngine(private val store: Store) {
                         "hardcover" -> io.github.prithirajn.trackersync.trackers.HardcoverTracker.facts(session, link, title, book.author, now)
                         "storygraph" -> io.github.prithirajn.trackersync.trackers.StoryGraphTracker.facts(session, link, title, book.author, now)
                         else -> io.github.prithirajn.trackersync.trackers.SeekquelTracker.facts(session, link, title, book.author, now).also { f ->
-                            // Seekquel's tags have been missing: say what it answered, so it can be put right.
-                            if (f == null) io.github.prithirajn.trackersync.trackers.SeekquelTracker.factsWhy?.let { why ->
-                                store.log("seekquel", "Seekquel tags for \u201C${book.displayTitle}\u201D: $why".take(600))
+                            // A book Seekquel keeps no tags for (common for comic issues and new books): one short
+                            // note per book, not the technical details, and nothing for comics and manga.
+                            if (f == null && !book.isMangaOrComic && io.github.prithirajn.trackersync.trackers.SeekquelTracker.factsWhy != null) {
+                                val note = "Seekquel has no genres or moods for \u201C${book.displayTitle}\u201D yet"
+                                if (store.snapshot.log.none { it.message == note }) store.log("seekquel", note)
                             }
                         }
                     }

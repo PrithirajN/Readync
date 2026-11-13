@@ -202,6 +202,18 @@ object SpotifyTracker : Tracker {
 
     private fun player(session: Session) = api(session, "/me/player?additional_types=episode").takeIf { it.code == 200 }?.let { jsonOrNull(it.body) }
 
+    /** Chapter-by-chapter points (from the book's copy on this phone) and your "Not the right spot?" one. */
+    private fun spotPoints(session: Session, link: Link): List<Anchors.Anchor> {
+        val id = link.externalId
+        if (id != null) Anchors.ensureChapters(session, link, tracks = {
+            val ch = chapters(session, id)
+            var start = 0L
+            val list = ch.mapIndexed { i, c -> val d = c.long("duration_ms") ?: 0L; Anchors.Track(c.str("name") ?: "Chapter ${i + 1}", start, d).also { start += d } }
+            if (list.isEmpty()) null else Anchors.Tracks(list, start, null)
+        }, epub = { Anchors.phoneCopy(link.document) })
+        return Anchors.points(session, link)
+    }
+
     /** The audiobook's tracks and where you're listening, for "Not the right spot?". */
     fun tracks(session: Session, link: Link): Anchors.Tracks? {
         val id = link.externalId ?: return null
@@ -226,7 +238,7 @@ object SpotifyTracker : Tracker {
         val id = link.externalId ?: return null
         val ch = chapters(session, id)
         val listening = place(ch, player(session)) ?: return null
-        val reading = readerShare?.let { placeAt(ch, Anchors.textToAudio(it, Anchors.of(session, link))) }
+        val reading = readerShare?.let { placeAt(ch, Anchors.textToAudio(it, spotPoints(session, link))) }
         val target = if (reading != null && !listening.finished && reading.offsetMs > listening.offsetMs) reading else listening
         val r = api(session, "/me/player/play", "PUT", JSONObject().put("uris", org.json.JSONArray().put(target.chapterUri)).put("position_ms", target.positionMs))
         if (r.ok) return Resume(true, target, null, target.chapterUri, "")
@@ -272,7 +284,7 @@ object SpotifyTracker : Tracker {
             session.put("seen", snaps.put(id, JSONObject().put("chapter", now.chapter).put("offset", now.offsetMs).put("finished", now.finished)))
         }
         if (!moved) return null
-        return RemotePosition(if (now.finished) 1.0 else Anchors.audioToText(now.share, Anchors.of(session, link)), now.finished, System.currentTimeMillis() / 1000)
+        return RemotePosition(if (now.finished) 1.0 else Anchors.audioToText(now.share, spotPoints(session, link)), now.finished, System.currentTimeMillis() / 1000)
     }
 
     override fun state(session: Session, link: Link) = RemoteState(null, null)
@@ -280,7 +292,7 @@ object SpotifyTracker : Tracker {
     /** Where you are in the audiobook, for "What each tracker says" (nothing remembered). */
     override fun peekPercent(session: Session, link: Link): Int? {
         val id = link.externalId ?: return null
-        return place(chapters(session, id), player(session))?.let { pct(if (it.finished) 1.0 else Anchors.audioToText(it.share, Anchors.of(session, link))) }
+        return place(chapters(session, id), player(session))?.let { pct(if (it.finished) 1.0 else Anchors.audioToText(it.share, spotPoints(session, link))) }
     }
     override fun setStatus(session: Session, link: Link, status: ReadStatus) {}
     override fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility) {}
