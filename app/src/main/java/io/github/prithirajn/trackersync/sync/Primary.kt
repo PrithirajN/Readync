@@ -237,6 +237,8 @@ object Primary {
             if (nb.percentage < ob.percentage - 0.0005 && nb.status != ReadStatus.FINISHED) continue
             val percent = Math.round(nb.percentage * 100).toInt()
             if (new.progressDenied[doc] == percent) continue
+            // Within the same whole percent as here (11.2% against 11%): nothing to choose between.
+            if (percent == Math.round(ob.percentage * 100).toInt() && (nb.status == ob.status || nb.status == null)) continue
             // A source you said to always use: its position is taken, no question.
             if (trusted(new, doc, source)) {
                 books()[doc] = nb
@@ -272,6 +274,12 @@ object Primary {
                 asks()[doc] = ProgressAsk(nb.percentage, nb.status, nb.timestamp, source)
             }
         }
+        // Cards that would offer the same whole percent as the book already has (asked before this rule): let go.
+        val sameAsHere = (asks ?: new.progressAsks).filter { (doc, a) ->
+            val b = (books ?: new.books)[doc]
+            b != null && a.percent == Math.round(b.percentage * 100).toInt() && (a.status == null || a.status == b.status)
+        }.keys
+        if (sameAsHere.isNotEmpty()) sameAsHere.forEach { asks().remove(it) }
         if (books == null && primaries == null && asks == null && pending == null && streaks == null && rereadAsks == null && denied == null) return new
         return new.copy(
             books = books ?: new.books, primaries = primaries ?: new.primaries, sourceRanks = ranks ?: new.sourceRanks,

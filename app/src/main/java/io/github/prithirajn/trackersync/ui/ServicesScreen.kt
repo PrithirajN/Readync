@@ -570,7 +570,7 @@ private fun SettingsSheet(title: String, onClose: () -> Unit, content: @Composab
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -696,7 +696,7 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -1098,7 +1098,7 @@ private fun BackupCard(vm: AppViewModel) {
         ModalBottomSheet(
             dragHandle = { SheetGrip() },
             onDismissRequest = { incoming = null },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            sheetState = rememberSheetState(skipPartiallyExpanded = true),
             shape = CpShapes.sheet,
             containerColor = c.page,
         ) {
@@ -1182,7 +1182,7 @@ private fun HistoryImportCard(vm: AppViewModel) {
         ModalBottomSheet(
             dragHandle = { SheetGrip() },
             onDismissRequest = { plan = null },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            sheetState = rememberSheetState(skipPartiallyExpanded = true),
             shape = CpShapes.sheet,
             containerColor = c.page,
         ) {
@@ -1305,11 +1305,16 @@ private fun OnDeviceAiCard(vm: AppViewModel, state: Snapshot) {
                 }
                 else -> {
                     Text("Choose a model", style = CpType.bodyStrong, color = c.text)
+                    val ram = remember { io.github.prithirajn.trackersync.ai.LocalModel.phoneRamGb(context) }
+                    val best = remember { io.github.prithirajn.trackersync.ai.LocalModel.recommended(context) }
+                    Quiet("This phone has $ram GB of memory: ${best.name} is the best it can run well.", color = c.faint)
                     VSpace(6)
                     for (choice in io.github.prithirajn.trackersync.ai.LocalModel.catalog) {
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f).padding(end = 10.dp)) {
                                 Text("${choice.name} · ${choice.size}", style = CpType.body, color = c.text)
+                                if (choice == best) Text("Recommended for this phone", style = CpType.small, color = c.accentText)
+                                else if (choice.minRamGb > ram) Text("Needs ${choice.minRamGb} GB of memory; may not run here", style = CpType.small, color = c.errorText)
                                 Quiet(choice.note, color = c.faint)
                             }
                             PillButton("Get", {
@@ -1478,7 +1483,7 @@ private fun BackupPasswordSheet(vm: AppViewModel, saving: Boolean, uri: Uri, onC
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -1583,7 +1588,7 @@ private fun KindleSignInSheet(vm: AppViewModel, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -1805,7 +1810,7 @@ private fun LibbySignInSheet(vm: AppViewModel, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -2015,7 +2020,7 @@ private fun AudibleSignInSheet(vm: AppViewModel, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -2324,7 +2329,7 @@ internal fun ComicVolumesSheet(vm: AppViewModel, state: Snapshot, key: String, c
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -2448,7 +2453,7 @@ private fun AniListSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit)
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -2572,7 +2577,7 @@ private fun MangaUpdatesSheet(vm: AppViewModel, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -2690,7 +2695,7 @@ private fun MoonSheet(vm: AppViewModel, onGuide: () -> Unit, onClose: () -> Unit
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -2962,7 +2967,7 @@ private fun KoHlGuideSheet(onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -3013,7 +3018,7 @@ private fun KoHlSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -3071,7 +3076,7 @@ private fun MoonGuideSheet(onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -3154,7 +3159,7 @@ private fun KosyncSheet(vm: AppViewModel, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -3195,7 +3200,7 @@ private fun PasswordSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -3242,7 +3247,7 @@ private fun TokenSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -3293,7 +3298,7 @@ private fun PairSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = { vm.cancelDeviceLink(); onClose() },
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -3416,7 +3421,7 @@ private fun WebSignIn(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
 @Composable
 fun ConfirmSheet(title: String, body: String, action: String, onConfirm: () -> Unit, onClose: () -> Unit) {
     val c = Cp.colors
-    ModalBottomSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, shape = CpShapes.sheet, containerColor = c.page) {
+    ModalBottomSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, sheetState = rememberSheetState(), shape = CpShapes.sheet, containerColor = c.page) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
             Text(title, style = CpType.section, color = c.text)
             VSpace(8)

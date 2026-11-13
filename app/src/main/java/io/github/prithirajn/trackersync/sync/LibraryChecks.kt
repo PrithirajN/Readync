@@ -23,6 +23,17 @@ object LibraryChecks {
 
     data class Issue(val kind: Kind, val books: List<Book>, val detail: Map<String, String> = emptyMap())
 
+    /**
+     * A comic issue or a manga volume, however it came in (from Seekquel, Hardcover…, not only the
+     * manga log): "#3" or "Vol. 7" in the title, or tagged comics, manga or graphic novel. These have
+     * no page counts to speak of, so they aren't asked for one.
+     */
+    fun comicOrManga(s: Snapshot, b: Book): Boolean {
+        if (b.isMangaOrComic) return true
+        if (Regex("(?i)#\\s*\\d+\\b|\\bvol(?:ume)?\\.?\\s*\\d+\\b|\\bissue\\s*\\d+\\b").containsMatchIn(b.displayTitle)) return true
+        return s.facts[b.document]?.genres.orEmpty().any { g -> Regex("(?i)comic|manga|manhwa|manhua|graphic novel").containsMatchIn(g) }
+    }
+
     fun run(s: Snapshot, now: Long = System.currentTimeMillis() / 1000): List<Issue> {
         val books = s.books.values.filter { !it.isMangaOrComic || it.status == ReadStatus.FINISHED }
         val day = 86_400L
@@ -41,12 +52,13 @@ object LibraryChecks {
             .takeIf { it.isNotEmpty() }?.let { list ->
                 out += Issue(Kind.FUTURE, list, list.associate { b -> b.document to listOfNotNull(b.startedAt?.takeIf { it > now + day }?.let { "started ${date(it)}" }, b.finishedAt?.takeIf { it > now + day }?.let { "finished ${date(it)}" }).joinToString(", ") })
             }
-        finished.filter { !it.isMangaOrComic && (it.pageCount ?: 0) <= 0 }.takeIf { it.isNotEmpty() }?.let {
+        finished.filter { !comicOrManga(s, it) && (it.pageCount ?: 0) <= 0 }.takeIf { it.isNotEmpty() }?.let {
             out += Issue(Kind.NO_PAGES, it.sortedBy { b -> b.displayTitle.lowercase() })
         }
-        // The same title and author more than once (merged copies are already one book).
+        // The same title and author more than once (merged copies are already one book). Issue and
+        // volume numbers count: "Darkhawk #1" and "#2" are two books, not one twice.
         val groups = books.filter { it.title != null }
-            .groupBy { Matcher.baseTitle(it.displayTitle) + "|" + (it.author?.let { a -> Matcher.normalizeAuthor(a) } ?: "") }
+            .groupBy { Matcher.baseTitle(it.displayTitle) + "|" + (Matcher.volume(it.displayTitle) ?: "") + "|" + (it.author?.let { a -> Matcher.normalizeAuthor(a) } ?: "") }
             .values.filter { g -> g.size > 1 && Matcher.baseTitle(g.first().displayTitle).length >= 3 }
         if (groups.isNotEmpty()) {
             val list = groups.flatten()

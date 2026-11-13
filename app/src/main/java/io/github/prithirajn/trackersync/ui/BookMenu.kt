@@ -56,7 +56,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 /** What the ⋯ menu on a book opens. */
-enum class BookAction { EDIT, COVER, DATES, PAGES, MERGE, SEPARATE, REMOVE, REREAD, WEBNOVEL, KOSYNC, DNF, PRICE, COPY }
+enum class BookAction { EDIT, COVER, DATES, PAGES, MERGE, SEPARATE, REMOVE, REREAD, WEBNOVEL, KOSYNC, DNF, PRICE, COPY, EDIT_BOOK }
 
 /**
  * The companion app's ⋯ menu for a book: edit title & author, change cover, reading dates,
@@ -86,38 +86,75 @@ fun BookMenuButton(state: Snapshot, book: Book, webNovelLinked: Boolean = false,
             if (book.status != io.github.prithirajn.trackersync.data.ReadStatus.DNF && book.status != io.github.prithirajn.trackersync.data.ReadStatus.FINISHED) {
                 MenuItem(R.drawable.lucide_circle_x, "Did not finish") { pick(BookAction.DNF) }
             }
-            MenuItem(R.drawable.lucide_pen_line, "Edit title & author") { pick(BookAction.EDIT) }
-            MenuItem(R.drawable.lucide_image, "Change cover") { pick(BookAction.COVER) }
-            MenuItem(R.drawable.lucide_calendar_days, "Reading dates") { pick(BookAction.DATES) }
-            MenuItem(R.drawable.lucide_hash, "Print pages", trailing = pagesTrailing) { pick(BookAction.PAGES) }
-            MenuItem(R.drawable.lucide_merge, "Merge a duplicate", trailing = likelyTrailing) { pick(BookAction.MERGE) }
-            if (!webNovelLinked && !book.isMangaOrComic) MenuItem(R.drawable.lucide_globe, "Find it as a web novel") { pick(BookAction.WEBNOVEL) }
+            // Everything about the book itself (title, cover, dates, pages, its copies) in one place.
+            MenuItem(R.drawable.lucide_pen_line, "Edit book", trailing = likelyTrailing) { pick(BookAction.EDIT_BOOK) }
             // Its price, tracked on Catalogs › Deals (nothing shows on the book itself).
             val tracked = book.document in state.priceWatch
             MenuItem(R.drawable.lucide_bell, if (tracked) "Price tracked (on Deals)" else "Track its price") { pick(BookAction.PRICE) }
-            // A copy of the book in the app's own storage (from your OPDS catalogs), for the words around quotes.
-            if (!book.isMangaOrComic) {
-                val copies by io.github.prithirajn.trackersync.source.BookCopies.copies.collectAsState()
-                val busy by io.github.prithirajn.trackersync.source.BookCopies.busy.collectAsState()
-                val has = book.document in copies
-                MenuItem(
-                    R.drawable.lucide_book_open,
-                    when { book.document in busy -> "Getting a copy…"; has -> "Remove the app's copy"; else -> "Keep a copy for quotes" },
-                ) { pick(BookAction.COPY) }
-            }
-            if (state.kosync != null) {
-                val n = state.kosyncIds[book.document]?.size ?: 0
-                val linkedTrailing: (@Composable () -> Unit)? = if (n > 0) { @Composable { Text(n.toString(), style = CpType.body, color = c.quiet) } } else null
-                MenuItem(R.drawable.lucide_link, "KOSync documents", trailing = linkedTrailing) { pick(BookAction.KOSYNC) }
-            }
-            if (book.aliases.isNotEmpty()) {
-                MenuItem(
-                    R.drawable.lucide_split,
-                    if (book.aliases.size == 1) "Separate merged copy" else "Separate ${book.aliases.size} merged copies",
-                ) { pick(BookAction.SEPARATE) }
-            }
+            // Only for what looks like a web novel (no ISBN or page count, a username for an author).
+            if (!webNovelLinked && looksLikeWebNovel(book)) MenuItem(R.drawable.lucide_globe, "Find it as a web novel") { pick(BookAction.WEBNOVEL) }
             RowDivider()
             MenuItem(R.drawable.lucide_trash, "Remove from library", danger = true) { pick(BookAction.REMOVE) }
+        }
+    }
+}
+
+/**
+ * "Edit book": the book's details (title and author, cover, reading dates, print pages) and its
+ * copies (merging a duplicate, separating merged ones, KOSync documents, the app's copy for
+ * quotes), each opening its own sheet.
+ */
+@Composable
+private fun EditBookSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit, onRemoved: () -> Unit) {
+    val c = Cp.colors
+    var sub by remember { mutableStateOf<BookAction?>(null) }
+    val chosen = sub
+    if (chosen != null) {
+        BookActionSheet(vm, state, book, chosen, onClose = { sub = null; if (chosen == BookAction.COPY) onClose() }, onRemoved = onRemoved)
+        return
+    }
+    val likely = remember(state.books, book.document) { state.books.values.count { it.document != book.document && BookEditor.looksLikeSame(book, it) } }
+    MenuSheet("Edit book", onClose) {
+        VSpace(8)
+        Text("Details", style = CpType.bodyStrong, color = c.text)
+        VSpace(4)
+        CpCard {
+            Column {
+                NavRow(R.drawable.lucide_pen_line, "Title & author", listOfNotNull(book.displayTitle, book.author).joinToString(" · ")) { sub = BookAction.EDIT }
+                RowDivider()
+                NavRow(R.drawable.lucide_image, "Cover", "Its other editions, other sites, or one from your photos") { sub = BookAction.COVER }
+                RowDivider()
+                NavRow(R.drawable.lucide_calendar_days, "Reading dates", "When you started and finished") { sub = BookAction.DATES }
+                RowDivider()
+                NavRow(R.drawable.lucide_hash, "Print pages", book.pageCount?.let { "$it pages" } ?: "Not set") { sub = BookAction.PAGES }
+            }
+        }
+        VSpace(16)
+        Text("Copies", style = CpType.bodyStrong, color = c.text)
+        VSpace(4)
+        CpCard {
+            Column {
+                NavRow(R.drawable.lucide_merge, "Merge a duplicate", if (likely > 0) "$likely look like this book" else "Fold another copy of it into this one") { sub = BookAction.MERGE }
+                if (book.aliases.isNotEmpty()) {
+                    RowDivider()
+                    NavRow(R.drawable.lucide_split, if (book.aliases.size == 1) "Separate merged copy" else "Separate ${book.aliases.size} merged copies", "Each syncs as its own book again") { sub = BookAction.SEPARATE }
+                }
+                if (state.kosync != null) {
+                    RowDivider()
+                    val n = state.kosyncIds[book.document]?.size ?: 0
+                    NavRow(R.drawable.lucide_link, "KOSync documents", if (n > 0) "$n linked" else "Link this book's KOSync documents") { sub = BookAction.KOSYNC }
+                }
+                if (!book.isMangaOrComic) {
+                    val copies by io.github.prithirajn.trackersync.source.BookCopies.copies.collectAsState()
+                    val busy by io.github.prithirajn.trackersync.source.BookCopies.busy.collectAsState()
+                    RowDivider()
+                    NavRow(
+                        R.drawable.lucide_book_open,
+                        when { book.document in busy -> "Getting a copy\u2026"; book.document in copies -> "Remove the app's copy"; else -> "Keep a copy for quotes" },
+                        "From your catalogs, for the lines around your quotes",
+                    ) { sub = BookAction.COPY }
+                }
+            }
         }
     }
 }
@@ -144,6 +181,7 @@ private fun MenuItem(
 fun BookActionSheet(vm: AppViewModel, state: Snapshot, book: Book, action: BookAction, onClose: () -> Unit, onRemoved: () -> Unit) {
     when (action) {
         BookAction.WEBNOVEL, BookAction.DNF -> {} // opened on the book itself
+        BookAction.EDIT_BOOK -> EditBookSheet(vm, state, book, onClose, onRemoved)
         BookAction.PRICE -> androidx.compose.runtime.LaunchedEffect(book.document) { vm.watchPrice(book.document); onClose() }
         BookAction.COPY -> androidx.compose.runtime.LaunchedEffect(book.document) { vm.toggleBookCopy(book.document); onClose() }
         BookAction.EDIT -> EditDetailsSheet(vm, book, onClose)
@@ -185,7 +223,7 @@ private fun MenuSheet(title: String, onClose: () -> Unit, content: @Composable (
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -245,7 +283,7 @@ private fun EditDetailsSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) 
 }
 
 @Composable
-private fun CoverSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
+internal fun CoverSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
     val c = Cp.colors
     var query by remember { mutableStateOf("") }
     var searched by remember { mutableStateOf<String?>(null) }
@@ -261,8 +299,17 @@ private fun CoverSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
         busy = true
         vm.setCover(book.document, url) { err -> busy = false; if (err == null) onClose() }
     }
+    // A picture from your photos: your own copy, or a cover you saved.
+    val photo = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) { busy = true; vm.setOwnCover(book.document, uri) { err -> busy = false; if (err == null) onClose() } }
+    }
     MenuSheet("Choose a cover", onClose) {
         VSpace(12)
+        BigButton("Choose from your photos", {
+            photo.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+        }, filled = false, busy = busy)
+        Quiet("A picture of your own copy, or a cover you saved. Kept on this phone; your trackers keep theirs.", color = c.faint)
+        VSpace(14)
         Row(verticalAlignment = Alignment.Bottom) {
             Box(Modifier.weight(1f)) { CpTextField(query, { query = it }, "Search", placeholder = book.title ?: "A different title") }
             HSpace(8)
@@ -273,7 +320,7 @@ private fun CoverSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
         when {
             error != null -> Text(error ?: "", style = CpType.small, color = c.errorText)
             list == null -> Centered { CircularProgressIndicator(Modifier.size(24.dp), color = c.faint) }
-            list.isEmpty() -> Quiet("No covers found. Try another search, or paste an image link.")
+            list.isEmpty() -> Quiet("No covers found. Try another search, choose one from your photos, or paste an image link.")
             else -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 for (row in list.chunked(3)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -285,6 +332,8 @@ private fun CoverSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
                             ) {
                                 BookCover(cand.url, cand.title ?: book.displayTitle, 92.dp, 138.dp)
                                 cand.source?.let { Text(it, style = CpType.chip, color = c.quiet, maxLines = 1, modifier = Modifier.padding(top = 4.dp)) }
+                                // Which edition or listing it is ("Paperback · 2019 · 352 pages"), when it differs from the book.
+                                cand.title?.takeIf { it != book.displayTitle }?.let { Text(it, style = CpType.small, color = c.faint, maxLines = 2) }
                             }
                         }
                     }

@@ -25,7 +25,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
  * (a copy, a try, or a book you're reading with copies turned on).
  */
 @Composable
-fun CopyCard(vm: AppViewModel, book: Book) {
+fun CopyCard(vm: AppViewModel, book: Book, alwaysShow: Boolean = false) {
     if (book.isMangaOrComic) return
     val c = Cp.colors
     val context = LocalContext.current.applicationContext
@@ -36,7 +36,7 @@ fun CopyCard(vm: AppViewModel, book: Book) {
     val live = statuses[book.document]
     val failed = if (copy == null && book.document !in busy) BookCopies.lastFailure(context, book.document) else null
     val reading = book.status == io.github.prithirajn.trackersync.data.ReadStatus.READING
-    if (copy == null && live == null && failed == null && !(reading && BookCopies.auto(context))) return
+    if (!alwaysShow && copy == null && live == null && failed == null && !(reading && BookCopies.auto(context))) return
 
     VSpace(16)
     CpCard {
@@ -57,7 +57,7 @@ fun CopyCard(vm: AppViewModel, book: Book) {
                     }
                 }
                 copy != null -> {
-                    Quiet("Kept in the app · from ${copy.server} · ${sizeOf(copy.size)} · ${ago(copy.at * 1000)}")
+                    Quiet("Kept in the app · from ${serverName(copy.server)} · ${sizeOf(copy.size)} · ${ago(copy.at * 1000)}")
                     Quiet("Quote Studio uses it for the lines around your passages.", color = c.faint)
                     VSpace(10)
                     PillButton("Remove the copy", { vm.toggleBookCopy(book.document) })
@@ -80,3 +80,14 @@ fun CopyCard(vm: AppViewModel, book: Book) {
 
 private fun sizeOf(bytes: Long): String =
     if (bytes >= 1_000_000) String.format(java.util.Locale.US, "%.1f MB", bytes / 1_000_000.0) else "${(bytes / 1000).coerceAtLeast(1)} KB"
+
+/**
+ * A catalog's name to show: its own name without a link written into it (calibre's
+ * "calibre Library [(http://…)](http://…/opds)"), else just the address's host.
+ */
+internal fun serverName(raw: String): String {
+    val noLinks = raw.replace(Regex("""\[([^\]]*)]\([^)]*\)"""), "$1").replace(Regex("""\(?https?://[^\s)]+\)?"""), "")
+        .replace(Regex("""[\[\]()]"""), "").replace(Regex("\\s+"), " ").trim()
+    if (noLinks.isNotEmpty()) return noLinks
+    return Regex("""https?://([^/:\s]+)""").find(raw)?.groupValues?.get(1) ?: raw
+}

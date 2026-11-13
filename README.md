@@ -106,9 +106,9 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 
 ### ✨ And more
 - **Catalogs**: the 50 newest books across all your OPDS servers, and every server searched at once, with download details and paste-a-list setup.
-- **Books in a post**: paste or share a TikTok, Instagram, Threads or YouTube post (or screenshots or a screen recording of one, read on your phone frame by frame) and the books it names are found (caption, the words on its picture, hashtags), checked against Google Books, then added to Want to Read or price-tracked.
+- **Books in a post**: paste or share a TikTok, Instagram, Threads or YouTube post (or screenshots or a screen recording of one, read on your phone frame by frame) and the books it names are found (caption, the words on every picture of a carousel, hashtags; comparisons like "X meets Y" left out), checked against Google Books (a book the caption and cover both name is kept even before Google lists it), then added to Want to Read or price-tracked. Read in the background with a notification when done, so you can share and go back to scrolling. Missed one? Tap it among the words read on the picture, or type its title.
 - **Copies for quotes**: books you're reading kept privately inside the app, for the lines around your quotes.
-- **Price tracker** for Amazon.in, Bookswagon and Atlantic Books, with your own target price.
+- **Price tracker** for Amazon.in, Bookswagon and Atlantic Books, plus any other bookshop's page you give it (Flipkart, Crossword…), with your own target price.
 - **SFF news** set like a magazine, with a Screen view for films and series, and a clean reader.
 - **Library checks, a rating rubric, a top-books image and a reading-log export** on the Activity tab: books whose dates or page counts would throw your numbers off, scores on what matters to you beside your stars (with a gut-vs-rubric chart), your year's top 10 or 20 as one ranked image, and every book as an Excel or CSV file.
 - **Import your history** from Goodreads, StoryGraph, Hardcover, Seekquel or KOReader.
@@ -121,7 +121,7 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 <summary>More on these</summary>
 
 - **Catalogs** work with Calibre-Web, Calibre's server, Kavita, Komga, Stump, COPS and Project Gutenberg (OPDS 1 and 2). The same book on several servers shows once; sign-ins stay on the phone and go only to their own server.
-- **Price tracker**: paste a store link or import an Amazon wish list; you're told when a price is under yours, or 10% under the lowest seen. Checked twice a day.
+- **Price tracker**: share a bookshop's page to Readync (or paste it, or import an Amazon wish list) and it's tracked in the background, with a notification saying the price now; you're told when a price is under yours, or 10% under the lowest seen. Checked twice a day.
 - **SFF news**: For you, Latest, Screen, Genres and Saved; articles in Lora with a drop cap and an AI menu to sum up or check for spoilers.
 - **Import** keeps what's already in Readync, sends nothing to your trackers, and brings day-by-day reading where the source has it.
 </details>
@@ -241,6 +241,7 @@ All of them searched at once, with downloads into Downloads, and copies for quot
 | Amazon.in | Print and Kindle edition prices |
 | Bookswagon | Print |
 | Atlantic Books | Print |
+| Any other bookshop (Flipkart, Crossword, Sapna Online…) | The page you share, read from the price it gives search engines |
 
 ## FAQ
 

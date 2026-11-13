@@ -26,7 +26,48 @@ object BookPrices {
         Shop("atlantic", "Atlantic Books", "https://atlanticbooks.com"),
     )
 
-    fun shop(id: String) = shops.firstOrNull { it.id == id }
+    fun shop(id: String): Shop? = shops.firstOrNull { it.id == id }
+        ?: id.takeIf { it.startsWith("site:") }?.removePrefix("site:")?.let { h -> Shop(id, siteName(h), "https://$h") }
+
+    /** Other bookshops' own names, by address (any shop's page works; these are just named nicely). */
+    private val SITE_NAMES = mapOf(
+        "flipkart.com" to "Flipkart", "crossword.in" to "Crossword", "sapnaonline.com" to "Sapna Online",
+        "bookchor.com" to "Bookchor", "notionpress.com" to "Notion Press", "harpercollins.co.in" to "HarperCollins India",
+        "bookishsanta.com" to "Bookish Santa", "pothi.com" to "Pothi", "panmacmillan.co.in" to "Pan Macmillan India",
+        "kitabay.com" to "Kitabay", "booksbywords.com" to "Books by Words", "blinkit.com" to "Blinkit",
+    )
+
+    /** Addresses that aren't shops (reading sites, social posts, link shorteners): never tracked as one. */
+    private val NOT_SHOPS = setOf(
+        "goodreads", "hardcover", "thestorygraph", "instagram", "instagr", "tiktok", "youtube", "youtu", "threads", "x", "twitter",
+        "facebook", "fb", "google", "goo", "reddit", "fable", "openlibrary", "wikipedia", "royalroad", "archiveofourown", "t", "bit", "linktr", "pinterest", "pin",
+    )
+
+    /** An address's site, without www./m./dl. */
+    fun host(url: String): String? = runCatching { java.net.URI(url.trim()).host }.getOrNull()?.lowercase()
+        ?.removePrefix("www.")?.removePrefix("m.")?.removePrefix("dl.")?.ifBlank { null }
+
+    /** A shop's name from its address: "Flipkart", else its main word ("shop.penguin.co.in" -> "Penguin"). */
+    fun siteName(host: String): String = SITE_NAMES.entries.firstOrNull { host == it.key || host.endsWith("." + it.key) }?.value
+        ?: host.split('.').firstOrNull { it !in setOf("www", "m", "shop", "store", "books", "in", "co", "com") }?.replaceFirstChar { it.uppercase() } ?: host
+
+    /**
+     * Which shop a pasted address is: one of the three followed closely, else "site:<address>" for any
+     * other bookshop's book page (its price read from the page itself). Null for what isn't a shop's page.
+     */
+    fun trackable(url: String): String? {
+        shopOf(url)?.let { return it }
+        val u = url.trim()
+        if (!u.startsWith("http")) return null
+        val h = host(u) ?: return null
+        if (h.split('.').dropLast(1).any { it in NOT_SHOPS }) return null
+        // A page of the shop, not its front page.
+        if (runCatching { java.net.URI(u).path }.getOrNull().orEmpty().trim('/').isEmpty()) return null
+        return "site:$h"
+    }
+
+    /** A browser for shops that turn plain requests away (set by the app). */
+    @Volatile var browser: ((String) -> String?)? = null
 
     /** Which store a pasted address belongs to. */
     fun shopOf(url: String): String? {
@@ -172,6 +213,16 @@ object BookPrices {
                 problems += "${s.name}: ${e.message ?: "couldn't read it"}"
             }
             Thread.sleep(400)
+        }
+        // Other shops (Flipkart, Crossword…): the pages you gave, read as they are.
+        for ((id, link) in watch.links.filterKeys { it.startsWith("site:") }) {
+            try {
+                val p = sitePage(link)
+                if (p.title == null && p.price == null) throw PriceException("couldn't read the page")
+                out += PricePoint(id, now, p.price, null, p.inStock && p.price != null, p.format, link, p.title)
+            } catch (e: Exception) {
+                problems += "${shop(id)?.name ?: id}: ${e.message ?: "couldn't read it"}"
+            }
         }
         return out to problems
     }
@@ -416,7 +467,7 @@ object BookPrices {
      * ISBN, cover and price there. Short links (amzn.in…) are followed. Blocking.
      */
     fun identify(link: String, now: Long = System.currentTimeMillis() / 1000): Found {
-        val shop = shopOf(link) ?: throw PriceException("That isn't an Amazon.in, Bookswagon or Atlantic Books page")
+        val shop = shopOf(link) ?: if (trackable(link) != null) return identifySite(link, now) else throw PriceException("That isn't a bookshop's page")
         return when (shop) {
             "atlantic" -> {
                 val handle = Regex("/products/([^/?#]+)").find(link)?.groupValues?.get(1) ?: throw PriceException("That Atlantic Books address isn't a book's page")
@@ -487,6 +538,132 @@ object BookPrices {
                 Found("amazon", url, t, author, isbn, cover, points)
             }
         }
+    }
+
+    // ---- any other bookshop's page ----
+
+    /** What a shop's page says of its book. */
+    private data class SitePage(val url: String, val title: String?, val author: String?, val isbn: String?, val cover: String?, val price: Double?, val inStock: Boolean, val format: String?)
+
+    /** A book from another shop's page (Flipkart, Crossword…): read, its ISBN filled in from Google Books where the page has none. */
+    private fun identifySite(link: String, now: Long): Found {
+        val p = sitePage(link)
+        val id = trackable(p.url) ?: trackable(link) ?: throw PriceException("That isn't a bookshop's page")
+        var title = p.title
+        var author = p.author
+        var isbn = p.isbn
+        var cover = p.cover
+        // The address names it when the page wouldn't show (flipkart.com/last-song-of-ash-paperback-adrian-tchaikovsky/p/itm…).
+        if (title == null) slugBook(p.url)?.let { (t, a) -> title = t; if (author == null) author = a }
+        val t = title ?: throw PriceException("Couldn't read the book on that page (the shop may have turned the app away). Try its page on Amazon.in, Bookswagon or Atlantic Books.")
+        if (isbn == null || author == null) {
+            runCatching { PostBooks.lookUp(t, author) }.getOrNull()?.takeIf { it.from != "typed" }?.let { f ->
+                if (isbn == null) isbn = f.isbn
+                if (author == null) author = f.author
+                if (cover == null) cover = f.cover
+            }
+        }
+        return Found(id, p.url, t, author, isbn, cover, listOf(PricePoint(id, now, p.price, null, p.inStock && p.price != null, p.format, p.url, t)))
+    }
+
+    /** A shop's page: its schema.org data (what shops give search engines), else its tags, else its words. */
+    private fun sitePage(link: String): SitePage {
+        val r = runCatching { fetch(link) }.getOrNull()
+        val url = r?.url?.ifBlank { null } ?: link
+        var html = r?.body.orEmpty()
+        if (products(html).isEmpty() && meta(html, "og:title") == null) browser?.invoke(url)?.let { html = it }
+        val ld = products(html)
+        val named = ld.firstOrNull { it.optString("name").isNotBlank() }
+        val offer = ld.firstNotNullOfOrNull { offerOf(it.opt("offers")) }
+        val title = (named?.optString("name")?.ifBlank { null } ?: meta(html, "og:title")
+            ?: Regex("(?is)<h1[^>]*>(.*?)</h1>").find(html)?.groupValues?.get(1)?.replace(Regex("<[^>]+>"), ""))
+            ?.let(::unescape)?.let(::cleanTitle)?.takeIf { it.length >= 2 }
+        val author = ld.firstNotNullOfOrNull { authorOf(it.opt("author")) }
+            ?: meta(html, "book:author")?.takeIf { !it.startsWith("http") } ?: meta(html, "author")?.takeIf { it.length in 3..60 }
+        val isbn = (ld.firstNotNullOfOrNull { o -> o.optString("isbn").ifBlank { o.optString("gtin13") }.ifBlank { null } } ?: meta(html, "book:isbn"))
+            ?.filter { it.isDigit() || it == 'X' }?.takeIf { it.length == 13 || it.length == 10 } ?: isbnIn(html)
+        val cover = ld.firstNotNullOfOrNull { imageOf(it.opt("image")) } ?: meta(html, "og:image")
+        val price = offer?.let { o -> money(o.optString("price").ifBlank { o.optString("lowPrice") }) }
+            ?: money(meta(html, "product:price:amount")) ?: money(meta(html, "og:price:amount"))
+            ?: Regex("""itemprop="price"[^>]*content="([0-9.,]+)"""").find(html)?.groupValues?.get(1)?.let(::money)
+        val availability = offer?.optString("availability")?.ifBlank { null } ?: meta(html, "product:availability") ?: meta(html, "og:availability")
+        val inStock = availability?.let { a -> !Regex("(?i)out.?of.?stock|sold.?out|discontinued|unavailable").containsMatchIn(a) } ?: true
+        val format = ld.firstNotNullOfOrNull { it.optString("bookFormat").substringAfterLast('/').ifBlank { null } }
+            ?.replace("EBook", "Ebook")?.replace("Hardback", "Hardcover")
+            ?: Regex("(?i)\\b(paperback|hardcover|hardback|board book)\\b").find(title.orEmpty() + " " + url)?.value?.lowercase()?.replaceFirstChar { it.uppercase() }?.replace("Hardback", "Hardcover")
+        return SitePage(url, title, author, isbn, cover, price, inStock, format)
+    }
+
+    /** The page's schema.org Book and Product entries. */
+    private fun products(html: String): List<JSONObject> {
+        val found = ArrayList<JSONObject>()
+        fun types(o: JSONObject): List<String> = when (val t = o.opt("@type")) {
+            is String -> listOf(t)
+            is org.json.JSONArray -> (0 until t.length()).map { t.optString(it) }
+            else -> emptyList()
+        }
+        fun walk(x: Any?, depth: Int) {
+            if (depth > 6) return
+            when (x) {
+                is JSONObject -> {
+                    if (types(x).any { it == "Book" || it == "Product" || it == "ProductGroup" }) found += x
+                    x.keys().forEach { k -> walk(x.opt(k), depth + 1) }
+                }
+                is org.json.JSONArray -> for (i in 0 until x.length()) walk(x.opt(i), depth + 1)
+            }
+        }
+        Regex("""(?is)<script[^>]*application/ld\+json[^>]*>(.*?)</script>""").findAll(html).forEach { m ->
+            runCatching { org.json.JSONTokener(m.groupValues[1].trim()).nextValue() }.getOrNull()?.let { walk(it, 0) }
+        }
+        return found
+    }
+
+    /** An offer with a price, in rupees where there's a choice. */
+    private fun offerOf(x: Any?): JSONObject? = when (x) {
+        is JSONObject -> if (x.has("price") || x.has("lowPrice")) x else if (x.has("offers")) offerOf(x.opt("offers")) else null
+        is org.json.JSONArray -> {
+            val all = (0 until x.length()).mapNotNull { offerOf(x.opt(it)) }
+            all.firstOrNull { o -> o.optString("priceCurrency").let { it.isBlank() || it == "INR" } } ?: all.firstOrNull()
+        }
+        else -> null
+    }
+
+    private fun authorOf(x: Any?): String? = when (x) {
+        is String -> x.ifBlank { null }
+        is JSONObject -> x.optString("name").ifBlank { null }
+        is org.json.JSONArray -> (0 until x.length()).mapNotNull { authorOf(x.opt(it)) }.take(2).joinToString(", ").ifBlank { null }
+        else -> null
+    }?.let(::unescape)
+
+    private fun imageOf(x: Any?): String? = when (x) {
+        is String -> x.ifBlank { null }
+        is JSONObject -> x.optString("url").ifBlank { x.optString("contentUrl") }.ifBlank { null }
+        is org.json.JSONArray -> (0 until x.length()).firstNotNullOfOrNull { imageOf(x.opt(it)) }
+        else -> null
+    }?.let { if (it.startsWith("//")) "https:$it" else it }
+
+    /** A shop's page title without the shop's words: "Buy X Book Online at…", "X (Paperback) | Flipkart". */
+    private fun cleanTitle(t: String): String = t
+        .replace(Regex("(?i)^buy\\s+"), "")
+        .replace(Regex("(?i)\\s+(?:book\\s+)?online\\s+at\\s+.*$"), "")
+        .replace(Regex("(?i)\\s*[|–—-]\\s*(?:buy|shop|order|online|flipkart|amazon|crossword|sapna|bookchor|best price).*$"), "")
+        .replace(Regex("(?i)\\s*:\\s*buy\\b.*$"), "")
+        .replace(Regex("(?i)\\s*\\((?:paperback|hardcover|hardback|english|board book)[^)]*\\)"), "")
+        .trim().trim('-', '|', ':').trim()
+
+    /** A book named by a shop's address: "last-song-of-ash-paperback-adrian-tchaikovsky" -> Last Song of Ash, Adrian Tchaikovsky. */
+    private fun slugBook(url: String): Pair<String, String?>? {
+        val path = runCatching { java.net.URI(url).path }.getOrNull() ?: return null
+        val seg = path.split('/').filter { it.contains('-') && it.count { c -> c.isLetter() } >= 4 }.maxByOrNull { it.length } ?: return null
+        val words = seg.lowercase().split('-', '_').filter { it.isNotBlank() && !(it.all { c -> c.isDigit() } && it.length >= 5) }
+        val fmt = setOf("paperback", "hardcover", "hardback", "english", "ebook", "kindle", "edition", "book", "books", "buy", "online")
+        val cut = words.indexOfFirst { it in fmt }
+        val tw = if (cut > 0) words.take(cut) else words.filter { it !in fmt }
+        if (tw.isEmpty()) return null
+        val aw = if (cut > 0) words.drop(cut).filter { it !in fmt && it.all { c -> c.isLetter() || c == '.' } } else emptyList()
+        val small = setOf("of", "the", "a", "an", "and", "in", "on", "to", "for", "at", "or")
+        fun cap(ws: List<String>) = ws.mapIndexed { i, w -> if (i > 0 && w in small) w else w.replaceFirstChar { it.uppercase() } }.joinToString(" ")
+        return cap(tw) to aw.takeIf { it.size in 1..4 }?.let { cap(it) }
     }
 
     private val ASIN_IN = Regex("/(?:dp|gp/product|gp/aw/d|d|o/ASIN)/([A-Z0-9]{10})(?:[/?#]|$)")
@@ -562,6 +739,47 @@ object BookPrices {
         }
         return out.values.toList()
     }
+
+    /** What tracking a pasted page did: what to say, whether it worked, and the tracked book's key. */
+    data class Tracked(val message: String, val ok: Boolean, val document: String? = null, val title: String? = null)
+
+    /**
+     * A book from a pasted shop page: read, matched to your library when it's there (else tracked on
+     * its own), followed at that page, looked for at Amazon.in, Bookswagon and Atlantic Books, with
+     * [target] as the price you'd buy at. Blocking.
+     */
+    fun track(store: Store, url: String, target: Double?): Tracked = runCatching {
+        val f = identify(url.trim())
+        val s0 = store.snapshot
+        val inLibrary = s0.books.values.firstOrNull { b ->
+            (f.isbn != null && b.isbn?.filter { it.isDigit() } == f.isbn) || io.github.prithirajn.trackersync.sync.Matcher.sameBook(f.title, f.author, b.title ?: "", b.author)
+        }
+        val key = inLibrary?.document
+            ?: s0.priceWatch.values.firstOrNull { w -> (f.isbn != null && w.isbn == f.isbn) || (w.title != null && io.github.prithirajn.trackersync.sync.Matcher.sameBook(f.title, f.author, w.title, w.author)) }?.document
+            ?: ("price:" + java.util.UUID.randomUUID().toString())
+        val already = key in s0.priceWatch
+        val now = System.currentTimeMillis() / 1000
+        store.update { s ->
+            val old = s.priceWatch[key]
+            val w = (old ?: PriceWatch(key, since = now)).copy(
+                title = old?.title ?: inLibrary?.displayTitle ?: f.title, author = old?.author ?: inLibrary?.author ?: f.author,
+                isbn = old?.isbn ?: inLibrary?.isbn ?: f.isbn, cover = old?.cover ?: inLibrary?.coverUrl ?: f.cover,
+                links = (old?.links ?: emptyMap()) + (f.store to f.url), pinned = (old?.pinned ?: emptySet()) + f.store,
+                history = ((old?.history ?: emptyList()).filter { it.store != f.store } + f.points).takeLast(400),
+                target = target ?: old?.target, told = null,
+            )
+            s.copy(priceWatch = s.priceWatch + (key to w))
+        }
+        // The other stores, now.
+        refresh(store, force = key)
+        val title = inLibrary?.displayTitle ?: f.title
+        val msg = when {
+            already -> "Already tracking “$title”: now followed at ${shop(f.store)?.name ?: f.store} too"
+            inLibrary != null -> "Tracking “$title” (from your library)"
+            else -> "Tracking “$title”"
+        }
+        Tracked(msg, true, key, title)
+    }.getOrElse { Tracked(it.message ?: "Couldn't read that page", false) }
 
     // ---- keeping watch ----
 

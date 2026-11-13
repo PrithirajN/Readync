@@ -196,7 +196,10 @@ object Http {
      * Downloads a file (a cover image, a book). Follows cross-protocol redirects up to 5 times;
      * [headers] (a sign-in) go only to the first site, never to one it redirects to. Returns null on any failure.
      */
-    fun bytes(url: String, maxBytes: Int = 4_000_000, headers: Map<String, String> = emptyMap(), timeoutMs: Int = 15_000): ByteArray? = try {
+    fun bytes(url: String, maxBytes: Int = 4_000_000, headers: Map<String, String> = emptyMap(), timeoutMs: Int = 15_000): ByteArray? = if (url.startsWith("file:")) {
+        // A picture kept on the phone (a cover you chose from your photos).
+        runCatching { java.io.File(java.net.URI(url)).takeIf { it.length() <= maxBytes }?.readBytes() }.getOrNull()
+    } else try {
         val firstHost = URL(url).host
         var currentUrl = url
         var redirects = 0

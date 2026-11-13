@@ -174,6 +174,32 @@ object BookCopies {
         return (tidy(before) + tidy(middle) + tidy(after)).trim().takeIf { it.length > q.length + 20 }
     }
 
+    /**
+     * What comes just before [quote] in [document]'s copy (about [chars] characters, starting at a
+     * sentence), and its chapter's title: what a caption needs to know what the passage is about,
+     * with nothing from after it. Null with no copy, or when the passage isn't found. Blocking.
+     */
+    fun before(context: Context, document: String, quote: String, spine: Int? = null, chars: Int = 1200): Pair<String, String?>? {
+        val q = quote.trim()
+        if (q.length < 12) return null
+        val book = open(context, document) ?: return null
+        val place = runCatching { EpubText.find(book, q, spine?.takeIf { it >= 0 }) }.getOrNull() ?: return null
+        val ch = book.chapter(place.spine) ?: return null
+        val raw = ch.textOf((place.start - chars).coerceAtLeast(0), place.start)
+        val text = if (place.start - chars > 0) {
+            val cut = Regex("[.!?…][\"”’)]?\\s+").findAll(raw).firstOrNull()?.range?.last
+            if (cut != null && cut < raw.length - 40) raw.substring(cut + 1) else raw.substringAfter(' ')
+        } else raw
+        val tidy = text.replace(Regex("\\s+"), " ").trim()
+        if (tidy.length < 40) return null
+        // Its chapter's name from the contents, when the book has one ("Chapter 12", "The Butcher's Masquerade").
+        val title = runCatching {
+            val c = get(context, document) ?: return@runCatching null
+            EpubText.outline(File(dir(context), c.file).readBytes()).firstOrNull { it.spine == place.spine }?.title
+        }.getOrNull()?.takeIf { it.isNotBlank() && it.length <= 80 }
+        return tidy to title
+    }
+
     // ---- finding and fetching a copy ----
 
     data class Found(val server: Opds.Server, val entry: Opds.Entry, val acquisition: Opds.Acquisition)

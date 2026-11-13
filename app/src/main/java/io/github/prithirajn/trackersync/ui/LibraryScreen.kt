@@ -136,14 +136,7 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
     val counts = remember(state.books) { Shelves.counts(all) }
     val pages = remember(state.books) { Shelves.pagesRead(all) }
     // Today's pages, live: today's starting point, or the last count when today hasn't one yet.
-    val today = remember(pages, state.books, state.pagesDay, state.pagesDayStart, state.pagesTotal) {
-        pages?.let { p ->
-            val before = Shelves.pagesBeforeToday(all)
-            val dayStart = if (state.pagesDay == Shelves.day()) state.pagesDayStart else state.pagesTotal ?: p
-            val start = maxOf(dayStart, before)
-            (p - start).coerceAtLeast(0)
-        }
-    }
+    val today = remember(pages, state.books, state.pagesDay, state.pagesStartF, state.pagesCleared) { Shelves.todayPages(state) }
     val shown = remember(state.books, tab, sort, query) { Shelves.shown(all, tab, sort, query) }
     val dupe = remember(state.books) { Shelves.firstDuplicate(all) }
     val toRate = remember(state.books) { FinishFlow.toRate(all).firstOrNull() }
@@ -898,7 +891,7 @@ private fun BookSheet(
         // The grip is drawn on the book's wallpaper instead, so the colour runs right to the top.
         dragHandle = null,
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -995,6 +988,8 @@ private fun BookSheet(
                 }
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            // Main source, the copy for quotes and whether you own it: one line of labels, each opening its card.
+            BookChips(vm, state, book)
             // Only for what looks like a web novel; any book can still be linked from the ⋯ menu.
             if (state.webNovels[book.document] == null && !storyLink && looksLikeWebNovel(book)) {
                 VSpace(12)
@@ -1072,21 +1067,12 @@ private fun BookSheet(
                     BigButton("\u2726 Book recap: video & carousel", { recap = true }, look = KeyKind.INK)
                 }
                     // Where the position comes from, how the reading went, and what's linked to it.
-                // Where this book's position is trusted from, and the others by rank.
-                if (!ManualBooks.isManual(book)) {
-                    VSpace(16)
-                    MainSourceCard(vm, state, book)
-                }
                     ReadingStatsCard(book)
                     DayByDayCard(state.readingDays[book.document])
                     if (!book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
                     AudiobookCard(vm, state, book)
-                    // The app's own copy of it, for the lines around quotes: kept, coming, or why not.
-                    CopyCard(vm, book)
                     // Your rubric scores for it (when you've set up a rubric under Activity › Rating rubric).
                     RubricCard(vm, state, book)
-                    // Owned: format, what you paid, where (for your collection, shelves and series gaps).
-                    OwnedCard(vm, state, book)
                     // The book as one shareable card: its cover large, your stars, rubric and review; and its journal page.
                     run {
                         var coverCard by remember(book.document) { mutableStateOf(false) }
@@ -1094,7 +1080,7 @@ private fun BookSheet(
                         VSpace(12)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (book.status == io.github.prithirajn.trackersync.data.ReadStatus.FINISHED || book.rating != null) PillButton("Share a cover card", { coverCard = true })
-                            if (!book.isMangaOrComic && CollectionHooks.available) PillButton("Journal page", { journal = true })
+                            if (CollectionHooks.available) PillButton("Journal page", { journal = true })
                         }
                         if (coverCard) CoverCardSheet(state, book) { coverCard = false }
                         if (journal) JournalSheet(state, book) { journal = false }
@@ -1268,7 +1254,7 @@ private fun SearchSheet(vm: AppViewModel, tracker: Tracker, book: Book, currentI
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {

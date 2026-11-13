@@ -43,7 +43,7 @@ internal fun AiSheet(title: String, onClose: () -> Unit, content: @Composable ()
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {

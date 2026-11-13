@@ -20,6 +20,13 @@ class TrackerSyncApp : Application() {
     lateinit var store: Store
         private set
 
+    /** The model's memory given back when the system is short of it and the app isn't on screen. */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        @Suppress("DEPRECATION")
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) io.github.prithirajn.trackersync.ai.LocalModel.release()
+    }
+
     override fun onCreate() {
         super.onCreate()
         // What went wrong, written down if the app ever closes on its own (offered to share next time).

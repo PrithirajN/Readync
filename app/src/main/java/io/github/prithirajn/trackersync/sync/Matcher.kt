@@ -44,6 +44,41 @@ object Matcher {
     fun volume(title: String): String? =
         volumeWords.findAll(title).lastOrNull()?.groupValues?.get(1)?.trimStart('0')?.ifEmpty { "0" }
 
+    /** The share of a title's letters in the Latin alphabet (1 for "The Way of Kings", 0 for "王たちの道"). */
+    fun latinShare(title: String): Double {
+        val letters = title.filter { it.isLetter() }
+        if (letters.isEmpty()) return 1.0
+        return letters.count { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.LATIN }.toDouble() / letters.length
+    }
+
+    private val englishWords = setOf("the", "of", "and", "a", "an", "in", "to", "with", "for", "from", "on", "my", "your", "book", "volume", "part")
+    private val otherWords = setOf(
+        "el", "la", "los", "las", "del", "y", "una", "uno", "der", "das", "und", "ein", "eine", "des", "dem", "les",
+        "du", "et", "une", "il", "gli", "della", "di", "os", "da", "um", "het", "een", "och",
+        "tomo", "band", "libro", "livre", "deel", "parte",
+    )
+
+    /** Words that point to a language: (English ones, other European ones). */
+    private fun languageWords(title: String): Pair<Int, Int> {
+        val words = title.lowercase().split(Regex("[^\\p{L}]+")).filter { it.isNotEmpty() }
+        return words.count { it in englishWords } to words.count { it in otherWords && it !in englishWords }
+    }
+
+    /**
+     * Whether [title] reads as another language than [reference] (a book of the same series you
+     * read): another alphabet ("王たちの道" after "The Way of Kings"), or Spanish, German, French,
+     * Italian or Portuguese words where yours has English ones ("El nombre del viento"). Only said
+     * when it's clear; an unclear title is kept.
+     */
+    fun otherLanguage(title: String, reference: String?): Boolean {
+        val ref = reference?.takeIf { it.isNotBlank() } ?: return false
+        if (latinShare(ref) >= 0.8 && latinShare(title) < 0.5) return true
+        if (latinShare(ref) < 0.5) return false
+        val (refEn, refOther) = languageWords(ref)
+        val (en, other) = languageWords(title)
+        return refOther == 0 && en == 0 && other >= 1 && (refEn >= 1 || other >= 2)
+    }
+
     /** Two titles with different volume numbers are different books, however alike the rest is. */
     fun differentVolumes(a: String, b: String): Boolean {
         val va = volume(a) ?: return false

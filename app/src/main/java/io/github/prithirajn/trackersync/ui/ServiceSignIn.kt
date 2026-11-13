@@ -57,7 +57,7 @@ fun ServerSignInSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -109,7 +109,7 @@ fun OAuthSignInSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {

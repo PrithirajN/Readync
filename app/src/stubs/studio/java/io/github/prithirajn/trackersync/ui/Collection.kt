@@ -14,6 +14,7 @@ import io.github.prithirajn.trackersync.data.Snapshot
 object CollectionHooks {
     const val available = false
     fun summary(state: Snapshot): String = ""
+    fun ownedLabel(state: Snapshot, book: Book): String? = null
 }
 
 @Composable
@@ -22,7 +23,7 @@ fun CollectionSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
 }
 
 @Composable
-fun OwnedCard(vm: AppViewModel, state: Snapshot, book: Book) {
+fun OwnedCard(vm: AppViewModel, state: Snapshot, book: Book, startOpen: Boolean = false) {
 }
 
 @Composable

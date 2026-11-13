@@ -48,11 +48,12 @@ object PostBooks {
     }
 
     /** One post looked at: where, whose, when, and the books found in it. */
-    data class Trap(val post: Post, val books: List<Found>, val at: Long) {
+    data class Trap(val post: Post, val books: List<Found>, val at: Long, val seen: List<String> = emptyList()) {
         fun toJson(): JSONObject = JSONObject().put("url", post.url).put("platform", post.platform)
             .put("creator", post.creator ?: JSONObject.NULL).put("caption", post.caption ?: JSONObject.NULL)
             .put("thumb", post.thumbnail ?: JSONObject.NULL).put("at", at)
             .put("books", JSONArray().also { a -> books.forEach { a.put(it.toJson()) } })
+            .put("seen", JSONArray(seen))
 
         companion object {
             fun from(o: JSONObject) = Trap(
@@ -64,6 +65,7 @@ object PostBooks {
                 ),
                 o.optJSONArray("books")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(Found::from) } }.orEmpty(),
                 o.optLong("at"),
+                o.optJSONArray("seen")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).ifBlank { null } } }.orEmpty(),
             )
         }
     }
@@ -142,14 +144,113 @@ object PostBooks {
         Regex("""<meta[^>]+(?:property|name)=["']${Regex.escape(prop)}["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
             ?: Regex("""<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${Regex.escape(prop)}["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
 
-    /** The words on the post's picture (a cover or a stack of books often names them), read on the phone. */
-    suspend fun pictureText(context: Context, thumb: String?): List<String> {
-        if (thumb == null) return emptyList()
-        val bytes = runCatching { Http.bytes(thumb) }.getOrNull() ?: return emptyList()
-        val f = File(context.cacheDir, "post-thumb.jpg").apply { writeBytes(bytes) }
-        val uri = android.net.Uri.fromFile(f)
-        return runCatching { io.github.prithirajn.trackersync.ui.PageScanner.read(context, uri) }.getOrDefault(emptyList())
-            .map { it.text.trim() }.filter { it.length >= 3 }
+    /**
+     * The post's pictures, best first: every picture of an Instagram post (a carousel's too, at full
+     * size) where its embed page gives them, then the preview the link shows. Blocking.
+     */
+    fun pictures(post: Post): List<String> {
+        val out = ArrayList<String>()
+        if (post.platform == "Instagram") {
+            Regex("instagram\\.com/(?:[^/?#]+/)?(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)").find(post.url)?.groupValues?.get(1)?.let { code ->
+                runCatching {
+                    Http.request("GET", "https://www.instagram.com/p/$code/embed/captioned/", mapOf("Accept" to "text/html", "Accept-Language" to "en-IN,en;q=0.9"), timeoutMs = 15_000).body
+                }.getOrNull()?.let { out += instagramPictures(it) }
+            }
+        }
+        post.thumbnail?.let { out += it }
+        // The same picture at two sizes has the same file name.
+        return out.distinctBy { it.substringBefore('?').substringAfterLast('/') }.take(6)
+    }
+
+    /** The pictures an Instagram embed page carries: the carousel's full-size ones, else the one shown. */
+    internal fun instagramPictures(html: String): List<String> {
+        var t = html
+        repeat(3) {
+            t = t.replace("\\\\/", "/").replace("\\/", "/").replace("\\\\u0026", "&").replace("\\u0026", "&").replace("\\\"", "\"")
+        }
+        t = t.replace("&amp;", "&")
+        val urls = ArrayList<String>()
+        Regex("\"display_url\"\\s*:\\s*\"(https://[^\"\\\\\\s]+)\"").findAll(t).forEach { urls += it.groupValues[1] }
+        Regex("<img[^>]*EmbeddedMediaImage[^>]*>").findAll(t).forEach { m ->
+            val tag = m.value
+            val best = Regex("srcset=\"([^\"]+)\"").find(tag)?.groupValues?.get(1)?.split(',')?.map { it.trim() }
+                ?.maxByOrNull { it.substringAfterLast(' ').removeSuffix("w").toIntOrNull() ?: 0 }?.substringBefore(' ')
+            (best ?: Regex("src=\"([^\"]+)\"").find(tag)?.groupValues?.get(1))?.let { urls += it }
+        }
+        return urls.filter { it.startsWith("https://") }
+    }
+
+    /**
+     * The words on the post's pictures (a cover or a stack of books often names them), read on the
+     * phone. Small pictures are enlarged first (the reader misses small letters), and each picture's
+     * biggest lettering, put together top to bottom (a cover's title over two or three lines), comes first.
+     */
+    suspend fun pictureText(context: Context, urls: List<String>): List<String> {
+        val out = ArrayList<String>()
+        for ((i, u) in urls.withIndex()) {
+            val f = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val bytes = runCatching { Http.bytes(u, maxBytes = 8_000_000) }.getOrNull() ?: return@withContext null
+                File(context.cacheDir, "post-pic-$i.jpg").also { sharpened(it, bytes) }
+            } ?: continue
+            val lines = runCatching { io.github.prithirajn.trackersync.ui.PageScanner.read(context, android.net.Uri.fromFile(f)) }.getOrDefault(emptyList())
+            f.delete()
+            biggestLettering(lines)?.let { out += it }
+            out += lines.map { it.text.trim() }.filter { it.length >= 3 }
+        }
+        return out.distinct()
+    }
+
+    /** Writes [bytes] to [f], enlarged up to three times when the picture is under 1000 pixels wide. */
+    private fun sharpened(f: File, bytes: ByteArray) {
+        val bmp = runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
+        if (bmp == null || bmp.width >= 1000) { f.writeBytes(bytes); bmp?.recycle(); return }
+        val k = minOf(3f, 1400f / bmp.width)
+        val big = runCatching { android.graphics.Bitmap.createScaledBitmap(bmp, (bmp.width * k).toInt(), (bmp.height * k).toInt(), true) }.getOrNull()
+        if (big == null) { f.writeBytes(bytes); bmp.recycle(); return }
+        f.outputStream().use { big.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, it) }
+        if (big !== bmp) big.recycle()
+        bmp.recycle()
+    }
+
+    /** A picture's tallest lines (within a third of the tallest), top to bottom, as one: usually a cover's title. */
+    internal fun biggestLettering(lines: List<io.github.prithirajn.trackersync.sync.PageReader.Line>): String? {
+        val words = lines.filter { it.text.trim().length >= 2 }
+        if (words.size < 2) return null
+        val max = words.maxOf { it.bottom - it.top }
+        val tall = words.filter { it.bottom - it.top >= max * 0.7f }.sortedBy { it.top }
+        if (tall.size !in 2..5) return null
+        return tall.joinToString(" ") { it.text.trim() }.takeIf { it.split(' ').size in 2..10 }
+    }
+
+    /**
+     * The books the on-device model sees in pictures (a cover with no readable title, a shelf), when
+     * it can see pictures (Gemma 4): its "Title — Author" guesses, each still checked like the rest.
+     */
+    suspend fun coverGuesses(context: Context, files: List<File>): List<Guess> {
+        val m = io.github.prithirajn.trackersync.ai.Ai.model() ?: return emptyList()
+        val prompt = """Is there a book in this picture (a cover, a book held up, a shelf)? For each book you can read or recognise, write its title and author as: Title — Author
+One book per line, at most five. Write nothing else. If there's no book you're sure of, write NONE."""
+        val out = ArrayList<Guess>()
+        for (f in files.take(3)) {
+            val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { m.look(f.path, prompt) }.getOrNull() } ?: return out
+            if (reply.trim().startsWith("NONE", true)) continue
+            reply.lines().forEach { l ->
+                val t = l.replace(Regex("^[\\s\\d.)\\-–—•*]+"), "").trim().trim('*')
+                if (t.isEmpty() || t.equals("NONE", true)) return@forEach
+                val parts = t.split(Regex("\\s+[—–-]\\s+|\\s+by\\s+"), limit = 2)
+                val title = parts[0].trim('"', '“', '”', ' ')
+                if (title.length >= 2) out += Guess(title, parts.getOrNull(1)?.trim()?.ifBlank { null }, "cover")
+            }
+        }
+        return out.distinctBy { letters(it.query) }
+    }
+
+    /** The post's pictures saved for the model to look at (the first few). */
+    private suspend fun pictureFiles(context: Context, urls: List<String>): List<File> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        urls.take(3).mapIndexedNotNull { i, u ->
+            val bytes = runCatching { Http.bytes(u, maxBytes = 8_000_000) }.getOrNull() ?: return@mapIndexedNotNull null
+            File(context.cacheDir, "post-look-$i.jpg").apply { writeBytes(bytes) }
+        }
     }
 
     // ---- picking the names out ----
@@ -175,8 +276,12 @@ object PostBooks {
         val text = caption.orEmpty()
         // "Title by Author" (also "Title - Author" on a list line).
         for (line in text.split('\n', '•', '|')) {
-            Regex("""["“]?([A-Z0-9][^"“”\n]{2,80}?)["”]?\s+(?:by|-|–|—)\s+([A-Z][\p{L}.'\- ]{2,40}?)(?=$|[,.!?;:)(\n]|\s{2}|\s[#@])""").findAll(line).forEach { m ->
-                add(m.groupValues[1], m.groupValues[2], "caption")
+            Regex("""["“]?([A-Z0-9][^"“”\n]{2,80}?)["”]?\s+(?:by|-|–|—)\s+(@?[\p{L}0-9_][\p{L}0-9_.'\- ]{1,40}?)(?=$|[,.!?;:)(\n]|\s{2}|\s[#@])""").findAll(line).forEach { m ->
+                // "Behold the cover of Last Song of Ash by aptshadow": the title is the name-like end of the
+                // phrase, and an account's handle (one word, small letters or @) isn't the author.
+                val a = m.groupValues[2].trim()
+                val handle = a.startsWith("@") || (!a.contains(' ') && (a.first().isLowerCase() || a.any { it == '_' || it.isDigit() }))
+                add(titleTail(m.groupValues[1]).ifBlank { m.groupValues[1] }, a.takeUnless { handle || a.first().isLowerCase() }, "caption")
             }
         }
         // Quoted titles.
@@ -190,6 +295,15 @@ object PostBooks {
         val chrome = Regex("(?i)^(follow|following|reply|replies|share|like[sd]?|views?|comments?|send|save|repost|more|original audio|see translation|add comment|suggested|sponsored)\\b|\\b\\d+(\\.\\d+)?[KkMm]\\b|^@")
         for (l in picture) {
             if (l.split(' ').size in 2..8 && Regex("^[A-Z0-9]").containsMatchIn(l) && !chrome.containsMatchIn(l)) add(l, null, "picture")
+        }
+        // A cover's title is often split over lines ("LAST SONG" / "OF ASH"): neighbouring short lines put together.
+        val short = picture.map { it.trim() }
+        for (i in short.indices) for (n in 2..3) {
+            if (i + n > short.size) continue
+            val part = short.subList(i, i + n)
+            if (part.any { it.split(' ').size > 4 || chrome.containsMatchIn(it) || !Regex("^[A-Za-z0-9]").containsMatchIn(it) }) continue
+            val joined = part.joinToString(" ")
+            if (joined.split(' ').size in 2..8 && Regex("^[A-Z0-9]").containsMatchIn(joined)) add(joined, null, "picture")
         }
         // Hashtags that name a book or series (#fourthwing), after the rest.
         Regex("#([A-Za-z][A-Za-z0-9]{4,40})").findAll(text).map { it.groupValues[1] }.forEach { h ->
@@ -219,6 +333,65 @@ ${picture.joinToString("\n").take(800)}"""
         }.take(20)
     }
 
+    private val SMALL_WORDS = setOf("of", "the", "a", "an", "and", "in", "on", "to", "for", "at", "or", "with", "from", "into", "&")
+
+    /** The name-like end of a phrase: "Behold the cover of Last Song of Ash" -> "Last Song of Ash". */
+    fun titleTail(phrase: String): String {
+        val w = phrase.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        var i = w.size
+        while (i > 0) {
+            val x = w[i - 1]
+            if (x.first().isUpperCase() || x.first().isDigit() || x.lowercase() in SMALL_WORDS) i-- else break
+        }
+        var start = i
+        while (start < w.size && w[start].lowercase() in SMALL_WORDS && !w[start].first().isUpperCase()) start++
+        return w.drop(start).joinToString(" ")
+    }
+
+    /**
+     * Books a post only compares its book to ("X meets Y", "for fans of X", "perfect for readers of X"),
+     * as letters: not the books the post is about.
+     */
+    fun comparisons(caption: String?): Set<String> {
+        val text = caption ?: return emptySet()
+        val out = HashSet<String>()
+        Regex("""([A-Z0-9][^.!?\n—–:;]{2,70}?)\s+meets\s+([A-Z0-9][^.!?\n,—–:;]{2,60})""").findAll(text).forEach { m ->
+            out += letters(titleTail(m.groupValues[1])); out += letters(m.groupValues[2].trim())
+        }
+        Regex("""(?i)(?:fans of|readers of|if you (?:liked|loved|enjoyed)|perfect for|reminiscent of|in the vein of|comp(?:ed|s)? to)\s+([^.!?\n—–:;]{3,80})""").findAll(text).forEach { m ->
+            m.groupValues[1].split(Regex(",\\s*|\\s+and\\s+|\\s+or\\s+|\\s*&\\s*")).forEach { out += letters(it.trim().trim('"', '“', '”')) }
+        }
+        return out.filter { it.length >= 4 }.toSet()
+    }
+
+    /** A line on a cover that reads like its author's name ("ADRIAN TCHAIKOVSKY"), not its title or a blurb. */
+    fun pictureAuthor(picture: List<String>, title: String): String? {
+        val t = letters(title)
+        val blurb = setOf("novel", "bestseller", "bestselling", "author", "times", "edition", "book", "books", "series", "story", "stories",
+            "coming", "cover", "reveal", "new", "york", "sunday", "award", "winning", "winner", "of", "the", "and", "a", "an", "in", "presents")
+        return picture.map { it.trim() }.firstOrNull { l ->
+            val w = l.split(Regex("\\s+"))
+            w.size in 2..3 && w.all { x -> x.length >= 2 && x.all { it.isLetter() || it == '.' || it == '\'' || it == '-' } && x.lowercase() !in blurb } &&
+                !t.contains(letters(l)) && !letters(l).contains(t)
+        }?.split(Regex("\\s+"))?.joinToString(" ") { x -> if (x.all { !it.isLowerCase() }) x.lowercase().replaceFirstChar { it.uppercase() } else x }
+    }
+
+    /**
+     * Names the catalogue doesn't know yet (a cover reveal for next year's book) that the post's caption
+     * gives and its picture shows too: kept, as the post names them, with the cover's author line.
+     */
+    fun unlisted(guesses: List<Guess>, picture: List<String>, found: List<Found>, thumb: String?): List<Found> {
+        val seen = letters(picture.joinToString(" "))
+        if (seen.isEmpty()) return emptyList()
+        val have = found.map { letters(Matcher.baseTitle(it.title)) }.toSet()
+        return guesses.asSequence()
+            .filter { it.from == "caption" && letters(it.query).length >= 6 && seen.contains(letters(it.query)) && letters(it.query) !in have }
+            .distinctBy { letters(it.query) }
+            .take(2)
+            .map { g -> Found(g.query, g.author ?: pictureAuthor(picture, g.query), thumb, null, null, "caption") }
+            .toList()
+    }
+
     // ---- checking each against a catalogue ----
 
     private fun letters(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
@@ -241,7 +414,7 @@ ${picture.joinToString("\n").take(800)}"""
             // The name has to be the book's title (or its title the name), not just share a word with it;
             // a hashtag or a line off the picture has to be the whole title.
             val ok = when (g.from) {
-                "hashtag", "picture" -> have == want || (have.length >= 6 && want.startsWith(have))
+                "hashtag", "picture", "cover" -> have == want || (have.length >= 6 && want.startsWith(have))
                 else -> have == want || (have.length >= 5 && (want.startsWith(have) || have.startsWith(want)))
             }
             if (!ok) continue
@@ -255,6 +428,19 @@ ${picture.joinToString("\n").take(800)}"""
             return Found(title, authors.firstOrNull() ?: g.author, cover, isbn, v.optInt("pageCount").takeIf { it > 0 }, g.from)
         }
         return null
+    }
+
+    /**
+     * One name you picked or typed (a line read off the picture, a title): checked against Google
+     * Books, with and without the author; kept as written when the catalogue doesn't have it yet. Blocking.
+     */
+    fun lookUp(name: String, author: String? = null): Found {
+        val q = name.trim()
+        val g = Guess(q, author?.trim()?.ifBlank { null }, "caption")
+        return runCatching { verify(g) }.getOrNull()
+            ?: g.author?.let { runCatching { verify(g.copy(author = null)) }.getOrNull() }
+            ?: Found(if (q.none { it.isLowerCase() }) q.lowercase().split(' ').joinToString(" ") { w -> if (w in SMALL_WORDS) w else w.replaceFirstChar { it.uppercase() } }.replaceFirstChar { it.uppercase() } else q,
+                g.author, null, null, null, "typed")
     }
 
     /**
@@ -275,13 +461,15 @@ ${picture.joinToString("\n").take(800)}"""
                 val frames = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { videoFrames(context, uri) }
                 for ((i, f) in frames.withIndex()) {
                     progress("Reading frame ${i + 1} of ${frames.size}")
-                    note(runCatching { io.github.prithirajn.trackersync.ui.PageScanner.read(context, android.net.Uri.fromFile(f)) }.getOrDefault(emptyList()).map { it.text })
+                    val read = runCatching { io.github.prithirajn.trackersync.ui.PageScanner.read(context, android.net.Uri.fromFile(f)) }.getOrDefault(emptyList())
+                    note(listOfNotNull(biggestLettering(read)) + read.map { it.text })
                     f.delete()
                 }
             } else {
                 pictures++
                 progress("Reading picture ${n + 1} of ${uris.size}")
-                note(runCatching { io.github.prithirajn.trackersync.ui.PageScanner.read(context, uri) }.getOrDefault(emptyList()).map { it.text })
+                val read = runCatching { io.github.prithirajn.trackersync.ui.PageScanner.read(context, uri) }.getOrDefault(emptyList())
+                note(listOfNotNull(biggestLettering(read)) + read.map { it.text })
             }
         }
         val lines = counts.entries.sortedByDescending { it.value }.map { it.key }.take(120)
@@ -294,13 +482,29 @@ ${picture.joinToString("\n").take(800)}"""
             guesses.mapNotNull { g -> runCatching { verify(g) }.getOrNull() }
                 .distinctBy { letters(Matcher.baseTitle(it.title)) + "|" + letters(it.author ?: "") }
         }
+        // Nothing named in words: the model looks at the pictures (or a few frames), when it can.
+        var foundAll = found
+        if (found.isEmpty() && io.github.prithirajn.trackersync.ai.Ai.model() != null) {
+            progress("Looking at the pictures")
+            val files = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                uris.filter { !context.contentResolver.getType(it).orEmpty().startsWith("video/") }.take(3).mapIndexedNotNull { i, u ->
+                    runCatching { context.contentResolver.openInputStream(u)?.use { inp -> File(context.cacheDir, "post-look-m$i.jpg").apply { outputStream().use { inp.copyTo(it) } } } }.getOrNull()
+                }
+            }
+            val seen = coverGuesses(context, files)
+            files.forEach { it.delete() }
+            if (seen.isNotEmpty()) foundAll = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                seen.mapNotNull { g -> runCatching { verify(g) ?: g.author?.let { verify(g.copy(author = null)) } }.getOrNull() }
+                    .distinctBy { letters(Matcher.baseTitle(it.title)) + "|" + letters(it.author ?: "") }
+            }
+        }
         val label = when {
             videos > 0 && pictures == 0 -> "Screen recording"
             videos == 0 -> if (pictures == 1) "Screenshot" else "$pictures screenshots"
             else -> "Recording and screenshots"
         }
         val now = System.currentTimeMillis() / 1000
-        return Trap(Post("media:$now", label, null, null, null), found, now)
+        return Trap(Post("media:$now", label, null, null, null), foundAll, now, lines.take(40))
     }
 
     /** A frame about every second of a recording (up to 45), as pictures in the app's cache. */
@@ -334,17 +538,37 @@ ${picture.joinToString("\n").take(800)}"""
     suspend fun find(context: Context, link: String, progress: (String) -> Unit = {}): Trap {
         progress("Reading the post")
         val post = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { read(context, link) }
-        progress("Reading the words on its picture")
-        val picture = pictureText(context, post.thumbnail)
+        val urls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { pictures(post) }
+        progress(if (urls.size > 1) "Reading the words on its ${urls.size} pictures" else "Reading the words on its picture")
+        val picture = pictureText(context, urls)
         progress("Picking out the books")
         val guesses = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            (aiGuesses(post.caption, picture) + guesses(post.caption, picture)).distinctBy { letters(it.query) }.take(24)
+            val comps = comparisons(post.caption)
+            (aiGuesses(post.caption, picture) + guesses(post.caption, picture)).distinctBy { letters(it.query) }
+                .filterNot { letters(it.query) in comps }.take(30)
         }
         progress("Checking ${guesses.size} names against Google Books")
         val found = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            guesses.mapNotNull { g -> runCatching { verify(g) }.getOrNull() }
+            val comps = comparisons(post.caption)
+            val checked = guesses.mapNotNull { g -> runCatching { verify(g) }.getOrNull() }
+                .filterNot { letters(Matcher.baseTitle(it.title)) in comps }
                 .distinctBy { letters(Matcher.baseTitle(it.title)) + "|" + letters(it.author ?: "") }
+            checked + unlisted(guesses, picture, checked, post.thumbnail)
+        }.toMutableList()
+        // Nothing named in words: the model looks at the pictures themselves, when it can.
+        if (found.isEmpty() && urls.isNotEmpty() && io.github.prithirajn.trackersync.ai.Ai.model() != null) {
+            progress("Looking at the pictures")
+            val files = pictureFiles(context, urls)
+            val seen = coverGuesses(context, files)
+            files.forEach { it.delete() }
+            if (seen.isNotEmpty()) {
+                progress("Checking what it saw against Google Books")
+                found += kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    seen.mapNotNull { g -> runCatching { verify(g) ?: g.author?.let { verify(g.copy(author = null)) } }.getOrNull() }
+                        .distinctBy { letters(Matcher.baseTitle(it.title)) + "|" + letters(it.author ?: "") }
+                }
+            }
         }
-        return Trap(post, found, System.currentTimeMillis() / 1000)
+        return Trap(post, found, System.currentTimeMillis() / 1000, picture.take(40))
     }
 }

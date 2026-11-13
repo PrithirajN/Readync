@@ -78,7 +78,7 @@ private fun FlowSheet(title: String, onClose: () -> Unit, content: @Composable (
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -680,6 +680,9 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
     }
     var checking by remember { mutableStateOf(false) }
     if (checking) HighlightCheckSheet(vm, state, book.document) { checking = false }
+    var selecting by remember(book.document) { mutableStateOf(false) }
+    val picked = remember(book.document) { androidx.compose.runtime.mutableStateListOf<String>() }
+    var sharingMany by remember { mutableStateOf(false) }
 
     // Everything you can do with them comes first, on a little screen with the count, then the highlights.
     VSpace(16)
@@ -713,14 +716,11 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
         androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (toCheck > 0) PillButton("Check $toCheck before sending", { checking = true }, outlined = false)
             if (unsent.isNotEmpty()) PillButton("Send to trackers", { sending = true }, outlined = false)
-            PillButton("Export", {
-                val md = Highlights.toMarkdown(book, items)
-                val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(android.content.Intent.EXTRA_SUBJECT, "Highlights from ${book.displayTitle}")
-                    putExtra(android.content.Intent.EXTRA_TEXT, md)
-                }
-                context.startActivity(android.content.Intent.createChooser(sendIntent, "Export highlights"))
+            // Several at once, as cards or on one sheet, to X, Threads or anywhere.
+            // Share or export: pictures (cards or one sheet) or text, of all of them or the ones you pick.
+            PillButton(if (selecting) "Cancel" else "Share or export", {
+                selecting = !selecting; picked.clear()
+                if (selecting) picked.addAll(items.map { it.clip.id })
             })
             // With an on-device model: what they add up to, and where you were.
             if (aiReady && items.size >= 2) PillButton("Sum up", { summing = true })
@@ -728,23 +728,47 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
         }
     }
 
+    // Choosing several: how many, and on to sharing them.
+    if (selecting) {
+        VSpace(12)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Quiet(if (picked.isEmpty()) "Tap the highlights to share" else if (picked.size == items.size) "All ${items.size} chosen; tap any to leave it out" else "${picked.size} chosen", Modifier.weight(1f), color = c.textMid)
+            if (picked.size < items.size) Text("All", style = CpType.small, color = c.accent, modifier = Modifier.clip(CpShapes.control).clickable { picked.clear(); picked.addAll(items.map { it.clip.id }) }.padding(6.dp))
+            else Text("None", style = CpType.small, color = c.accent, modifier = Modifier.clip(CpShapes.control).clickable { picked.clear() }.padding(6.dp))
+            HSpace(6)
+            PillButton("Share ${picked.size}", { if (picked.isNotEmpty()) sharingMany = true }, outlined = false)
+        }
+    }
     // Every highlight in full, in order through the book.
     VSpace(18)
     items.forEachIndexed { i, item ->
-        HighlightCard(
-            item, Modifier.riseIn(i + 1),
-            onOpen = { open = item.clip.id },
-            onShare = { sharing = item.clip.id },
-            check = { CheckChip(state, item.clip.id) { vm.markHighlights(listOf(item.clip.id), it, send = true) } },
-        )
+        val on = item.clip.id in picked
+        Box(if (selecting && on) Modifier.border(2.dp, c.accent, RoundedCornerShape(22.dp)) else Modifier) {
+            HighlightCard(
+                item, Modifier.riseIn(i + 1),
+                onOpen = { if (selecting) { if (on) picked.remove(item.clip.id) else picked.add(item.clip.id) } else open = item.clip.id },
+                onShare = { sharing = item.clip.id },
+                check = { CheckChip(state, item.clip.id) { vm.markHighlights(listOf(item.clip.id), it, send = true) } },
+            )
+            if (selecting) Box(
+                Modifier.align(Alignment.TopEnd).padding(10.dp).size(22.dp).clip(CircleShape)
+                    .background(if (on) c.accent else c.surface).border(1.5.dp, if (on) c.accent else c.hairline, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { if (on) Text("\u2713", style = CpType.small, color = c.page) }
+        }
         VSpace(12)
+    }
+    if (sharingMany) {
+        // In book order, whatever order they were tapped in.
+        val chosenItems = items.filter { it.clip.id in picked }.sortedWith(compareBy({ it.clip.percent ?: 2.0 }, { it.clip.createdAt }))
+        MultiShareSheet(book, state.facts[book.document], chosenItems.map { it.clip }, markdown = Highlights.toMarkdown(book, chosenItems)) { sharingMany = false; selecting = false }
     }
     open?.let { id ->
         items.firstOrNull { it.clip.id == id }?.let { EditHighlightSheet(vm, state, it) { open = null } }
     }
     sharing?.let { id ->
         items.firstOrNull { it.clip.id == id }?.let { item ->
-            QuoteShareSheet(item.clip, state.books[item.clip.document], others = BookShot.othersFor(state, item.clip), pageText = state.clipPages[item.clip.id], onPageText = { vm.setClipPage(item.clip.id, it) }, sectors = BookShot.sectorsFor(state, state.books[item.clip.document])) { sharing = null }
+            QuoteShareSheet(item.clip, state.books[item.clip.document], others = BookShot.othersFor(state, item.clip), pageText = state.clipPages[item.clip.id], onPageText = { vm.setClipPage(item.clip.id, it) }, sectors = BookShot.sectorsFor(state, state.books[item.clip.document]), facts = state.facts[item.clip.document]) { sharing = null }
         }
     }
     if (sending) SendHighlightsSheet(vm, book, unsent) { sending = false }
@@ -761,7 +785,7 @@ private fun SendHighlightsSheet(vm: AppViewModel, book: Book, targets: List<Pair
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -894,7 +918,7 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
     var alsoCrossPoint by remember { mutableStateOf(true) }
     var sharing by remember { mutableStateOf(false) }
     if (sharing) {
-        QuoteShareSheet(item.clip, state.books[item.clip.document], text = text, note = note.ifBlank { null }, others = BookShot.othersFor(state, item.clip), pageText = state.clipPages[item.clip.id], onPageText = { vm.setClipPage(item.clip.id, it) }, sectors = BookShot.sectorsFor(state, state.books[item.clip.document])) { sharing = false }
+        QuoteShareSheet(item.clip, state.books[item.clip.document], text = text, note = note.ifBlank { null }, others = BookShot.othersFor(state, item.clip), pageText = state.clipPages[item.clip.id], onPageText = { vm.setClipPage(item.clip.id, it) }, sectors = BookShot.sectorsFor(state, state.books[item.clip.document]), facts = state.facts[item.clip.document]) { sharing = false }
     }
     val deletable = remember(state.clipRemote) { Highlights.deletable(state, item.clip.id) }
     var alsoTrackers by remember { mutableStateOf(true) }

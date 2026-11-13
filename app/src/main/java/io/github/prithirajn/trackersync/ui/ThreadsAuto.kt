@@ -318,10 +318,15 @@ object ThreadsAuto {
     }
 
     /** The model's opening line for these passages, when you've asked for that; null otherwise (the usual wording is used). */
-    private fun aiCaption(s: Snapshot, book: Book, passages: List<String>): String? {
+    private fun aiCaption(context: Context, s: Snapshot, book: Book, clips: List<io.github.prithirajn.trackersync.source.Clipping>): String? {
         if (!s.threadsAiCaptions) return null
         val m = model(s) ?: return null
-        return runCatching { io.github.prithirajn.trackersync.ai.Assistant.postCaption(m, QuoteCard.shortTitle(book.displayTitle), book.author, passages) }.getOrNull()
+        // What comes just before the (first) passage in the app's copy of the book, so the model knows the scene.
+        val first = clips.firstOrNull() ?: return null
+        val before = runCatching { io.github.prithirajn.trackersync.source.BookCopies.before(context, book.document, first.text, first.spine) }.getOrNull()
+        return runCatching {
+            io.github.prithirajn.trackersync.ai.Assistant.postCaption(m, QuoteCard.shortTitle(book.displayTitle), book.author, clips.map { it.text }, before?.first, before?.second)
+        }.getOrNull()
     }
 
     /** "📖 Name by Author", under a caption the model wrote (so the book's always named). */
@@ -476,7 +481,7 @@ object ThreadsAuto {
                 val (imageUrl, look) = pictureUrl(context, st, item, x.book, wanted, styles)
                 // Your note stays your words; without one, the model's line when you've asked for it.
                 val words = if (item.clip.note.isNullOrBlank() && !isNote(item.clip.id))
-                    aiCaption(st, x.book, listOf(item.clip.text))?.let { it + "\n\n" + bookLine(x.book) } ?: postText(item, x.book, st.threadsWithNote, picture = true)
+                    aiCaption(context, st, x.book, listOf(item.clip))?.let { it + "\n\n" + bookLine(x.book) } ?: postText(item, x.book, st.threadsWithNote, picture = true)
                     else postText(item, x.book, st.threadsWithNote, picture = true)
                 ThreadsClient.post(user, token, words, imageUrl, altText(item, x.book), topic(store, x.book), io.github.prithirajn.trackersync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, x.book, listOf(item.clip.text)))
                 usedKey = look.key
@@ -488,7 +493,7 @@ object ThreadsAuto {
                     pictureUrl(context, st, item, x.book, order[k], styles, noteOnCard = true).first to altText(item, x.book)
                 }
                 val passages = x.items.map { it.clip.text }
-                val words = aiCaption(st, x.book, passages)?.let { it + "\n\n" + bookLine(x.book) } ?: sessionText(x)
+                val words = aiCaption(context, st, x.book, x.items.map { it.clip })?.let { it + "\n\n" + bookLine(x.book) } ?: sessionText(x)
                 ThreadsClient.postCarousel(user, token, words, images, topic(store, x.book), x.items.any { io.github.prithirajn.trackersync.sync.SpoilerCheck.isSpoiler(st, it.clip.id) } || spoils(st, x.book, passages))
                 usedKey = order.last().key
             }

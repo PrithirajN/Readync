@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -39,6 +40,7 @@ import androidx.compose.ui.unit.sp
 import io.github.prithirajn.trackersync.data.Snapshot
 import io.github.prithirajn.trackersync.source.PostBooks
 import io.github.prithirajn.trackersync.sync.Matcher
+import io.github.prithirajn.trackersync.sync.ShareJobs
 import io.github.prithirajn.trackersync.ui.theme.Cp
 import io.github.prithirajn.trackersync.ui.theme.CpShapes
 import io.github.prithirajn.trackersync.ui.theme.CpType
@@ -69,37 +71,63 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
     var working by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    fun find(url: String) {
+    // Links (shared or pasted) are read in the background, so leaving the app doesn't stop them;
+    // a notification says what came of each. Here: where each has got to, and the newest marked.
+    var fresh by remember { mutableStateOf<Long?>(null) }
+    val running by ShareJobs.running.collectAsState()
+    val reading = running.entries.firstOrNull { it.key.startsWith("post:") }?.value
+    val lastPost by ShareJobs.lastPost.collectAsState()
+    LaunchedEffect(lastPost) {
+        val (url, at) = lastPost ?: return@LaunchedEffect
+        traps.clear(); traps.addAll(PostBooks.saved(context))
+        fresh = at
+        if (PostBooks.linkIn(link) == url) link = ""
+        val t = traps.firstOrNull { it.at == at && it.post.url == url }
+        error = if (t != null && t.books.isEmpty()) "No books named in that post's caption or picture. Under it, see the words read on its picture: tap a title, or type one." else null
+    }
+    val postError by ShareJobs.postError.collectAsState()
+    LaunchedEffect(postError) { postError?.let { (_, why) -> error = why; ShareJobs.postError.value = null } }
+
+    fun find(url: String, shared: Boolean = false) {
         val l = PostBooks.linkIn(url) ?: url.trim()
         if (!l.startsWith("http")) { error = "Paste the post's link (Share › Copy link in TikTok or Instagram)."; return }
-        if (working != null) return
-        error = null
-        working = "Reading the post"
-        scope.launch {
-            val r = runCatching { PostBooks.find(context, l) { working = it } }
-            working = null
-            r.onSuccess { t ->
-                traps.removeAll { it.post.url == t.post.url }
-                traps.add(0, t)
-                PostBooks.save(context, traps)
-                link = ""
-                if (t.books.isEmpty()) error = "No books named in that post's caption or picture."
-            }.onFailure { error = it.message ?: "Couldn't read that post" }
+        // A shop's page pasted here: its price tracked instead.
+        if (PostBooks.platformOf(l) == null && io.github.prithirajn.trackersync.source.BookPrices.trackable(l) != null) {
+            ShareJobs.trackPrice(context, l)
+            link = ""
+            vm.notify("Tracking that book's price", "It'll be on Catalogs › Deals in a moment")
+            return
         }
+        error = null
+        // A shared link is already on its way (MainActivity started it); a pasted one starts here.
+        if (!shared) ShareJobs.findPost(context, l)
+        vm.notify(
+            "Looking for books in that ${PostBooks.platformOf(l)?.let { "$it " }.orEmpty()}post",
+            "Takes a few seconds; you'll get a notification, so you can leave the app",
+        )
     }
 
     fun findIn(uris: List<android.net.Uri>) {
         if (uris.isEmpty() || working != null) return
         error = null
         working = "Reading the pictures"
+        vm.notify("Looking for books in ${if (uris.size == 1) "that picture" else "those ${uris.size} pictures"}", "You'll see them on Catalogs › Posts")
         scope.launch {
             val r = runCatching { PostBooks.fromMedia(context, uris) { working = it } }
             working = null
             r.onSuccess { t ->
                 traps.add(0, t)
                 PostBooks.save(context, traps)
-                if (t.books.isEmpty()) error = "No books found in what was on screen. Covers and titles held up for a moment read best."
-            }.onFailure { error = it.message ?: "Couldn't read them" }
+                fresh = t.at
+                if (t.books.isEmpty()) error = "No books found in what was on screen. Covers and titles held up for a moment read best; under it, tap a title among the words read, or type one."
+                vm.notify(
+                    if (t.books.isEmpty()) "No books found in what was on screen" else "Found ${t.books.size} book${if (t.books.size == 1) "" else "s"}",
+                    t.books.take(3).joinToString(", ") { it.title }.ifBlank { null },
+                )
+            }.onFailure {
+                error = it.message ?: "Couldn't read them"
+                vm.notify("Couldn't read them", it.message, error = true)
+            }
         }
     }
     val sharedMedia by PostShare.media.collectAsState()
@@ -111,7 +139,7 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
     // A link shared to the app from TikTok or Instagram: looked at straight away.
     val shared by PostShare.pending.collectAsState()
     LaunchedEffect(shared) {
-        shared?.let { link = it; PostShare.pending.value = null; find(it) }
+        shared?.let { link = it; PostShare.pending.value = null; find(it, shared = true) }
     }
 
     Column(Modifier.fillMaxWidth()) {
@@ -122,7 +150,8 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
         VSpace(10)
         CpTextField(link, { link = it; error = null }, "Post link", placeholder = "https://www.tiktok.com/@…/video/…", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
         VSpace(8)
-        BigButton(if (working != null) working!! + "…" else "Find the books", { find(link) }, busy = working != null)
+        val busy = working ?: reading
+        BigButton(if (busy != null) "$busy…" else "Find the books", { find(link) }, busy = busy != null)
         VSpace(6)
         // Books shown only in the video (covers held up, words on screen): screenshots or a screen recording of it.
         BigButton("From screenshots or a recording", {
@@ -138,14 +167,23 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
         )
     }
     for (t in traps.toList()) {
-        TrapCard(vm, state, t, onRemove = { traps.remove(t); PostBooks.save(context, traps) }, onAgain = { find(t.post.url) })
+        TrapCard(
+            vm, state, t, isNew = fresh == t.at,
+            onRemove = { traps.remove(t); PostBooks.save(context, traps) },
+            onAgain = { find(t.post.url) },
+            onAdd = { f ->
+                val i = traps.indexOfFirst { it.at == t.at && it.post.url == t.post.url }
+                if (i >= 0) { traps[i] = traps[i].copy(books = traps[i].books + f); PostBooks.save(context, traps) }
+                if (error != null && traps.firstOrNull()?.at == t.at) error = null
+            },
+        )
     }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, onRemove: () -> Unit, onAgain: () -> Unit) {
+private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew: Boolean = false, onRemove: () -> Unit, onAgain: () -> Unit, onAdd: (PostBooks.Found) -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
     // Every book picked to start with, except the ones already in your library.
@@ -155,11 +193,32 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, onRem
     val picked = remember(t.at) { mutableStateListOf<String>().also { l -> l.addAll(t.books.filter { !inLibrary(it) }.map { it.title }) } }
     var said by remember(t.at) { mutableStateOf<String?>(null) }
     val chosen = t.books.filter { it.title in picked }
+    // What was read on the post's pictures, to pick a title the finder missed, or one typed.
+    val scope = rememberCoroutineScope()
+    var showWords by remember(t.at) { mutableStateOf(t.books.isEmpty()) }
+    var typed by remember(t.at) { mutableStateOf("") }
+    var looking by remember(t.at) { mutableStateOf<String?>(null) }
+    fun look(name: String) {
+        if (looking != null || name.isBlank()) return
+        looking = name
+        scope.launch {
+            val f = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { PostBooks.lookUp(name) }.getOrNull() }
+            looking = null
+            when {
+                f == null -> said = "Couldn't look that up"
+                t.books.any { Matcher.sameBook(it.title, it.author, f.title, f.author) } -> said = "${f.title} is already here"
+                else -> {
+                    picked.add(f.title); onAdd(f); typed = ""
+                    said = if (f.from == "typed") "Added as written (Google Books doesn't list it yet)" else "Found ${f.title}"
+                }
+            }
+        }
+    }
 
     VSpace(16)
     Column(
         Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(CpShapes.card).background(c.surface)
-            .border(1.dp, c.hairline, CpShapes.card).padding(14.dp),
+            .border(if (isNew) 2.dp else 1.dp, if (isNew) c.accent else c.hairline, CpShapes.card).padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(c.accentTint), contentAlignment = Alignment.Center) {
@@ -168,7 +227,7 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, onRem
             HSpace(10)
             Column(Modifier.weight(1f)) {
                 Text(listOfNotNull(t.post.platform, t.post.creator?.let { if (it.startsWith("@")) it else "@$it" }).joinToString(" · "), style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Quiet("${t.books.size} book${if (t.books.size == 1) "" else "s"} · ${ago(t.at * 1000)}", maxLines = 1)
+                Quiet((if (isNew) "New · " else "") + "${t.books.size} book${if (t.books.size == 1) "" else "s"} · ${ago(t.at * 1000)}", maxLines = 1)
             }
             if (!t.post.url.startsWith("media:")) PillButton("Open", { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(t.post.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
         }
@@ -207,6 +266,41 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, onRem
                     repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
+        }
+        VSpace(2)
+        Text(
+            if (showWords) "Hide what was read" else "Missing one? See what was read",
+            style = CpType.small, color = c.accentText,
+            modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { showWords = !showWords }.padding(vertical = 6.dp),
+        )
+        if (showWords) {
+            if (t.seen.isEmpty()) Quiet(if (t.post.url.startsWith("media:")) "No words could be read on them." else "No words could be read on its picture.", color = c.faint)
+            else {
+                Quiet("Words read on its picture. Tap one that's a title to look it up.")
+                VSpace(6)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (w in t.seen.take(24)) PillButton(if (looking == w) "Looking…" else w.take(40), { look(w) })
+                }
+            }
+            VSpace(8)
+            CpTextField(typed, { typed = it }, "Or type a title", placeholder = "Title (and author)")
+            VSpace(6)
+            PillButton(if (looking != null && looking == typed) "Looking…" else "Look it up", {
+                val parts = typed.split(Regex("\\s+by\\s+|\\s+[—–-]\\s+"), limit = 2)
+                if (parts.size == 2) {
+                    looking = typed
+                    val name = parts[0]; val by = parts[1]
+                    scope.launch {
+                        val f = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { PostBooks.lookUp(name, by) }.getOrNull() }
+                        looking = null
+                        if (f != null && t.books.none { Matcher.sameBook(it.title, it.author, f.title, f.author) }) {
+                            picked.add(f.title); onAdd(f); typed = ""
+                            said = if (f.from == "typed") "Added as written (Google Books doesn't list it yet)" else "Found ${f.title}"
+                        } else said = if (f == null) "Couldn't look that up" else "${f.title} is already here"
+                    }
+                } else look(typed)
+            }, outlined = false)
+            VSpace(8)
         }
         VSpace(4)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

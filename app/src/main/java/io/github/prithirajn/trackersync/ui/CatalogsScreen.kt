@@ -144,6 +144,8 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     LaunchedEffect(sharedPost) { if (sharedPost != null) mode = "Posts" }
     val sharedMedia by PostShare.media.collectAsState()
     LaunchedEffect(sharedMedia) { if (sharedMedia != null) mode = "Posts" }
+    val goTo by CatalogsGo.mode.collectAsState()
+    LaunchedEffect(goTo) { goTo?.let { mode = it; CatalogsGo.mode.value = null } }
 
     // Every server at once, a moment after you stop typing; results come in as each answers.
     LaunchedEffect(query, servers.map { it.id }) {
@@ -627,7 +629,7 @@ private fun CopiesSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) 
     PlainSheet("Copies for quotes", onClose) {
         Quiet("EPUBs from your catalogs, kept in the app's own storage (not in Downloads, not seen by other apps). Quote Studio's book photo and Fable's book-photo quotes use them for the real lines above and below your passage, when you haven't photographed its page.")
         VSpace(14)
-        CpToggle(auto, { auto = it; bc.setAuto(context, it) }, "Keep copies of books you're reading")
+        ToggleLine("Keep copies of books you're reading", auto) { auto = it; bc.setAuto(context, it) }
         Quiet("One book each sync, looked for on all your catalogs by title and author; a book that isn't found is tried again in a few days.", color = c.faint)
         val missing = state.books.values
             .filter { it.status == io.github.prithirajn.trackersync.data.ReadStatus.READING && it.document !in copies && !it.isMangaOrComic }

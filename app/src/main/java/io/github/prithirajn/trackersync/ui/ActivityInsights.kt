@@ -61,7 +61,6 @@ fun LazyListScope.activityInsights(vm: AppViewModel, state: Snapshot) {
     item(key = "soon") { FinishingSoonCard(state) }
     item(key = "heat") { HeatmapCard(state) }
     item(key = "year") { YearCard(vm, state) }
-    item(key = "lately") { LatelyCard(state) }
 }
 
 // ---- What needs you ----
@@ -153,13 +152,7 @@ private fun WeekCard(state: Snapshot) {
     val c = Cp.colors
     val all = state.books.values
     // Today's pages, live, the same way the Library counts them.
-    val todayPages = remember(state.books, state.pagesDay, state.pagesDayStart, state.pagesTotal) {
-        Shelves.pagesRead(all)?.let { p ->
-            val before = Shelves.pagesBeforeToday(all)
-            val dayStart = if (state.pagesDay == Shelves.day()) state.pagesDayStart else state.pagesTotal ?: p
-            (p - maxOf(dayStart, before)).coerceAtLeast(0)
-        }
-    }
+    val todayPages = remember(state.books, state.pagesDay, state.pagesStartF, state.pagesCleared) { Shelves.todayPages(state) }
     val today = remember { LocalDate.now() }
     val w = remember(state.pagesByDay, todayPages) { Insights.week(state, today, todayPages) }
     if (w.total == 0 && w.previousTotal == 0 && state.pagesByDay.isEmpty()) return
@@ -337,71 +330,3 @@ private fun GoalRing(done: Int, goal: Int) {
     }
 }
 
-// ---- Lately ----
-
-@Composable
-private fun LatelyCard(state: Snapshot) {
-    val c = Cp.colors
-    val today = remember { LocalDate.now() }
-    val events = remember(state.books, state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipHidden) {
-        Insights.timeline(state, today)
-    }
-    if (events.isEmpty()) return
-    var showAll by remember { mutableStateOf(false) }
-    val shown = if (showAll) events else events.take(8)
-    val dayFmt = remember { DateTimeFormatter.ofPattern("EEE d MMM") }
-    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp)) {
-        Text("Lately", style = CpType.bodyStrong, color = c.text)
-        VSpace(8)
-        CpCard {
-            var lastDay: LocalDate? = null
-            shown.forEachIndexed { i, e ->
-                if (e.day != lastDay) {
-                    if (i > 0) RowDivider()
-                    Text(
-                        when (e.day) {
-                            today -> "Today"
-                            today.minusDays(1) -> "Yesterday"
-                            else -> dayFmt.format(e.day)
-                        },
-                        style = CpType.small, color = c.faint,
-                        modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp),
-                    )
-                    lastDay = e.day
-                }
-                val b = state.books[e.document]
-                // Each row keeps to its own book when the list changes.
-                androidx.compose.runtime.key(e.document, e.kind, e.day) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .bouncyClickable(RectangleShape, pressedScale = 0.99f, role = Role.Button, onClickLabel = b?.displayTitle) { openBook(e.document) }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    BookCover(b?.coverUrl, b?.displayTitle ?: "", 26.dp, 39.dp)
-                    HSpace(12)
-                    val (verb, icon) = when (e.kind) {
-                        Insights.Kind.FINISHED -> "Finished" to R.drawable.lucide_circle_check
-                        Insights.Kind.STARTED -> "Started" to R.drawable.lucide_book_open
-                        Insights.Kind.DNF -> "Stopped" to R.drawable.lucide_pause
-                        Insights.Kind.HIGHLIGHTED -> (if (e.count == 1) "Highlighted in" else "${e.count} highlights in") to R.drawable.lucide_highlighter
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text(verb, style = CpType.small, color = if (e.kind == Insights.Kind.FINISHED) c.accentText else c.quiet)
-                        Text(b?.displayTitle ?: "", style = CpType.body, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    LucideIcon(icon, Modifier.size(16.dp), if (e.kind == Insights.Kind.FINISHED) c.accentText else c.faint)
-                }
-                }
-            }
-            if (events.size > 8) {
-                RowDivider()
-                Box(
-                    Modifier.fillMaxWidth().bouncyClickable(RectangleShape, pressedScale = 0.99f) { showAll = !showAll }.padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center,
-                ) { Text(if (showAll) "Show fewer" else "Show all ${events.size}", style = CpType.small, color = c.accent) }
-            }
-        }
-    }
-}

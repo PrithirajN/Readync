@@ -40,6 +40,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -333,8 +337,30 @@ fun SheetGrip() {
     val c = Cp.colors
     val spread = remember { Animatable(0f) }
     LaunchedEffect(Unit) { spread.animateTo(1f, spring(dampingRatio = 0.45f, stiffness = 260f)) }
+    // A sheet pulled up to the top of the screen: its grip (and so everything under it) moved down
+    // clear of the status bar and the camera, instead of the title sitting under the clock. Measured
+    // where the sheet really is on the screen, so a sheet that stops lower gets no extra room.
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val view = androidx.compose.ui.platform.LocalView.current
+    val barDp = androidx.compose.ui.unit.max(
+        androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+        LocalAppInsets.current.calculateTopPadding(),
+    )
+    val barPx = with(density) { barDp.roundToPx() }
+    var clear by remember { androidx.compose.runtime.mutableStateOf(0) }
     Row(
-        Modifier.padding(top = 12.dp, bottom = 10.dp),
+        Modifier
+            .onGloballyPositioned { co ->
+                val loc = IntArray(2)
+                view.getLocationOnScreen(loc)
+                // The grip's top on the screen (measured outside its padding, so the room added doesn't move it).
+                val top = loc[1] + co.positionInWindow().y.toInt()
+                // Up against the top of the screen (a tall sheet), or would reach under the bar without the
+                // room: the bar's height is kept free. A sheet that stops lower gets none.
+                val need = if (top <= 1 || top + clear < barPx) barPx else 0
+                if (need != clear) clear = need
+            }
+            .padding(top = 12.dp + with(density) { clear.toDp() }, bottom = 10.dp),
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

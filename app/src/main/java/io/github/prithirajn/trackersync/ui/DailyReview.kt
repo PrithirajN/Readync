@@ -212,7 +212,7 @@ fun DailyReviewSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
         }
         editing?.let { EditHighlightSheet(vm, state, it) { editing = null } }
         sharing?.let { item ->
-            QuoteShareSheet(item.clip, state.books[item.clip.document], others = BookShot.othersFor(state, item.clip), pageText = state.clipPages[item.clip.id], onPageText = { vm.setClipPage(item.clip.id, it) }, sectors = BookShot.sectorsFor(state, state.books[item.clip.document])) { sharing = null }
+            QuoteShareSheet(item.clip, state.books[item.clip.document], others = BookShot.othersFor(state, item.clip), pageText = state.clipPages[item.clip.id], onPageText = { vm.setClipPage(item.clip.id, it) }, sectors = BookShot.sectorsFor(state, state.books[item.clip.document]), facts = state.facts[item.clip.document]) { sharing = null }
         }
     }
 }

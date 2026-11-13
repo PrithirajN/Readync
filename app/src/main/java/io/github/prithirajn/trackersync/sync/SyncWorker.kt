@@ -139,6 +139,7 @@ object Notices {
     private const val POSITIONS = "positions"
     private const val COPIES = "book-copies"
     private const val POSTS = "social-posts"
+    private const val SHARED = "shared-links"
 
     /** Opens the app; with [action] (and [document]) it goes straight to that thing. */
     fun openApp(context: Context, action: String? = null, document: String? = null, code: Int = 0): PendingIntent {
@@ -196,11 +197,75 @@ object Notices {
                     .setSmallIcon(R.drawable.lucide_bell)
                     .setContentTitle("${book.displayTitle} is $price")
                     .setContentText(listOfNotNull(shop, p.format, p.mrp?.let { m -> "was ₹${Math.round(m)}" }).joinToString(" · "))
-                    .setContentIntent(if (book.document in store.snapshot.books) openApp(context, MainActivity.ACTION_OPEN_BOOK, book.document, 70) else openApp(context, code = 70))
+                    .setContentIntent(if (book.document in store.snapshot.books) openApp(context, MainActivity.ACTION_OPEN_BOOK, book.document, 70) else openApp(context, MainActivity.ACTION_DEALS, code = 71))
                     .setAutoCancel(true)
                     .build(),
             )
         }
+    }
+
+    private fun rupeesText(v: Double) = "₹" + java.text.NumberFormat.getIntegerInstance(java.util.Locale("en", "IN")).format(Math.round(v))
+
+    /** The books found in a post you shared or pasted (or that none were). Tapping opens Catalogs › Posts. */
+    fun postBooks(context: Context, t: io.github.prithirajn.trackersync.source.PostBooks.Trap) {
+        if (!allowed(context)) return
+        channel(context, SHARED, "Shared links")
+        val where = "that ${t.post.platform} post".replace("that Web post", "that page")
+        val title = if (t.books.isEmpty()) "No books found in $where"
+            else "Found ${t.books.size} book${if (t.books.size == 1) "" else "s"} in $where"
+        val text = if (t.books.isEmpty()) "Tap to see the words read on its picture: pick a title, or type one"
+            else t.books.joinToString(", ") { b -> b.title + (b.author?.let { " by $it" } ?: "") }
+        NotificationManagerCompat.from(context).notify(
+            900 + (t.post.url.hashCode() and 0x3FF),
+            NotificationCompat.Builder(context, SHARED)
+                .setSmallIcon(R.drawable.lucide_bell)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text + if (t.books.isNotEmpty()) "\nAdd them to Want to Read or track their prices on Catalogs › Posts." else ""))
+                .setContentIntent(openApp(context, MainActivity.ACTION_POSTS, code = 72))
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
+    /** A shop's page you shared or pasted, now tracked: its price now and where. Tapping opens Catalogs › Deals. */
+    fun priceTracked(context: Context, store: io.github.prithirajn.trackersync.data.Store, r: io.github.prithirajn.trackersync.source.BookPrices.Tracked) {
+        if (!allowed(context)) return
+        channel(context, SHARED, "Shared links")
+        val w = r.document?.let { store.snapshot.priceWatch[it] }
+        val best = w?.best
+        val now = best?.price?.let { p ->
+            "Now ${rupeesText(p)} at " + (io.github.prithirajn.trackersync.source.BookPrices.shop(best.store)?.name ?: best.store) + (best.format?.let { " · $it" } ?: "")
+        } ?: "No price read yet; looked at again with each sync"
+        val after = w?.target?.let { "You'll get a notice when it's ${rupeesText(it)} or less." } ?: "You'll get a notice when it drops."
+        NotificationManagerCompat.from(context).notify(
+            950 + ((r.document ?: r.message).hashCode() and 0x3FF),
+            NotificationCompat.Builder(context, SHARED)
+                .setSmallIcon(R.drawable.lucide_bell)
+                .setContentTitle(r.message)
+                .setContentText(now)
+                .setStyle(NotificationCompat.BigTextStyle().bigText("$now\n$after"))
+                .setContentIntent(openApp(context, MainActivity.ACTION_DEALS, code = 73))
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
+    /** A shared link that couldn't be read or tracked, and why. */
+    fun sharedFailed(context: Context, title: String, why: String, deals: Boolean, id: String) {
+        if (!allowed(context)) return
+        channel(context, SHARED, "Shared links")
+        NotificationManagerCompat.from(context).notify(
+            (if (deals) 950 else 900) + (id.hashCode() and 0x3FF),
+            NotificationCompat.Builder(context, SHARED)
+                .setSmallIcon(R.drawable.lucide_bell)
+                .setContentTitle(title)
+                .setContentText(why)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(why))
+                .setContentIntent(openApp(context, if (deals) MainActivity.ACTION_DEALS else MainActivity.ACTION_POSTS, code = if (deals) 73 else 72))
+                .setAutoCancel(true)
+                .build(),
+        )
     }
 
     /** The app, for notices raised where no context is at hand (a tracker posting to Micro.blog). */

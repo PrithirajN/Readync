@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.collectAsState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -97,7 +98,7 @@ fun DealSheet(vm: AppViewModel, state: Snapshot, key: String, onClose: () -> Uni
         VSpace(12)
         // Each store: its price (and Kindle beside print on Amazon), which edition it is, and ways to change it:
         // pick another edition it lists, or paste the page yourself, found or not.
-        val shopsInOrder = BookPrices.shops.sortedBy { sh ->
+        val shopsInOrder = (BookPrices.shops + w.links.keys.filter { it.startsWith("site:") }.mapNotNull { BookPrices.shop(it) }).sortedBy { sh ->
             w.latest.filter { it.store == sh.id && it.price != null && it.inStock }.minOfOrNull { it.price!! } ?: Double.MAX_VALUE
         }
         for (sh in shopsInOrder) {
@@ -129,7 +130,7 @@ fun DealSheet(vm: AppViewModel, state: Snapshot, key: String, onClose: () -> Uni
         if (linking) {
             VSpace(10)
             var url by remember { mutableStateOf("") }
-            Quiet("Paste the book's page from Amazon.in, Bookswagon or Atlantic Books, and that store follows exactly that one.")
+            Quiet("Paste the book's page from any bookshop (Amazon.in, Flipkart, Bookswagon, Atlantic Books…), and that shop follows exactly that one.")
             VSpace(6)
             CpTextField(url, { url = it }, "Store page", placeholder = "https://www.amazon.in/dp/…", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
             VSpace(6)
@@ -200,11 +201,12 @@ private fun StoreActions(vm: AppViewModel, key: String, w: PriceWatch, store: St
             CpTextField(url, { url = it; err = null }, "$name page", placeholder = when (store) {
                 "amazon" -> "https://www.amazon.in/dp/… or amzn.in/d/…"
                 "bookswagon" -> "https://www.bookswagon.com/book/…"
-                else -> "https://atlanticbooks.com/products/…"
+                "atlantic" -> "https://atlanticbooks.com/products/…"
+                else -> "https://${store.removePrefix("site:")}/…"
             }, keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
             VSpace(6)
             PillButton("Track this page", {
-                val shop = BookPrices.shopOf(url)
+                val shop = BookPrices.trackable(url)
                 when {
                     url.isBlank() -> err = "Paste the book's page first."
                     shop != store -> err = "That's not a $name page."
@@ -330,12 +332,27 @@ fun DealsList(vm: AppViewModel, state: Snapshot) {
             BigButton("+ Add from a link", { adding = true }, Modifier.weight(1f))
             BigButton("Amazon wish list", { importing = true }, Modifier.weight(1f), filled = false)
         }
+        // Shop pages shared to the app: read in the background, said here while they are and when done.
+        val running by io.github.prithirajn.trackersync.sync.ShareJobs.running.collectAsState()
+        val lastPrice by io.github.prithirajn.trackersync.sync.ShareJobs.lastPrice.collectAsState()
+        val reading = running.filterKeys { it.startsWith("price:") }
+        if (reading.isNotEmpty()) {
+            VSpace(10)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), color = c.accent, strokeWidth = 2.dp)
+                HSpace(8)
+                Quiet(if (reading.size == 1) reading.values.first() + "…" else "Reading ${reading.size} shop pages…")
+            }
+        } else lastPrice?.let { r ->
+            VSpace(10)
+            Text(r.message, style = CpType.small, color = if (r.ok) c.good else c.errorText)
+        }
         VSpace(14)
         if (rows.isEmpty()) {
             CpCard {
                 Column(Modifier.padding(18.dp)) {
                     Text("No prices tracked yet", style = CpType.bodyStrong, color = c.text)
-                    Quiet("Paste a book's page from Amazon.in, Bookswagon or Atlantic Books, import an Amazon wish list, or use Track its price in a book's ⋯ menu. Each is looked for at all three stores, checked twice a day, and you hear when one drops.")
+                    Quiet("Share or paste a book's page from any bookshop (Amazon.in, Flipkart, Bookswagon, Atlantic Books, Crossword…), import an Amazon wish list, or use Track its price in a book's ⋯ menu. Each is looked for at Amazon.in, Bookswagon and Atlantic Books too, checked twice a day, and you get a notification when one drops.")
                 }
             }
         }
@@ -382,9 +399,9 @@ private fun AddDealSheet(vm: AppViewModel, onClose: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var said by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     PlainSheet("Add from a link", onClose) {
-        Quiet("A book's page on Amazon.in, Bookswagon or Atlantic Books (share it from the store's app, then paste). The book is read from it, found at the other two stores, and tracked, whether or not it's in your library.")
+        Quiet("A book's page from any bookshop: Amazon.in, Flipkart, Bookswagon, Atlantic Books, Crossword… (or share it to Readync from the shop's app). The book is read from it, followed there, found at Amazon.in, Bookswagon and Atlantic Books too, and tracked, whether or not it's in your library.")
         VSpace(14)
-        CpTextField(url, { url = it.trim() }, "Store page", placeholder = "https://www.amazon.in/dp/…", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
+        CpTextField(url, { url = it.trim() }, "Store page", placeholder = "https://www.flipkart.com/… or amazon.in/dp/…", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
         VSpace(10)
         CpTextField(price, { v -> price = v.filter { it.isDigit() }.take(6) }, "Tell me when it's under ₹ (optional)", placeholder = "e.g. 299", keyboard = androidx.compose.ui.text.input.KeyboardType.Number)
         said?.let { (m, ok) -> VSpace(10); Text(m, style = CpType.small, color = if (ok) c.good else c.errorText) }
@@ -393,8 +410,8 @@ private fun AddDealSheet(vm: AppViewModel, onClose: () -> Unit) {
             if (busy) return@BigButton
             busy = true; said = null
             vm.trackFromLink(url, price.toDoubleOrNull()) { m, ok -> busy = false; said = m to ok; if (ok) { url = ""; price = "" } }
-        }, enabled = url.isNotBlank() && BookPrices.shopOf(url) != null)
-        if (url.isNotBlank() && BookPrices.shopOf(url) == null) { VSpace(6); Quiet("That isn't an Amazon.in, Bookswagon or Atlantic Books address.", color = c.faint) }
+        }, enabled = url.isNotBlank() && BookPrices.trackable(url) != null)
+        if (url.isNotBlank() && BookPrices.trackable(url) == null) { VSpace(6); Quiet("That isn't a bookshop's book page.", color = c.faint) }
     }
 }
 

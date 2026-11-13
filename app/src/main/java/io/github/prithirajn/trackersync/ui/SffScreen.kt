@@ -599,7 +599,7 @@ private fun BookStory(s: SffFeed.Story, onOpen: (SffFeed.Story, Int) -> Unit) {
 private fun StoryMenu(vm: AppViewModel, state: Snapshot, s: SffFeed.Story, onClose: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
-    ModalBottomSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), shape = CpShapes.sheet, containerColor = c.page) {
+    ModalBottomSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, sheetState = rememberSheetState(skipPartiallyExpanded = true), shape = CpShapes.sheet, containerColor = c.page) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
             Text(headline(s), fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 24.sp, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
             Quiet(s.lead.source.substringBefore(" ·"))

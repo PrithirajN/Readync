@@ -48,7 +48,7 @@ fun ReleasesCard(vm: AppViewModel, state: Snapshot) {
     var settings by remember { mutableStateOf(false) }
     val now = System.currentTimeMillis() / 1000
     val out = state.releases.values.filter { it.isOut(now) }.sortedByDescending { it.date ?: it.seenAt }
-    val coming = state.releases.values.filter { !it.isOut(now) }.sortedBy { it.date }
+    val coming = state.releases.values.filter { !it.isOut(now) }.sortedBy { it.date ?: Long.MAX_VALUE }
     var showAll by remember { mutableStateOf(false) }
     Column(PagePadding) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -96,6 +96,7 @@ private fun ReleaseRow(vm: AppViewModel, r: Release, now: Long) {
     val c = Cp.colors
     val context = LocalContext.current
     val whenLine = when {
+        r.date == null && r.announcedOnly -> "announced, not dated yet"
         r.date == null -> "out now"
         r.date > now -> {
             val days = ((r.date - now) / 86_400L).toInt()
@@ -165,7 +166,7 @@ private fun ReleaseSettingsSheet(vm: AppViewModel, state: Snapshot, onClose: () 
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {

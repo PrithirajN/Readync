@@ -89,6 +89,26 @@ class BookEditor(private val store: Store) {
         if (hasClient()) {
             list.addAll(runCatching { client().coverCandidates(document, query) }.getOrDefault(emptyList()))
         }
+        fun add(url: String?, source: String, title: String?, pages: Int?) {
+            if (url != null && url.startsWith("http") && list.none { it.url == url }) list.add(CoverCandidate(url, source, title, pages))
+        }
+        // Hardcover: every edition of the book with its own cover (the one it's matched to, else the
+        // best search match), then other books its search finds.
+        val hcSvc = store.snapshot.service("hardcover")
+        if (hcSvc.linked && !hcSvc.needsReauth) runCatching {
+            val H = io.github.prithirajn.trackersync.trackers.HardcoverTracker
+            val session = io.github.prithirajn.trackersync.trackers.Session(hcSvc.credential)
+            val hits = runCatching { H.search(session, q, b?.author) }.getOrDefault(emptyList())
+            val bookId = (if (query == null) store.snapshot.link("hardcover", document)?.externalId else null) ?: hits.firstOrNull()?.id
+            bookId?.let { id -> for (e in H.editionCovers(session, id)) add(e.url, "Hardcover", e.label.ifEmpty { null }, null) }
+            for (h in hits.take(6)) add(h.coverUrl, "Hardcover", h.title, h.pages)
+        }
+        // Goodreads: its search results' covers.
+        val grSvc = store.snapshot.service("goodreads")
+        if (grSvc.linked && !grSvc.needsReauth) runCatching {
+            val session = io.github.prithirajn.trackersync.trackers.Session(grSvc.credential)
+            for (h in io.github.prithirajn.trackersync.trackers.GoodreadsTracker.search(session, q, b?.author).take(6)) add(h.coverUrl, "Goodreads", h.title, h.pages)
+        }
         val sqSvc = store.snapshot.service("seekquel")
         if (sqSvc.linked && !sqSvc.needsReauth) {
             runCatching {
@@ -110,8 +130,16 @@ class BookEditor(private val store: Store) {
         return list
     }
 
+    /** A cover from your photos: kept on the phone only (never sent to a server), and kept over what sources say. */
+    fun setOwnCover(document: String, file: java.io.File) {
+        val b = book(document)
+        store.coverChange { putBook(b.copy(coverUrl = file.toURI().toString())) }
+    }
+
     /** A chosen cover, or null to go back to the automatic one. */
-    fun setCover(document: String, url: String?) {
+    fun setCover(document: String, url: String?) = store.coverChange { setCoverNow(document, url) }
+
+    private fun setCoverNow(document: String, url: String?) {
         val b = book(document)
         var shown = url
         if (onServer(b)) {

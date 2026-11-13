@@ -9,6 +9,9 @@ import io.github.prithirajn.trackersync.trackers.RemoteBook
 /** A language model that runs on the phone: a prompt in, its reply out. Blocking; call off the main thread. */
 interface TextModel {
     fun generate(prompt: String): String
+
+    /** What the model makes of a picture (the file at [imagePath]) with [prompt]; null for a model that can't see pictures. */
+    fun look(imagePath: String, prompt: String): String? = null
 }
 
 /**
@@ -467,20 +470,59 @@ object Assistant {
      * a reader's own voice: under 120 characters, no hashtags, no quoting the passages, nothing about
      * what happens. Null when what comes back doesn't keep to that.
      */
-    fun postCaption(m: TextModel, title: String, author: String?, passages: List<String>): String? {
+    fun postCaption(m: TextModel, title: String, author: String?, passages: List<String>, before: String? = null, chapter: String? = null): String? {
+        val surname = author?.substringBefore(',')?.trim()?.split(' ')?.lastOrNull()
         val prompt = buildString {
-            appendLine("I'm reading \"$title\"" + (author?.let { " by $it" } ?: "") + " and sharing " + (if (passages.size == 1) "this passage" else "these ${passages.size} passages") + " on Threads:")
-            passages.take(10).forEach { appendLine("- " + it.trim().take(300)) }
+            appendLine("I'm reading \"$title\"" + (author?.let { " by $it" } ?: "") + " and sharing " + (if (passages.size == 1) "this passage" else "these ${passages.size} passages") + " from it on Threads, as a picture.")
+            if (before != null) {
+                appendLine()
+                appendLine("What comes just before it in the book" + (chapter?.let { " (chapter: $it)" } ?: "") + ", only so you know what's going on:")
+                appendLine(before.trim().takeLast(1200))
+            } else if (chapter != null) appendLine("It's from the chapter \"$chapter\".")
             appendLine()
-            appendLine("Write the one-line caption I'd put above it: casual, warm, in my own voice, under 120 characters.")
-            appendLine("No hashtags. Don't quote the passages. Don't reveal anything about the plot. You may name the book.")
-            append("Reply with only the caption.")
+            appendLine(if (passages.size == 1) "The passage:" else "The passages:")
+            passages.take(10).forEach { appendLine("- " + it.trim().take(400)) }
+            appendLine()
+            appendLine("Write the one line I'd put above the picture: my reaction as a reader, in my own voice, casual and warm, under 120 characters.")
+            appendLine("It's how the passage made me feel or what I think of it, NOT a retelling: don't repeat or reword what happens in it, and don't write as if I were one of the characters.")
+            appendLine("The kind of line I mean:")
+            appendLine("- This line hit harder than I expected.")
+            appendLine("- Laughed out loud at this one.")
+            appendLine("- " + (surname?.let { "$it never lets up." } ?: "This book never lets up."))
+            appendLine("- The banter in this series is unmatched.")
+            appendLine("No hashtags, no quoting, and nothing that gives away the plot.")
+            append("Reply with only the line.")
         }
-        val reply = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null).lines().firstOrNull { it.isNotBlank() }?.trim()?.trim('"', '\u201C', '\u201D') ?: return null
-        // Held to what was asked: short, no hashtags, no lines lifted from the passages.
+        val reply = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null).lines().firstOrNull { it.isNotBlank() }?.trim()
+            ?.removePrefix("- ")?.trim('"', '\u201C', '\u201D', ' ') ?: return null
+        // Held to what was asked: short, no hashtags, not the passage again in other words.
         if (reply.length !in 8..140 || reply.contains('#')) return null
-        val lifted = passages.any { p -> p.length > 30 && reply.lowercase().contains(p.trim().lowercase().take(30)) }
-        return reply.takeIf { !lifted }
+        if (retells(reply, passages, listOfNotNull(title, author))) return null
+        return reply
+    }
+
+    /** Words that say nothing on their own, left out when comparing a caption with a passage. */
+    private val PLAIN = setOf(
+        "the", "and", "for", "but", "not", "you", "your", "this", "that", "with", "was", "are", "has", "have", "had", "its", "it's", "his", "her", "him",
+        "she", "they", "them", "their", "from", "into", "out", "just", "what", "when", "who", "how", "all", "can", "will", "one", "too", "very", "so",
+        "here", "there", "then", "than", "about", "like", "line", "book", "read", "reading", "page", "chapter", "series", "story", "again", "really",
+    )
+
+    private fun contentWords(text: String, drop: Set<String> = emptySet()) =
+        Regex("[\\p{L}']+").findAll(text.lowercase()).map { it.value.trim('\'').removeSuffix("'s") }
+            .filter { it.length >= 3 && it !in PLAIN && it !in drop }.toSet()
+
+    /**
+     * Whether [caption] retells [passages] rather than reacting to them: its own words mostly the
+     * passage's ("Carl kept the arm" -> "I kept the arm, it's a good thing"), or a long stretch lifted.
+     */
+    internal fun retells(caption: String, passages: List<String>, names: List<String> = emptyList()): Boolean {
+        val drop = names.flatMap { contentWords(it) }.toSet()
+        val mine = contentWords(caption, drop)
+        val theirs = passages.flatMap { contentWords(it, drop) }.toSet()
+        val shared = mine.intersect(theirs)
+        if (shared.size >= 3 || (shared.size >= 2 && shared.size * 2 >= mine.size)) return true
+        return passages.any { p -> p.length > 30 && caption.lowercase().contains(p.trim().lowercase().take(30)) }
     }
 
     /** [text] with the sentences at [indexes] hidden as spoilers (||…||), skipping ones already hidden. */

@@ -23,6 +23,13 @@ sealed interface AppAction {
     data class ServicePage(val page: String) : AppAction
     /** Catalogs › Posts, with a shared post's link (in [PostShare]). */
     data object Posts : AppAction
+    /** Catalogs › Deals (a shop's page shared, a price notification). */
+    data object Deals : AppAction
+}
+
+/** Which of the Catalogs tab's views to show (Search, Posts, Deals), when something outside it asks. */
+object CatalogsGo {
+    val mode = MutableStateFlow<String?>(null)
 }
 
 object AppActions {

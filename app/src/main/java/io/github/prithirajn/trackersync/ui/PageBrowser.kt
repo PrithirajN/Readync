@@ -23,6 +23,7 @@ object PageBrowser {
         io.github.prithirajn.trackersync.source.SffSocials.browser = { url -> fetch(app, url) }
         io.github.prithirajn.trackersync.source.SffArticleReader.browser = { url -> fetch(app, url) }
         io.github.prithirajn.trackersync.source.SffSources.browser = { url -> fetch(app, url, timeoutMs = 18_000) }
+        io.github.prithirajn.trackersync.source.BookPrices.browser = { url -> fetch(app, url, timeoutMs = 20_000) }
     }
 
     @SuppressLint("SetJavaScriptEnabled")

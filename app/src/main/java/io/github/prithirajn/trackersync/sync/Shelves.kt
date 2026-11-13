@@ -130,21 +130,62 @@ object Shelves {
     }
 
     /**
-     * Records the library's total at [now]: the first total seen each day is that day's
-     * starting point (yesterday's last total, when known), so today's pages are the difference.
-     * Historical imports and books read before today automatically raise the starting baseline.
-     * Keeps two months of days.
+     * Today's pages, book by book: how far each book with a page count moved since today began
+     * (its share then, or where it stood when last seen yesterday), times its pages. So only real
+     * reading counts: a book that arrives today (an import, a new sync, a copy merged in) starts
+     * where it already is, unless you started it today; a page count set or changed adds nothing;
+     * a book read again counts from where it went back to. Keeps two months of days.
      */
     fun recordPages(s: Snapshot, now: Long = System.currentTimeMillis()): Snapshot {
-        val total = pagesRead(s.books.values) ?: return s
         val today = day(now)
-        val beforeToday = pagesBeforeToday(s.books.values, now)
-        val dayStart = if (s.pagesDay == today) s.pagesDayStart else (s.pagesTotal ?: total)
-        val start = maxOf(dayStart, beforeToday)
-        val read = (total - start).coerceAtLeast(0)
-        val days = (s.pagesByDay + (today to read)).entries.sortedByDescending { it.key }.take(60).associate { it.key to it.value }
-        return s.copy(pagesTotal = total, pagesDay = today, pagesDayStart = start, pagesByDay = days)
+        val sod = startOfDay(now)
+        val newDay = s.pagesDay != today
+        val firstRun = s.pagesStartF.isEmpty() && s.pagesLastF.isEmpty()
+        val starts = HashMap<String, Double>()
+        val last = HashMap<String, Double>()
+        var read = 0.0
+        for (b in s.books.values) {
+            if (b.held) continue
+            val pages = b.pageCount?.takeIf { it > 0 } ?: continue
+            val f = when (b.status) {
+                ReadStatus.FINISHED -> 1.0
+                ReadStatus.TO_READ -> 0.0
+                else -> b.percentage.coerceIn(0.0, 1.0)
+            }
+            // A book last moved before today (read yesterday, synced only now) starts the day where it is.
+            var start = (if (newDay && b.timestamp >= sod) s.pagesLastF[b.document] else if (newDay) f else s.pagesStartF[b.document])
+                // Not seen before: where it is now, unless you started it today (then from the start).
+                ?: if (!firstRun && (b.startedAt ?: 0L) >= sod) 0.0 else f
+            // Gone back (read again, or a position moved back): today counts from there.
+            if (f < start) start = f
+            read += (f - start) * pages
+            starts[b.document] = start
+            last[b.document] = f
+        }
+        val counted = Math.round(read).toInt()
+        val todayPages = when {
+            today in s.pagesCleared -> 0
+            // The first count by this way: what was already counted today stands until something moves.
+            firstRun -> maxOf(counted, s.pagesByDay[today] ?: 0)
+            else -> counted
+        }
+        val days = (s.pagesByDay + (today to todayPages)).entries.sortedByDescending { it.key }.take(60).associate { it.key to it.value }
+        return s.copy(
+            pagesTotal = pagesRead(s.books.values), pagesDay = today, pagesByDay = days,
+            pagesStartF = starts, pagesLastF = last,
+            pagesCleared = s.pagesCleared.filter { it >= day(now - 62L * 86_400_000) }.toSet(),
+        )
     }
+
+    /** Today's pages as [recordPages] counts them, without saving anything (for the screens). */
+    fun todayPages(s: Snapshot, now: Long = System.currentTimeMillis()): Int? {
+        if (s.books.values.none { (it.pageCount ?: 0) > 0 }) return null
+        return recordPages(s, now).pagesByDay[day(now)]
+    }
+
+    /** A day that wasn't reading (an import or a fix counted as pages): set to none, and kept that way. */
+    fun clearDay(s: Snapshot, day: String): Snapshot =
+        s.copy(pagesByDay = s.pagesByDay + (day to 0), pagesCleared = s.pagesCleared + day)
 
     /** A CrossPoint book that looks like another synced copy of itself, for the merge hint. */
     fun firstDuplicate(books: Collection<Book>): Book? {

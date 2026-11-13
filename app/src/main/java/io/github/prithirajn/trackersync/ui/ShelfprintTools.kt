@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -101,7 +102,7 @@ private fun ToolsCard(vm: AppViewModel, state: Snapshot) {
     }
     if (checks) ChecksSheet(issues) { checks = false }
     if (rubric) RubricSheet(vm, state) { rubric = false }
-    if (top) TopBooksSheet(state) { top = false }
+    if (top) TopBooksSheet(vm, state) { top = false }
     if (export) ExportSheet(state) { export = false }
     if (yearSet) YearSetSheet(state) { yearSet = false }
     if (collection) CollectionSheet(vm, state) { collection = false }
@@ -280,7 +281,7 @@ internal fun topBooks(s: Snapshot, year: Int, n: Int): List<Book> {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TopBooksSheet(state: Snapshot, onClose: () -> Unit) {
+private fun TopBooksSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -313,9 +314,9 @@ private fun TopBooksSheet(state: Snapshot, onClose: () -> Unit) {
         VSpace(8)
         CpTextField(handle, { handle = it.take(30) }, "Your handle (optional)", placeholder = "@yourname")
         VSpace(6)
-        CpToggle(titles, { titles = it }, "Titles under the covers")
-        CpToggle(stats, { stats = it }, "The year's numbers")
-        CpToggle(ranks, { ranks = it }, "Rank numbers")
+        ToggleLine("Titles under the covers", titles) { titles = it }
+        ToggleLine("The year's numbers", stats) { stats = it }
+        ToggleLine("Rank numbers", ranks) { ranks = it }
         VSpace(12)
         if (books.isEmpty()) Quiet("No books finished in $year yet.", color = c.faint)
         bmp?.let { b ->
@@ -328,8 +329,72 @@ private fun TopBooksSheet(state: Snapshot, onClose: () -> Unit) {
                 PillButton("X", { said = XPost.said(XPost.pictures(context, listOf(b), "My top ${books.size} books of $year"), "your top books") })
             }
             said?.let { VSpace(6); AnimatedQuiet(it, color = c.textMid) }
+            // A cover you don't like: tap the book here to choose another (the image is redrawn with it).
+            VSpace(14)
+            Text("Change a cover", style = CpType.bodyStrong, color = c.text)
+            Quiet("Tap a book to pick another cover for it: its other editions, other sites, or one from your photos.", color = c.faint)
+            VSpace(8)
+            var changing by remember { mutableStateOf<Book?>(null) }
+            androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(books.size, key = { books[it].document }) { i ->
+                    val bk = books[i]
+                    Column(Modifier.width(54.dp).clip(RoundedCornerShape(6.dp)).bouncyClickable(RoundedCornerShape(6.dp), pressedScale = 0.95f) { changing = bk }) {
+                        BookCover(bk.coverUrl, bk.displayTitle, 54.dp, 81.dp)
+                        Text("${i + 1}", style = CpType.small, color = c.faint, modifier = Modifier.padding(top = 2.dp))
+                    }
+                }
+            }
+            changing?.let { bk -> CoverSheet(vm, bk) { changing = null } }
         }
     }
+}
+
+/** A switch with its words beside it (the switch on its own says nothing on screen). */
+@Composable
+internal fun ToggleLine(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val c = Cp.colors
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+        CpToggle(checked, onChange, label)
+    }
+}
+
+private val VOLUME_MARK = Regex("(?i)[,:\\s]*(?:\\(?\\s*)?(vol(?:ume)?\\.?|book|part|issue|no\\.|#)\\s*(\\d{1,4}(?:\\.\\d)?)\\)?")
+
+/**
+ * A title made to fit under a cover with its number kept: "X-O Manowar, Vol. 2: Planet Death" ->
+ * ("X-O Manowar", "Vol. 2"), "Kagurabachi, Vol. 3" -> ("Kagurabachi", "Vol. 3"), "Saga #54" ->
+ * ("Saga", "#54"). A book with no number keeps its whole title.
+ */
+internal fun titleParts(title: String): Pair<String, String?> {
+    val m = VOLUME_MARK.findAll(title).lastOrNull() ?: return title.trim() to null
+    val word = m.groupValues[1].lowercase()
+    val n = m.groupValues[2].trimStart('0').ifEmpty { "0" }
+    val suffix = when {
+        word == "#" || word == "issue" || word == "no." -> "#$n"
+        word.startsWith("book") -> "Book $n"
+        word.startsWith("part") -> "Part $n"
+        else -> "Vol. $n"
+    }
+    // The series name: before the number, without a subtitle after it.
+    val core = title.substring(0, m.range.first).substringBefore(" - ").trim().trimEnd(',', ':', '-', ' ').ifEmpty { title.substringAfter(m.value).substringBefore(':').trim() }
+    return core.ifEmpty { title.trim() } to suffix
+}
+
+/** Up to [maxLines] lines of [title] in [width], its number never cut off. */
+internal fun titleLines(title: String, p: Paint, width: Float, maxLines: Int = 2): List<String> {
+    val (core, suffix) = titleParts(title)
+    val whole = if (suffix != null) "$core $suffix" else core
+    val lines = wrap(whole, p, width)
+    if (lines.size <= maxLines) return lines
+    val kept = lines.take(maxLines - 1).toMutableList()
+    val used = kept.joinToString(" ").length
+    val rest = whole.drop(used).trim()
+    kept += if (suffix != null && rest.endsWith(suffix)) {
+        val sw = p.measureText(" $suffix")
+        ellipsize(rest.removeSuffix(suffix).trim(), p, width - sw) + " $suffix"
+    } else ellipsize(rest, p, width)
+    return kept
 }
 
 /** Draws the ranked image: a heading, the year's numbers, then covers in a grid, each with its rank and stars. */
@@ -367,21 +432,40 @@ internal fun renderTop(
         cv.drawText(listOfNotNull("${all.size} books read", pages.takeIf { it > 0 }?.let { "%,d pages".format(it) }, avg?.let { "average ${fmt(it)} ★" }).joinToString("  ·  "), pad, y, p)
     }
     y += 50f
-    // The grid: five across for a post or story, five across (smaller) for a square; rows to fit.
-    // Five across for a top 10 or 20; more across for everything you read, so it still fits.
-    val cols = when { books.size <= 20 -> 5; books.size <= 42 -> 6; books.size <= 72 -> 8; else -> 10 }
-    val rows = ((books.size + cols - 1) / cols).coerceAtLeast(1)
-    val gap = 22f
+    // The grid: as many across as makes the covers biggest while all of them fit (five for a top 10
+    // or 20 on a post; more for everything you read). The stars and titles under each cover are
+    // sized with it, so small covers don't leave big empty gaps.
     val footer = 90f
     val availW = w - pad * 2
     val availH = h - y - footer
-    val labelH = if (titles) 70f else 34f
-    var cw = (availW - gap * (cols - 1)) / cols
-    var ch = cw * 1.5f
-    if (rows * (ch + labelH) + (rows - 1) * gap > availH) {
-        ch = (availH - (rows - 1) * gap) / rows - labelH
-        cw = ch / 1.5f
+    data class Fit(val cols: Int, val cw: Float, val ch: Float, val gap: Float, val star: Float, val title: Float, val labelH: Float)
+    fun fitFor(cols: Int): Fit {
+        val rows = ((books.size + cols - 1) / cols).coerceAtLeast(1)
+        var gap = 22f
+        var cw = (availW - gap * (cols - 1)) / cols
+        fun label(cw: Float): Triple<Float, Float, Float> {
+            val star = minOf(26f, cw / 6.5f)
+            val title = minOf(22f, cw / 7.2f)
+            return Triple(star, title, star + 10f + (if (titles) title * 2.5f else 0f) + 6f)
+        }
+        var (star, title, labelH) = label(cw)
+        var ch = cw * 1.5f
+        if (rows * (ch + labelH) + (rows - 1) * gap > availH) {
+            // Shrink to fit the height, keeping the shape of a cover.
+            gap = minOf(22f, maxOf(10f, cw * 0.12f))
+            var lo = 10f; var hi = cw
+            repeat(30) {
+                val mid = (lo + hi) / 2
+                val (_, _, lh) = label(mid)
+                if (rows * (mid * 1.5f + lh) + (rows - 1) * gap <= availH) lo = mid else hi = mid
+            }
+            cw = lo; ch = cw * 1.5f
+            label(cw).let { star = it.first; title = it.second; labelH = it.third }
+        }
+        return Fit(cols, cw, ch, gap, star, title, labelH)
     }
+    val fit = (if (books.size <= 20) listOf(5) else (5..12).toList()).map { fitFor(it) }.maxByOrNull { it.cw }!!
+    val cols = fit.cols; val cw = fit.cw; val ch = fit.ch; val gap = fit.gap; val labelH = fit.labelH
     val gridW = cols * cw + (cols - 1) * gap
     val x0 = (w - gridW) / 2f
     books.forEachIndexed { i, b ->
@@ -413,13 +497,15 @@ internal fun renderTop(
             cv.drawText("${i + 1}", rect.left + badge + 4f, rect.top + badge + 4f + badge * 0.38f, p)
             p.textAlign = Paint.Align.LEFT
         }
-        // Stars and title under the cover.
-        p.typeface = sans; p.textSize = minOf(26f, cw / 6.5f); p.color = accent
+        // Stars, then the title in up to two lines under the cover, its volume or issue number kept.
+        p.typeface = sans; p.textSize = fit.star; p.color = accent
         val stars = b.rating?.let { r -> "★".repeat(r.toInt()) + if (r % 1.0 >= 0.5) "½" else "" } ?: ""
-        cv.drawText(stars, rect.left, rect.bottom + p.textSize + 8f, p)
+        val starBase = rect.bottom + fit.star + 6f
+        cv.drawText(stars, rect.left, starBase, p)
         if (titles) {
-            p.color = fg; p.textSize = minOf(22f, cw / 7.5f)
-            cv.drawText(ellipsize(b.displayTitle, p, cw), rect.left, rect.bottom + labelH - 10f, p)
+            p.color = fg; p.textSize = fit.title
+            var ty = starBase + fit.title * 1.25f
+            for (line in titleLines(b.displayTitle, p, cw)) { cv.drawText(line, rect.left, ty, p); ty += fit.title * 1.2f }
         }
     }
     // Footer: your handle and the app's mark.

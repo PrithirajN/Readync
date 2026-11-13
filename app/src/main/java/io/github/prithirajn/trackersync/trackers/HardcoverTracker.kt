@@ -307,7 +307,7 @@ object HardcoverTracker : Tracker {
     }
 
     /** One book of a series as Hardcover lists it. */
-    data class SeriesBook(val position: Double, val id: String, val title: String, val releaseDate: Long?, val coverUrl: String?, val author: String?)
+    data class SeriesBook(val position: Double, val id: String, val title: String, val releaseDate: Long?, val coverUrl: String?, val author: String?, val readers: Int = 0)
 
     /**
      * The numbered books of the series called [name] (found however it's capitalised), with their
@@ -317,7 +317,7 @@ object HardcoverTracker : Tracker {
     fun seriesBooks(session: Session, name: String): List<SeriesBook> {
         val plain = io.github.prithirajn.trackersync.sync.MangaSources.seriesTitleOf(name)
         val want = io.github.prithirajn.trackersync.sync.Matcher.baseTitle(plain)
-        val fields = """id name book_series(where: {position: {_is_null: false}}, order_by: {position: asc}, limit: 250) { position book { id title release_date cached_image contributions(limit: 1) { author { name } } } }"""
+        val fields = """id name book_series(where: {position: {_is_null: false}}, order_by: {position: asc}, limit: 250) { position book { id title release_date cached_image users_count contributions(limit: 1) { author { name } } } }"""
         val candidates = LinkedHashMap<Long, JSONObject>()
         runCatching {
             val ids = gql(session, """query (${"$"}q: String!) { search(query: ${"$"}q, per_page: 8, page: 1, query_type: "Series") { ids } }""", JSONObject().put("q", plain))
@@ -346,11 +346,16 @@ object HardcoverTracker : Tracker {
             val day = b.str("release_date")?.let { d -> runCatching { java.time.LocalDate.parse(d.take(10)).atTime(9, 0).atZone(java.time.ZoneId.systemDefault()).toEpochSecond() }.getOrNull() }
             val cover = b.opt("cached_image")?.let { c -> if (c is JSONObject) c.str("url") else c.toString().takeIf { it.startsWith("http") } }
             val author = b.arr("contributions")?.objects()?.firstOrNull()?.obj("author")?.str("name")
-            SeriesBook(pos, b.optString("id"), title, day, cover, author)
+            SeriesBook(pos, b.optString("id"), title, day, cover, author, b.optInt("users_count", 0))
         }
-        // One per number: skip box sets and omnibuses; the earliest-listed edition otherwise.
+        // One per number: skip box sets and omnibuses. Of a number's books (the original and its
+        // translations), the one in the Latin alphabet that the most readers have, so an English
+        // series doesn't come back with its Japanese or Russian edition.
         return all.filter { !Regex("""(?i)\b(box(ed)? set|omnibus|collection|books? \d+\s*[-–]\s*\d+)\b""").containsMatchIn(it.title) }
-            .groupBy { it.position }.map { (_, eds) -> eds.firstOrNull { it.releaseDate != null } ?: eds.first() }
+            .groupBy { it.position }.map { (_, eds) ->
+                val latin = eds.filter { io.github.prithirajn.trackersync.sync.Matcher.latinShare(it.title) >= 0.8 }.ifEmpty { eds }
+                latin.maxWithOrNull(compareBy<SeriesBook>({ it.readers }, { if (it.releaseDate != null) 1 else 0 })) ?: eds.first()
+            }
             .sortedBy { it.position }
     }
 
@@ -432,6 +437,33 @@ object HardcoverTracker : Tracker {
             sources = listOf("Hardcover"),
             at = now,
         )
+    }
+
+    /** One edition's cover, with what it is ("Paperback · 2019 · 352 pages · Penguin"). */
+    data class EditionCover(val url: String, val label: String)
+
+    /**
+     * The covers of a book's editions (hardcover, paperback, other countries', special editions),
+     * the most-owned first. Empty when Hardcover has none, or doesn't answer.
+     */
+    fun editionCovers(session: Session, bookId: String): List<EditionCover> {
+        val id = bookId.toLongOrNull() ?: return emptyList()
+        fun query(fields: String) = gql(
+            session,
+            """query (${"$"}id: Int!) { editions(where: { book_id: { _eq: ${"$"}id }, cached_image: { _is_null: false } },
+                order_by: { users_count: desc_nulls_last }, limit: 30) { $fields } }""",
+            JSONObject().put("id", id),
+        )
+        val data = runCatching { query("id cached_image edition_format pages release_date publisher { name }") }
+            .recoverCatching { query("id cached_image edition_format pages release_date") }.getOrNull() ?: return emptyList()
+        return data.arr("editions")?.objects().orEmpty().mapNotNull { e ->
+            val img = e.opt("cached_image")
+            val url = (if (img is JSONObject) img.str("url") else img?.toString())?.takeIf { it.startsWith("http") } ?: return@mapNotNull null
+            val label = listOfNotNull(
+                e.str("edition_format"), e.str("release_date")?.take(4), e.int("pages")?.let { "$it pages" }, e.obj("publisher")?.str("name"),
+            ).joinToString(" · ")
+            EditionCover(url, label)
+        }.distinctBy { it.url }
     }
 
     override fun search(session: Session, title: String, author: String?): List<RemoteBook> {

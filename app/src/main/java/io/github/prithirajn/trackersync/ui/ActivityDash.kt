@@ -62,13 +62,7 @@ import java.util.Locale
 @Composable
 internal fun rememberTodayPages(state: Snapshot): Int? {
     val all = state.books.values
-    return remember(state.books, state.pagesDay, state.pagesDayStart, state.pagesTotal) {
-        Shelves.pagesRead(all)?.let { p ->
-            val before = Shelves.pagesBeforeToday(all)
-            val dayStart = if (state.pagesDay == Shelves.day()) state.pagesDayStart else state.pagesTotal ?: p
-            (p - maxOf(dayStart, before)).coerceAtLeast(0)
-        }
-    }
+    return remember(state.books, state.pagesDay, state.pagesStartF, state.pagesCleared) { Shelves.todayPages(state) }
 }
 
 /** A panel of the device with its screen: the frame the Activity page's readouts sit in. */

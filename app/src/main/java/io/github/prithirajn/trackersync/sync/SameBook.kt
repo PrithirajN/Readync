@@ -30,6 +30,8 @@ object SameBook {
     private fun same(a: Book, b: Book): Boolean {
         if (a.isMangaOrComic || b.isMangaOrComic) return false
         if (a.document in b.aliases || b.document in a.aliases) return false
+        // Different issue or volume numbers ("#1", "#2"): different books.
+        if (Matcher.volume(a.displayTitle) != Matcher.volume(b.displayTitle)) return false
         if (BookEditor.looksLikeSame(a, b)) return true
         // A subtitle or series tag on one copy only ("Title: A Novel", "Title (Book 2)"), with the same author.
         val ta = Matcher.baseTitle(a.displayTitle)

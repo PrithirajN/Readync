@@ -154,11 +154,11 @@ val Lora = FontFamily(variable(R.font.lora, 500), variable(R.font.lora, 600), va
 /** Caveat for the handwritten eyebrow. */
 val Caveat = FontFamily(variable(R.font.caveat, 500), variable(R.font.caveat, 600))
 
-/** Pixelify Sans: the device screen's big numbers. */
-val Pixel = FontFamily(Font(R.font.book_pixelify))
+/** Jura: the device screen's numbers, like a thin display (drawn a touch bolder). */
+val Pixel = FontFamily(Font(R.font.book_jura, FontWeight.Medium))
 
-/** IBM Plex Mono: the device's tiny printed labels. */
-val Mono = FontFamily(Font(R.font.book_plexmono))
+/** Jura: the device's small printed labels, matching its numbers. */
+val Mono = FontFamily(Font(R.font.book_jura, FontWeight.Medium))
 
 private const val InterFeatures = "'cv02', 'cv03', 'cv04', 'cv11'"
 
@@ -175,8 +175,8 @@ object CpType {
     /** The device's printed labels: tiny, spaced, monospaced. */
     val mono = TextStyle(fontFamily = Mono, fontSize = 10.sp, lineHeight = 13.sp, letterSpacing = 0.8.sp)
     /** The screen's big pixel number. */
-    val screenNumber = TextStyle(fontFamily = Pixel, fontSize = 52.sp, lineHeight = 52.sp)
-    val screenSmall = TextStyle(fontFamily = Pixel, fontSize = 22.sp, lineHeight = 24.sp)
+    val screenNumber = TextStyle(fontFamily = Pixel, fontWeight = FontWeight.SemiBold, fontSize = 52.sp, lineHeight = 52.sp)
+    val screenSmall = TextStyle(fontFamily = Pixel, fontWeight = FontWeight.SemiBold, fontSize = 22.sp, lineHeight = 24.sp)
     /** Long reading text (descriptions): Lora, comfortable. */
     val reading = TextStyle(fontFamily = Lora, fontWeight = FontWeight.Medium, fontSize = 15.sp, lineHeight = 24.sp)
 }

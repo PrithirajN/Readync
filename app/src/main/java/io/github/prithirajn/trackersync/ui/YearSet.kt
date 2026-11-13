@@ -448,7 +448,7 @@ fun CoverCardSheet(state: Snapshot, book: Book, onClose: () -> Unit) {
         Segmented(listOf(true, false), ink, { if (it) "Ink" else "Paper" }, { ink = it }, Modifier.fillMaxWidth())
         VSpace(8)
         Segmented(TopSize.entries, size, { it.label }, { size = it }, Modifier.fillMaxWidth())
-        if (!book.review.isNullOrBlank()) { VSpace(6); CpToggle(review, { review = it }, "Show my review") }
+        if (!book.review.isNullOrBlank()) { VSpace(6); ToggleLine("Show my review", review) { review = it } }
         VSpace(12)
         bmp?.let { b ->
             Image(b.asImageBitmap(), book.displayTitle, Modifier.fillMaxWidth().aspectRatio(b.width.toFloat() / b.height).clip(RoundedCornerShape(14.dp)))

@@ -141,7 +141,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                             is AppAction.Sff -> pager.animateScrollToPage(Tab.SFF.ordinal)
                             // The Services tab opens the screen itself.
                             is AppAction.ServicePage -> pager.animateScrollToPage(Tab.SERVICES.ordinal)
-                            AppAction.Posts -> { AppActions.pending.value = null; pager.animateScrollToPage(Tab.CATALOGS.ordinal) }
+                            AppAction.Posts -> { AppActions.pending.value = null; CatalogsGo.mode.value = "Posts"; pager.animateScrollToPage(Tab.CATALOGS.ordinal) }
+                            AppAction.Deals -> { AppActions.pending.value = null; CatalogsGo.mode.value = "Deals"; pager.animateScrollToPage(Tab.CATALOGS.ordinal) }
                             else -> {
                                 if (pager.currentPage != Tab.LIBRARY.ordinal) pager.animateScrollToPage(Tab.LIBRARY.ordinal)
                             }

@@ -36,12 +36,35 @@ class Store(private val file: File, private val secrets: Secrets) {
     fun update(transform: (Snapshot) -> Snapshot): Snapshot {
         val before = snapshot
         // Changes made while a source runs pass its main-source check (sync.Primary) on the way in.
-        val next = transform(before).let { n -> gate?.invoke(before, n) ?: n }
+        val next = transform(before).let { n -> gate?.invoke(before, n) ?: n }.let { keepOwnCovers(before, it) }
         snapshot = next
         save(next)
         for (l in listeners) l(next)
         return next
     }
+
+    /**
+     * A cover you chose from your photos stays when a source reports the book again with its own
+     * cover; only choosing another cover (or the automatic one) under Change cover replaces it.
+     */
+    private fun keepOwnCovers(before: Snapshot, next: Snapshot): Snapshot {
+        if (next.books === before.books || coverEdit.get() == true) return next
+        var books: HashMap<String, Book>? = null
+        for ((doc, old) in before.books) {
+            val own = old.coverUrl?.takeIf { it.startsWith("file:") } ?: continue
+            val nb = next.books[doc] ?: continue
+            if (nb.coverUrl != own) (books ?: HashMap(next.books).also { books = it })[doc] = nb.copy(coverUrl = own)
+        }
+        return books?.let { next.copy(books = it) } ?: next
+    }
+
+    /** Runs [block] as a cover change you made (Change cover), which may replace a photo cover. */
+    fun <T> coverChange(block: () -> T): T {
+        coverEdit.set(true)
+        try { return block() } finally { coverEdit.set(false) }
+    }
+
+    private val coverEdit = ThreadLocal<Boolean>()
 
     fun log(service: String?, message: String, error: Boolean = false) = update { s ->
         val entry = LogEntry(System.currentTimeMillis(), service, message, error)
@@ -313,6 +336,9 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("pagesTotal", s.pagesTotal ?: JSONObject.NULL)
         o.put("pagesDay", s.pagesDay ?: JSONObject.NULL)
         o.put("pagesDayStart", s.pagesDayStart)
+        o.put("pagesStartF", JSONObject().also { r -> s.pagesStartF.forEach { (k, v) -> r.put(k, v) } })
+        o.put("pagesLastF", JSONObject().also { r -> s.pagesLastF.forEach { (k, v) -> r.put(k, v) } })
+        o.put("pagesCleared", JSONArray(s.pagesCleared.toList()))
         o.put("pagesByDay", JSONObject().also { r -> s.pagesByDay.forEach { (k, v) -> r.put(k, v) } })
         o.put("handoffDenied", JSONArray().also { a -> s.handoffDenied.forEach { a.put(it) } })
         return o
@@ -663,6 +689,9 @@ class Store(private val file: File, private val secrets: Secrets) {
             pagesTotal = o.int("pagesTotal"),
             pagesDay = o.str("pagesDay"),
             pagesDayStart = o.optInt("pagesDayStart"),
+            pagesStartF = o.obj("pagesStartF")?.let { r -> r.keys().asSequence().associateWith { r.optDouble(it) }.filterValues { !it.isNaN() } } ?: emptyMap(),
+            pagesLastF = o.obj("pagesLastF")?.let { r -> r.keys().asSequence().associateWith { r.optDouble(it) }.filterValues { !it.isNaN() } } ?: emptyMap(),
+            pagesCleared = o.optJSONArray("pagesCleared")?.strings()?.toSet() ?: emptySet(),
             pagesByDay = o.obj("pagesByDay")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) } } ?: emptyMap(),
             handoffDenied = o.optJSONArray("handoffDenied")?.strings()?.toSet() ?: emptySet(),
         )

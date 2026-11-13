@@ -98,6 +98,8 @@ fun QuoteShareSheet(
     onFromPhoto: (() -> Unit)? = null,
     /** The book's kinds of speculative fiction, so its book photo suggests moods that suit it. */
     sectors: Set<String> = emptySet(),
+    /** What readers say of the book (its series, genres), for the post's tags. */
+    facts: io.github.prithirajn.trackersync.data.BookFacts? = null,
     onClose: () -> Unit,
 ) {
     val c = Cp.colors
@@ -188,7 +190,7 @@ fun QuoteShareSheet(
     ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -379,7 +381,8 @@ fun QuoteShareSheet(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BigButton("Post to Threads", {
                 bmp?.let { b ->
-                    val how = runCatching { QuoteCard.postToThreads(context, b, plain.take(500)) }.getOrNull()
+                    // The picture shows the passage: the words are your note, the book and its tag, not the passage again.
+                    val how = runCatching { QuoteCard.postToThreads(context, b, SocialCaption.forPicture(book, facts, if (standalone) null else content.note, x = false).take(500)) }.getOrNull()
                     if (how == "app" || how == "web") burst++
                     said = when (how) {
                         "app" -> "Opened in Threads with the picture. The words are copied too, if you need to paste them."
@@ -390,7 +393,7 @@ fun QuoteShareSheet(
             }, Modifier.weight(1.4f), look = KeyKind.INK, enabled = bmp != null)
             BigButton("Post to X", {
                 bmp?.let { b ->
-                    val how = runCatching { XPost.pictures(context, listOf(b), plain) }.getOrNull()
+                    val how = runCatching { XPost.pictures(context, listOf(b), SocialCaption.forPicture(book, facts, if (standalone) null else content.note, x = true)) }.getOrNull()
                     if (how == "app" || how == "web") burst++
                     said = XPost.said(how)
                 }

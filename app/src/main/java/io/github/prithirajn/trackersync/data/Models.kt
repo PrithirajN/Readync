@@ -253,7 +253,13 @@ data class Release(
     /** What you've been told: null, "soon" (a reminder before it's out) or "out". */
     val notified: String? = null,
 ) {
-    fun isOut(now: Long = System.currentTimeMillis() / 1000) = date == null || date <= now
+    fun isOut(now: Long = System.currentTimeMillis() / 1000) = if (date == null) !announcedOnly else date <= now
+
+    /**
+     * Announced, nothing more: a stand-in title ("The Devils book 3", "Untitled", "TBA") and no day.
+     * Listed under Coming ("not dated yet"), never as out now.
+     */
+    val announcedOnly: Boolean get() = date == null && (kind == "book" || kind == "volume") && placeholder(title)
 
     fun toJson(): JSONObject = JSONObject().put("key", key).put("kind", kind).put("series", series).put("title", title)
         .put("number", number ?: JSONObject.NULL).put("date", date ?: JSONObject.NULL).put("source", source)
@@ -261,6 +267,10 @@ data class Release(
         .put("seenAt", seenAt).put("notified", notified ?: JSONObject.NULL)
 
     companion object {
+        /** A listing's stand-in title for a book not written or named yet. */
+        fun placeholder(title: String): Boolean =
+            Regex("(?i)^\\s*(untitled|tba|tbd|tbc|to be announced)\\b|\\bbook\\s+\\d+\\s*$|\\b(untitled|tba|tbd)\\b").containsMatchIn(title)
+
         fun fromJson(o: JSONObject) = Release(
             o.optString("key"), o.optString("kind", "book"), o.optString("series"), o.optString("title"), o.str("number"),
             o.long("date"), o.optString("source"), o.str("coverUrl"), o.str("url"), o.str("author"), o.optLong("seenAt"), o.str("notified"),
@@ -1777,6 +1787,15 @@ data class Snapshot(
     val pagesTotal: Int? = null,
     val pagesDay: String? = null,
     val pagesDayStart: Int = 0,
+    /**
+     * Where each book stood when today began, and when last seen (document -> 0–1), so today's
+     * pages are what each book moved today: a book imported, a page count set or a copy merged
+     * adds nothing.
+     */
+    val pagesStartF: Map<String, Double> = emptyMap(),
+    val pagesLastF: Map<String, Double> = emptyMap(),
+    /** Days you said weren't reading days (cleared on the calendar), so they aren't counted again. */
+    val pagesCleared: Set<String> = emptySet(),
     /** Pages read each day ("2026-10-28" -> pages), the last two months. */
     val pagesByDay: Map<String, Int> = emptyMap(),
     /** Pairs you chose to keep apart ("physical|crosspoint"). */

@@ -2147,40 +2147,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * A book from a pasted Amazon.in, Bookswagon or Atlantic Books page: read, matched to your library
-     * when it's there (else tracked on its own), followed at that page, looked for at the other two
-     * stores, with [target] as the price you'd buy at. [done] gets what happened, to say.
+     * A book from a pasted shop page (Amazon.in, Bookswagon, Atlantic Books, Flipkart or any other
+     * bookshop): tracked, as [io.github.prithirajn.trackersync.source.BookPrices.track] says. [done]
+     * gets what happened, to say.
      */
     fun trackFromLink(url: String, target: Double?, done: (String, Boolean) -> Unit) {
         viewModelScope.launch {
-            val r = io {
-                runCatching {
-                    val f = io.github.prithirajn.trackersync.source.BookPrices.identify(url.trim())
-                    val s0 = store.snapshot
-                    val inLibrary = s0.books.values.firstOrNull { b ->
-                        (f.isbn != null && b.isbn?.filter { it.isDigit() } == f.isbn) || Matcher.sameBook(f.title, f.author, b.title ?: "", b.author)
-                    }
-                    val key = inLibrary?.document
-                        ?: s0.priceWatch.values.firstOrNull { w -> (f.isbn != null && w.isbn == f.isbn) || (w.title != null && Matcher.sameBook(f.title, f.author, w.title, w.author)) }?.document
-                        ?: ("price:" + java.util.UUID.randomUUID().toString())
-                    val now = System.currentTimeMillis() / 1000
-                    store.update { s ->
-                        val old = s.priceWatch[key]
-                        val w = (old ?: io.github.prithirajn.trackersync.data.PriceWatch(key, since = now)).copy(
-                            title = old?.title ?: inLibrary?.displayTitle ?: f.title, author = old?.author ?: inLibrary?.author ?: f.author,
-                            isbn = old?.isbn ?: inLibrary?.isbn ?: f.isbn, cover = old?.cover ?: inLibrary?.coverUrl ?: f.cover,
-                            links = (old?.links ?: emptyMap()) + (f.store to f.url), pinned = (old?.pinned ?: emptySet()) + f.store,
-                            history = ((old?.history ?: emptyList()).filter { it.store != f.store } + f.points).takeLast(400),
-                            target = target ?: old?.target, told = null,
-                        )
-                        s.copy(priceWatch = s.priceWatch + (key to w))
-                    }
-                    // The other two stores, now.
-                    io.github.prithirajn.trackersync.source.BookPrices.refresh(store, force = key)
-                    (if (inLibrary != null) "Tracking “${f.title}” (from your library)" else "Tracking “${f.title}”") to true
-                }.getOrElse { (it.message ?: "Couldn't read that page") to false }
-            }
-            done(r.first, r.second)
+            val r = io { io.github.prithirajn.trackersync.source.BookPrices.track(store, url, target) }
+            done(r.message, r.ok)
         }
     }
 
@@ -2258,7 +2232,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Points a store at this exact page (a pasted product address), and looks again. Null when it's not one of the stores. */
     fun setPriceLink(document: String, url: String): String? {
-        val shop = io.github.prithirajn.trackersync.source.BookPrices.shopOf(url) ?: return "That isn't an Amazon.in, Bookswagon or Atlantic Books page."
+        val shop = io.github.prithirajn.trackersync.source.BookPrices.trackable(url) ?: return "That isn't a bookshop's page."
         store.update { s ->
             s.priceWatch[document]?.let { w ->
                 // Your page for this store: followed as it is, and what was read from the old one let go.
@@ -3666,6 +3640,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 done(null, e.message ?: "Couldn't load covers")
             }
+        }
+    }
+
+    /**
+     * A cover from your photos (a picture of your own copy, or one you saved): made at most 1200 px
+     * tall, kept in the app's storage, and used here only (servers and trackers keep theirs).
+     */
+    fun setOwnCover(document: String, uri: android.net.Uri, done: (String?) -> Unit) {
+        val app = getApplication<android.app.Application>()
+        edit("Cover changed", done) {
+            val r = app.contentResolver
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            r.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+            if (bounds.outHeight <= 0) throw io.github.prithirajn.trackersync.net.ServiceException("That picture couldn't be read")
+            var sample = 1
+            while (bounds.outHeight / (sample * 2) >= 1200) sample *= 2
+            val bmp = r.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }) }
+                ?: throw io.github.prithirajn.trackersync.net.ServiceException("That picture couldn't be read")
+            val dir = java.io.File(app.filesDir, "own-covers").apply { mkdirs() }
+            // Its earlier photo cover, if any, goes (one kept per book).
+            val stem = document.replace(Regex("[^A-Za-z0-9_-]"), "_")
+            dir.listFiles()?.filter { it.name.startsWith("$stem-") }?.forEach { it.delete() }
+            val file = java.io.File(dir, "$stem-${System.currentTimeMillis()}.jpg")
+            file.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
+            editor.setOwnCover(document, file)
         }
     }
 

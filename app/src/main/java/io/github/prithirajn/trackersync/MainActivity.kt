@@ -23,6 +23,8 @@ class MainActivity : ComponentActivity() {
         // For: a tracker needing you to sign in again, a failed sync, a book you finished.
         if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         if (savedInstanceState == null) handle(intent)
+        // The on-device model loaded ahead (only with the app open, on phones with the memory for it).
+        if (savedInstanceState == null) io.github.prithirajn.trackersync.ai.LocalModel.warm(applicationContext)
         setContent {
             TrackerSyncTheme {
                 io.github.prithirajn.trackersync.ui.ProvideAppInsets {
@@ -67,6 +69,8 @@ class MainActivity : ComponentActivity() {
             ACTION_SNAP -> AppAction.Snap
             ACTION_SYNC -> AppAction.Sync
             ACTION_RELEASES -> AppAction.Releases
+            ACTION_POSTS -> AppAction.Posts
+            ACTION_DEALS -> AppAction.Deals
             ACTION_SFF -> AppAction.Sff(intent.getStringExtra(EXTRA_STORY))
             // Screenshots or a screen recording of a book post: its books found on Catalogs › Posts.
             Intent.ACTION_SEND_MULTIPLE -> media(intent)?.let { io.github.prithirajn.trackersync.ui.PostShare.media.value = it; AppAction.Posts }
@@ -76,10 +80,21 @@ class MainActivity : ComponentActivity() {
                 // A TikTok, Instagram or YouTube post: its books found on Catalogs › Posts.
                 val post = io.github.prithirajn.trackersync.source.PostBooks.linkIn(text)
                     ?.takeIf { io.github.prithirajn.trackersync.source.PostBooks.platformOf(it) != null }
-                if (post != null) {
-                    io.github.prithirajn.trackersync.ui.PostShare.pending.value = post
-                    AppAction.Posts
-                } else ShareLinks.query(text)?.let { AppAction.AddFromShare(it) } ?: AppAction.AddBook
+                // A bookshop's page (Amazon.in, Flipkart, Bookswagon…): its price tracked, in the background.
+                val shop = io.github.prithirajn.trackersync.source.PostBooks.linkIn(text)
+                    ?.takeIf { io.github.prithirajn.trackersync.source.BookPrices.trackable(it) != null }
+                when {
+                    post != null -> {
+                        io.github.prithirajn.trackersync.sync.ShareJobs.findPost(this, post)
+                        io.github.prithirajn.trackersync.ui.PostShare.pending.value = post
+                        AppAction.Posts
+                    }
+                    shop != null -> {
+                        io.github.prithirajn.trackersync.sync.ShareJobs.trackPrice(this, shop)
+                        AppAction.Deals
+                    }
+                    else -> ShareLinks.query(text)?.let { AppAction.AddFromShare(it) } ?: AppAction.AddBook
+                }
             }
             else -> null
         }
@@ -94,6 +109,8 @@ class MainActivity : ComponentActivity() {
         const val ACTION_SNAP = "io.github.prithirajn.trackersync.SNAP_PAGE"
         const val ACTION_SYNC = "io.github.prithirajn.trackersync.SYNC"
         const val ACTION_RELEASES = "io.github.prithirajn.trackersync.RELEASES"
+        const val ACTION_POSTS = "io.github.prithirajn.trackersync.POSTS"
+        const val ACTION_DEALS = "io.github.prithirajn.trackersync.DEALS"
         const val EXTRA_DOCUMENT = "document"
         const val ACTION_SFF = "io.github.prithirajn.trackersync.SFF"
         const val EXTRA_STORY = "story"

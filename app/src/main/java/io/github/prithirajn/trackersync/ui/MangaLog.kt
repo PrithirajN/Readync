@@ -188,7 +188,7 @@ private fun PagesPerSheet(vm: AppViewModel, state: Snapshot, key: String, comic:
     androidx.compose.material3.ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = io.github.prithirajn.trackersync.ui.theme.CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -223,7 +223,7 @@ private fun IssueDaysSheet(vm: AppViewModel, series: String, comic: Boolean, n: 
     androidx.compose.material3.ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = io.github.prithirajn.trackersync.ui.theme.CpShapes.sheet,
         containerColor = c.page,
     ) {
@@ -269,7 +269,7 @@ private fun VolumeRangeSheet(vm: AppViewModel, state: Snapshot, key: String, vol
     androidx.compose.material3.ModalBottomSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
-        sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
         shape = io.github.prithirajn.trackersync.ui.theme.CpShapes.sheet,
         containerColor = c.page,
     ) {
