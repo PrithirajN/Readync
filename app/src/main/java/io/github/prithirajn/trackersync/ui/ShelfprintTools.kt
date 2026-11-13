@@ -58,7 +58,7 @@ import java.time.ZoneId
  * your whole library exported as a spreadsheet.
  */
 fun androidx.compose.foundation.lazy.LazyListScope.shelfprintTools(vm: AppViewModel, state: Snapshot) {
-    item(key = "tools") { ToolsCard(vm, state) }
+    item(key = "shelfprint-tools") { ToolsCard(vm, state) }
     if (state.rubric.isNotEmpty()) item(key = "gut-rubric") { GutVsRubricCard(state) }
 }
 

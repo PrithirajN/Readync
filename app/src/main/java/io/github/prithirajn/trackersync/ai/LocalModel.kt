@@ -117,7 +117,7 @@ object LocalModel {
      * Downloads [choice] into the app. A model whose licence must be accepted first (Gemma)
      * answers "not allowed": then it's downloaded in the browser and chosen as a file.
      */
-    fun download(context: Context, choice: Choice, onProgress: (Float) -> Unit = {}): File {
+    fun download(context: Context, choice: Choice, cancelled: () -> Boolean = { false }, onProgress: (Float) -> Unit = {}): File {
         val dir = File(context.filesDir, DIR).apply { mkdirs() }
         val part = File(dir, choice.file + ".part")
         // An earlier download that stopped (the network, the app closed) carries on where it was.
@@ -163,7 +163,7 @@ object LocalModel {
             val rest = conn.contentLengthLong.takeIf { it > 0 }
             val total = rest?.let { if (resumed) it + have else it }
             conn.inputStream.use { input ->
-                java.io.FileOutputStream(part, resumed).use { out -> copy(input, out, total, onProgress, if (resumed) have else 0L) }
+                java.io.FileOutputStream(part, resumed).use { out -> copy(input, out, total, onProgress, if (resumed) have else 0L, cancelled) }
             }
             if (total != null && part.length() != total) throw IllegalStateException("The download stopped early; tap Get again to carry on")
         } catch (e: Exception) {
@@ -175,11 +175,12 @@ object LocalModel {
         return place(dir, part, choice.file)
     }
 
-    private fun copy(input: java.io.InputStream, out: java.io.OutputStream, total: Long?, onProgress: (Float) -> Unit, from: Long = 0L) {
+    private fun copy(input: java.io.InputStream, out: java.io.OutputStream, total: Long?, onProgress: (Float) -> Unit, from: Long = 0L, cancelled: () -> Boolean = { false }) {
         val buf = ByteArray(1 shl 20)
         var done = from
         var last = -1
         while (true) {
+            if (cancelled()) throw IllegalStateException("Download stopped")
             val n = input.read(buf)
             if (n < 0) break
             out.write(buf, 0, n)

@@ -15,8 +15,8 @@ android {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 327
-        versionName = "3.2.3"
+        versionCode = 337
+        versionName = "3.4.2"
         // Only the processors phones and e-readers use (64-bit and older 32-bit ARM). The on-device
         // AI, text recognition and barcode libraries are native code, one copy per processor type, so
         // leaving out x86 (emulators, a few old tablets) takes away about half the APK.
@@ -86,7 +86,11 @@ android {
             signingConfig = null
         }
         release {
-            isMinifyEnabled = false
+            // R8 on: Compose runs a good deal faster with it (smoother scrolling and opening of
+            // screens), and the APK is smaller. Names are kept (-dontobfuscate), so crash reports
+            // still read plainly. What must stay as it is is listed in proguard-rules.pro.
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = null
         }
     }

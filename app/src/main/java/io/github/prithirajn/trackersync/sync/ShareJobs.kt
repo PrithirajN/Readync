@@ -48,6 +48,14 @@ object ShareJobs {
         WorkManager.getInstance(context).enqueueUniqueWork("share-$kind-" + Integer.toHexString(url.hashCode()), ExistingWorkPolicy.KEEP, req)
     }
 
+    /** Stops the work on a link ("post:<link>" or "price:<link>"). */
+    fun stop(context: Context, key: String) {
+        val kind = key.substringBefore(':')
+        val url = key.substringAfter(':')
+        WorkManager.getInstance(context).cancelUniqueWork("share-$kind-" + Integer.toHexString(url.hashCode()))
+        running.update { it - key }
+    }
+
     internal fun progress(key: String, text: String) = running.update { it + (key to text) }
 }
 
@@ -66,6 +74,7 @@ class ShareWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             }
         } finally {
             ShareJobs.running.update { it - key }
+            app.store.flush()
         }
         return Result.success()
     }

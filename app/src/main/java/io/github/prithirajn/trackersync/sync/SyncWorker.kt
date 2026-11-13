@@ -50,6 +50,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         runCatching { Notices.priceDrops(applicationContext, app.store) }
         // New highlights out to Threads, when you've turned that on.
         runCatching { io.github.prithirajn.trackersync.ui.ThreadsAuto.run(applicationContext, app.store) }
+        // Everything written out before the system may close the app.
+        app.store.flush()
         Result.success()
     }
 
@@ -99,6 +101,8 @@ class ThreadsWorker(context: Context, params: WorkerParameters) : CoroutineWorke
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val app = applicationContext as TrackerSyncApp
         runCatching { io.github.prithirajn.trackersync.ui.ThreadsAuto.run(applicationContext, app.store) }
+        // Everything written out before the system may close the app.
+        app.store.flush()
         Result.success()
     }
 

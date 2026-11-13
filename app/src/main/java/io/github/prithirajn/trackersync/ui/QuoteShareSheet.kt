@@ -187,7 +187,7 @@ fun QuoteShareSheet(
         }
     }
 
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

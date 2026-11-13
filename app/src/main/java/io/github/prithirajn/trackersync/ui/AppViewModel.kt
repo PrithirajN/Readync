@@ -55,6 +55,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** The least time between background changes reaching the screens. */
+private const val GAP_MS = 120L
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = (app as TrackerSyncApp).store
 
@@ -73,7 +76,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val onUndo: (() -> Unit)? = null,
     )
 
-    private val listener: (Snapshot) -> Unit = { _state.value = it }
+    /**
+     * New state for the screens. A change you make (on the screen's thread) shows at once; changes
+     * pouring in from a sync or a background job are passed on at most every [GAP_MS], the newest
+     * each time, so the whole screen isn't redrawn dozens of times a second while it scrolls.
+     */
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private val latest = java.util.concurrent.atomic.AtomicReference<Snapshot?>(null)
+    private val queued = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var lastEmit = 0L
+    private val emit = Runnable {
+        queued.set(false)
+        lastEmit = android.os.SystemClock.uptimeMillis()
+        latest.getAndSet(null)?.let { _state.value = it }
+    }
+
+    private val listener: (Snapshot) -> Unit = { s ->
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            latest.set(null)
+            main.removeCallbacks(emit); queued.set(false)
+            lastEmit = android.os.SystemClock.uptimeMillis()
+            _state.value = s
+        } else {
+            latest.set(s)
+            if (queued.compareAndSet(false, true)) {
+                val wait = (lastEmit + GAP_MS - android.os.SystemClock.uptimeMillis()).coerceAtLeast(0L)
+                main.postDelayed(emit, wait)
+            }
+        }
+    }
 
     init {
         store.addListener(listener)
@@ -83,6 +114,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        main.removeCallbacks(emit)
         store.removeListener(listener)
     }
 
@@ -3279,28 +3311,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Downloads a ready-made model into the app, then loads it once to check it works on this phone. */
-    fun downloadModel(choice: io.github.prithirajn.trackersync.ai.LocalModel.Choice, onProgress: (Float) -> Unit, done: (String?) -> Unit) {
-        viewModelScope.launch {
-            val error = io {
-                // The model already in use stays if the new one can't be fetched or added.
-                val before = io.github.prithirajn.trackersync.ai.LocalModel.file(getApplication<android.app.Application>())?.path
-                runCatching {
-                    io.github.prithirajn.trackersync.ai.LocalModel.download(getApplication<android.app.Application>(), choice) { p -> onProgress(p) }
-                    io.github.prithirajn.trackersync.ai.LocalModel.get(getApplication<android.app.Application>()) ?: throw IllegalStateException("The model didn't load")
-                    Unit
-                }.exceptionOrNull()?.let { e ->
-                    // A model that won't run here isn't kept (the licence message keeps nothing either).
-                    // A new model that won't load on this phone isn't kept.
-                    val now = io.github.prithirajn.trackersync.ai.LocalModel.file(getApplication<android.app.Application>())?.path
-                    if (now != null && now != before) io.github.prithirajn.trackersync.ai.LocalModel.remove(getApplication<android.app.Application>())
-                    e.message ?: "Couldn't download that model"
-                }
-            }
-            if (error == null) notify("On-device AI is ready", choice.name) else notify("Couldn't use ${choice.name}", error, error = true)
-            done(error)
-        }
-    }
+    /**
+     * Downloads a ready-made model into the app in the background (it carries on while you use the
+     * rest of the app, with a notification), then loads it once to check it works on this phone.
+     */
+    fun downloadModel(choice: io.github.prithirajn.trackersync.ai.LocalModel.Choice) =
+        io.github.prithirajn.trackersync.ai.ModelDownload.start(getApplication<android.app.Application>(), choice)
 
     fun removeModel(done: () -> Unit = {}) {
         viewModelScope.launch {

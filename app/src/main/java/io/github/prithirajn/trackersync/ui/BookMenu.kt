@@ -220,7 +220,7 @@ fun BookActionSheet(vm: AppViewModel, state: Snapshot, book: Book, action: BookA
 @Composable
 private fun MenuSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

@@ -101,11 +101,18 @@ object CoverAccent {
 
 /** Cover images: a small memory cache in front of a disk cache in the app's cache folder. */
 object CoverCache {
-    private val memory = object : LruCache<String, Bitmap>(16 * 1024 * 1024) {
+    // A sixth of the app's memory (up to 96 MB), so a scrolled list's covers stay in memory instead
+    // of being read and decoded again each time they come back on screen.
+    private val memory = object : LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 6).coerceIn(16L * 1024 * 1024, 96L * 1024 * 1024).toInt(),
+    ) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
     fun cached(url: String): Bitmap? = memory.get(url)
+
+    /** The cover in memory, when it's big enough for [heightPx] (a small thumbnail doesn't stand in for a big cover). */
+    fun cached(url: String, heightPx: Int): Bitmap? = memory.get(url)?.takeIf { it.height >= heightPx * 0.7f }
 
     private fun key(url: String): String =
         MessageDigest.getInstance("MD5").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -120,7 +127,7 @@ object CoverCache {
 
     /** Blocking. Downscales to about [maxHeightPx] tall so a list of covers stays light. */
     fun load(context: Context, url: String, maxHeightPx: Int): Bitmap? {
-        memory.get(url)?.let { return it }
+        cached(url, maxHeightPx)?.let { return it }
         val dir = File(context.cacheDir, "covers").apply { mkdirs() }
         val file = File(dir, key(url))
         val bytes = if (file.exists()) {
@@ -138,8 +145,15 @@ object CoverCache {
         }
         var sample = 1
         while (bounds.outHeight / (sample * 2) >= maxHeightPx) sample *= 2
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
             ?: return null
+        // Down to the size it's shown at (halving steps can leave it up to twice as big): less to keep and draw.
+        val bitmap = if (decoded.height > maxHeightPx * 1.25f && maxHeightPx > 0) {
+            val w = (decoded.width * maxHeightPx.toFloat() / decoded.height).toInt().coerceAtLeast(1)
+            runCatching { Bitmap.createScaledBitmap(decoded, w, maxHeightPx, true) }.getOrNull()?.also { if (it !== decoded) decoded.recycle() } ?: decoded
+        } else decoded
+        // Sent to the graphics chip now, off the screen's thread, so its first frame on screen doesn't stall.
+        bitmap.prepareToDraw()
         memory.put(url, bitmap)
         return bitmap
     }
@@ -155,11 +169,11 @@ fun BookCover(url: String?, title: String, width: Dp, height: Dp, modifier: Modi
     val heightPx = with(LocalDensity.current) { height.roundToPx() }
     // Keyed on the cover's address: when this spot shows a different book (a list reordered or
     // grew), the old picture is dropped first, so a cover never sticks to the wrong book.
-    val image by produceState<ImageBitmap?>(url?.let { CoverCache.cached(it)?.asImageBitmap() }, url, heightPx) {
-        value = url?.let { CoverCache.cached(it)?.asImageBitmap() }
+    val image by produceState<ImageBitmap?>(url?.let { CoverCache.cached(it, heightPx)?.asImageBitmap() }, url, heightPx) {
+        value = url?.let { CoverCache.cached(it, heightPx)?.asImageBitmap() }
         if (url != null && value == null) {
             val loaded = withContext(Dispatchers.IO) {
-                runCatching { CoverCache.load(context, url, heightPx * 2) }.getOrNull()?.asImageBitmap()
+                runCatching { CoverCache.load(context, url, heightPx) }.getOrNull()?.asImageBitmap()
             }
             value = loaded
         }

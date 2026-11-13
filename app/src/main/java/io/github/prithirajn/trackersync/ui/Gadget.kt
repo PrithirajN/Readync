@@ -280,12 +280,17 @@ fun SegmentBar(
 fun Wallpaper(modifier: Modifier = Modifier, height: Dp = 340.dp, color: Color = Cp.colors.wall) {
     val c = Cp.colors
     val on = LocalAnimationsOn.current
-    val drift = androidx.compose.animation.core.rememberInfiniteTransition(label = "wall")
-    val t by drift.animateFloat(
-        0f, if (on) (Math.PI * 2).toFloat() else 0f,
-        androidx.compose.animation.core.infiniteRepeatable(tween(durationMillis = 26_000, easing = androidx.compose.animation.core.LinearEasing)),
-        label = "wallT",
-    )
+    // The drift is slow (once round in 26 s), so it's moved 15 times a second, not on every frame
+    // (on a 120 Hz screen that's 8 times less drawing behind everything you scroll).
+    val tState = androidx.compose.runtime.remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    if (on) androidx.compose.runtime.LaunchedEffect(Unit) {
+        var last = 0L
+        while (true) {
+            androidx.compose.runtime.withFrameMillis { ms ->
+                if (ms - last >= 66) { last = ms; tState.floatValue = ((ms % 26_000L) / 26_000f) * (Math.PI * 2).toFloat() }
+            }
+        }
+    }
     val glow = if (c.isDark) 0.55f else 0.85f
     val second = lerpColor(color, if (c.isDark) Color(0xFF6B4BFF) else Color(0xFFFFC7E3), 0.55f)
     Box(
@@ -295,7 +300,10 @@ fun Wallpaper(modifier: Modifier = Modifier, height: Dp = 340.dp, color: Color =
             // The blooms are bigger than the box: keep them inside it, so the colour ends in the fade
             // instead of carrying on below it in a hard line.
             .clipToBounds()
+            // Its own layer: its redraws don't make the screen above it redraw.
+            .graphicsLayer()
             .drawBehind {
+                val t = tState.floatValue
                 val w = size.width
                 val h = size.height
                 fun bloom(x: Float, y: Float, r: Float, col: Color, a: Float) =

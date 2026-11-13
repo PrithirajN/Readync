@@ -166,12 +166,19 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                                     scaleY = s
                                 }
                         ) {
+                            // Tabs out of sight keep what they last showed: a sync's changes redraw the
+                            // tab you're on (and the ones beside it, ready to slide in), not all five.
+                            // A tab being gone to catches up as soon as the move starts.
+                            val near = kotlin.math.abs(page - pager.currentPage) <= 1 || page == pager.targetPage || page == pager.settledPage
+                            val held = remember { androidx.compose.runtime.mutableStateOf(state) }
+                            androidx.compose.runtime.SideEffect { if (near && held.value !== state) held.value = state }
+                            val pageState = if (near) state else held.value
                             when (Tab.entries[page]) {
-                                Tab.LIBRARY -> LibraryScreen(vm, state, home = libraryHome)
-                                Tab.SFF -> SffScreen(vm, state, active = pager.settledPage == page)
-                                Tab.CATALOGS -> CatalogsScreen(vm, state)
-                                Tab.SERVICES -> ServicesScreen(vm, state)
-                                Tab.ACTIVITY -> ActivityScreen(vm, state)
+                                Tab.LIBRARY -> LibraryScreen(vm, pageState, home = libraryHome)
+                                Tab.SFF -> SffScreen(vm, pageState, active = pager.settledPage == page)
+                                Tab.CATALOGS -> CatalogsScreen(vm, pageState)
+                                Tab.SERVICES -> ServicesScreen(vm, pageState)
+                                Tab.ACTIVITY -> ActivityScreen(vm, pageState)
                             }
                         }
                     }

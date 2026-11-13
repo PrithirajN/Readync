@@ -44,6 +44,9 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         // The icon's colour changes only once you've left the app (and not on a rotation).
         if (!isChangingConfigurations) io.github.prithirajn.trackersync.ui.IconSwitcher.apply(this)
+        // Leaving the app: the last changes written out (off the screen's thread).
+        val app = application as TrackerSyncApp
+        Thread({ app.store.flush() }, "store-flush").start()
     }
 
     override fun onNewIntent(intent: Intent) {

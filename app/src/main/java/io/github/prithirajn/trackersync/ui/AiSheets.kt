@@ -40,7 +40,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
 @Composable
 internal fun AiSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

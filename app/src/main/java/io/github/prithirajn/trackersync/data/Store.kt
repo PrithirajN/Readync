@@ -90,12 +90,34 @@ class Store(private val file: File, private val secrets: Secrets) {
         }
     }
 
+    /**
+     * Saving happens on its own thread, so a tap that changes something never waits for the whole
+     * library to be written out (the screen stutters otherwise). Changes made in quick succession are
+     * written once, as the newest; the file is always written whole and swapped in, so it's never
+     * left half-written.
+     */
+    private val writer = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "store-save").apply { priority = Thread.NORM_PRIORITY - 1; isDaemon = true }
+    }
+    private val unsaved = java.util.concurrent.atomic.AtomicReference<Snapshot?>(null)
+
     private fun save(s: Snapshot) {
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(toJson(s).toString())
-        if (!tmp.renameTo(file)) {
-            file.delete()
-            tmp.renameTo(file)
+        if (unsaved.getAndSet(s) == null) writer.execute { unsaved.getAndSet(null)?.let { write(it) } }
+    }
+
+    /** Waits until every change so far is on disk (before something reads the file itself). */
+    fun flush() {
+        runCatching { writer.submit { unsaved.getAndSet(null)?.let { write(it) } }.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+    }
+
+    private fun write(s: Snapshot) {
+        runCatching {
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.writeText(toJson(s).toString())
+            if (!tmp.renameTo(file)) {
+                file.delete()
+                tmp.renameTo(file)
+            }
         }
     }
 

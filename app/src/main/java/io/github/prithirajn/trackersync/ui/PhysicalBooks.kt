@@ -50,7 +50,7 @@ import java.io.File
 @Composable
 private fun Sheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

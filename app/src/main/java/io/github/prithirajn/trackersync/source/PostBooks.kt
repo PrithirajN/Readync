@@ -130,8 +130,8 @@ object PostBooks {
             if (html != null) {
                 val desc = meta(html, "og:description") ?: meta(html, "description") ?: meta(html, "twitter:description")
                 // Instagram's: "123 likes, 4 comments - name on Date: "caption"".
-                val ig = desc?.let { Regex("(?s)^[\\d,.KkMm]+ likes?.*?-\\s*([^ ]+) on [^:]+:\\s*[\"“](.*)[\"”]\\.?\\s*$").find(it) }
-                if (caption == null) caption = ig?.groupValues?.get(2) ?: desc ?: meta(html, "og:title")
+                val ig = desc?.let { Regex("(?s)^[\\d,.KkMm]+ likes?.*?-\\s*([^ ]+) on [^:]+:\\s*[\"“](.*?)(?:[\"”]\\.?)?\\s*$").find(it) }
+                if (caption == null) caption = ig?.groupValues?.get(2)?.removeSuffix("...")?.removeSuffix("…") ?: desc ?: meta(html, "og:title")
                 if (creator == null) creator = ig?.groupValues?.get(1) ?: meta(html, "og:site_name")?.takeIf { platform == "Web" }
                 if (thumb == null) thumb = meta(html, "og:image") ?: meta(html, "twitter:image")
             }
@@ -141,8 +141,10 @@ object PostBooks {
     }
 
     private fun meta(html: String, prop: String): String? =
-        Regex("""<meta[^>]+(?:property|name)=["']${Regex.escape(prop)}["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
-            ?: Regex("""<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${Regex.escape(prop)}["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
+        (Regex("""<meta[^>]+(?:property|name)=["']${Regex.escape(prop)}["'][^>]+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1)
+            ?: Regex("""<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${Regex.escape(prop)}["']""", RegexOption.IGNORE_CASE).find(html)?.groupValues?.get(1))
+            // Addresses in a page's tags carry "&amp;": a picture's signed address doesn't load with it.
+            ?.replace("&amp;", "&")?.replace("&#38;", "&")?.replace("&#x2F;", "/")
 
     /**
      * The post's pictures, best first: every picture of an Instagram post (a carousel's too, at full
@@ -255,7 +257,8 @@ One book per line, at most five. Write nothing else. If there's no book you're s
 
     // ---- picking the names out ----
 
-    data class Guess(val query: String, val author: String?, val from: String)
+    /** A name to check: its title, author when given, where it came from, and the account it was credited to ("by @someone"). */
+    data class Guess(val query: String, val author: String?, val from: String, val handle: String? = null)
 
     private val NOT_BOOKS = setOf(
         "booktok", "bookstagram", "booktube", "books", "book", "reading", "reader", "readers", "bookish", "booklover", "bookworm",
@@ -267,11 +270,11 @@ One book per line, at most five. Write nothing else. If there's no book you're s
     /** The names a post's caption and picture give, most likely first. */
     fun guesses(caption: String?, picture: List<String>): List<Guess> {
         val out = LinkedHashMap<String, Guess>()
-        fun add(q: String, a: String?, from: String) {
+        fun add(q: String, a: String?, from: String, handle: String? = null) {
             val t = q.replace(Regex("^[\\s\\d.)\\-–—•*#📚📖✨🔥⭐️❤️]+"), "").replace(Regex("[\\s:;,.!?\\-–—]+$"), "").trim()
             if (t.length < 3 || t.split(' ').size > 12) return
             if (t.lowercase().replace(" ", "") in NOT_BOOKS) return
-            out.putIfAbsent(t.lowercase(), Guess(t, a?.trim()?.takeIf { it.length in 3..60 }, from))
+            out.putIfAbsent(t.lowercase(), Guess(t, a?.trim()?.takeIf { it.length in 3..60 }, from, handle))
         }
         val text = caption.orEmpty()
         // "Title by Author" (also "Title - Author" on a list line).
@@ -281,7 +284,9 @@ One book per line, at most five. Write nothing else. If there's no book you're s
                 // phrase, and an account's handle (one word, small letters or @) isn't the author.
                 val a = m.groupValues[2].trim()
                 val handle = a.startsWith("@") || (!a.contains(' ') && (a.first().isLowerCase() || a.any { it == '_' || it.isDigit() }))
-                add(titleTail(m.groupValues[1]).ifBlank { m.groupValues[1] }, a.takeUnless { handle || a.first().isLowerCase() }, "caption")
+                // An account credited as the author: the rest of its handle after the words ("@david.scott.hay.official").
+                val full = if (a.startsWith("@")) Regex("@[A-Za-z0-9_.]+").find(line, m.range.first + m.value.indexOf(a))?.value ?: a else a
+                add(titleTail(m.groupValues[1]).ifBlank { m.groupValues[1] }, a.takeUnless { handle || a.first().isLowerCase() }, "caption", full.takeIf { handle })
             }
         }
         // Quoted titles.
@@ -380,24 +385,66 @@ ${picture.joinToString("\n").take(800)}"""
      * Names the catalogue doesn't know yet (a cover reveal for next year's book) that the post's caption
      * gives and its picture shows too: kept, as the post names them, with the cover's author line.
      */
-    fun unlisted(guesses: List<Guess>, picture: List<String>, found: List<Found>, thumb: String?): List<Found> {
+    fun unlisted(guesses: List<Guess>, picture: List<String>, found: List<Found>, thumb: String?, caption: String? = null): List<Found> {
         val seen = letters(picture.joinToString(" "))
-        if (seen.isEmpty()) return emptyList()
         val have = found.map { letters(Matcher.baseTitle(it.title)) }.toSet()
+        // A post plainly about a book (its cover, a paperback, a release): "Title by @account" counts on its own.
+        val aboutABook = caption?.let { BOOK_WORDS.containsMatchIn(it) } == true
         return guesses.asSequence()
-            .filter { it.from == "caption" && letters(it.query).length >= 6 && seen.contains(letters(it.query)) && letters(it.query) !in have }
+            .filter { it.from == "caption" && letters(it.query).length >= 6 && letters(it.query) !in have }
+            .filter { g -> (seen.isNotEmpty() && seen.contains(letters(g.query))) || (aboutABook && g.handle != null && g.query.first().isUpperCase()) }
             .distinctBy { letters(it.query) }
             .take(2)
-            .map { g -> Found(g.query, g.author ?: pictureAuthor(picture, g.query), thumb, null, null, "caption") }
+            .map { g -> Found(g.query, g.author ?: pictureAuthor(picture, g.query) ?: g.handle?.let(::nameOfHandle), thumb, null, null, "caption") }
             .toList()
+    }
+
+    private val BOOK_WORDS = Regex("(?i)\\b(cover|paperback|hardcover|hardback|novel|book|preorder|pre-order|out now|release|releases|available|coming|debut|ARC|edition|signed|chapter)\\b")
+
+    /** An author's name from their account: "@david.scott.hay.official" -> David Scott Hay. */
+    fun nameOfHandle(handle: String): String? {
+        val words = handle.removePrefix("@").split('.', '_').filter { it.isNotBlank() }
+            .filter { it.lowercase() !in setOf("official", "author", "writes", "writer", "books", "book", "the", "real", "iam", "art", "official1") && it.all { c -> c.isLetter() } }
+        if (words.size !in 2..4) return null
+        return words.joinToString(" ") { it.lowercase().replaceFirstChar { c -> c.uppercase() } }
     }
 
     // ---- checking each against a catalogue ----
 
     private fun letters(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
 
-    /** The book [g] names, from Google Books, when one clearly is it. Blocking. */
-    fun verify(g: Guess): Found? {
+    /** The book [g] names, from Google Books, else Open Library, when one clearly is it. Blocking. */
+    fun verify(g: Guess): Found? = runCatching { google(g) }.getOrNull() ?: runCatching { openLibrary(g) }.getOrNull()
+
+    /** Whether a catalogue's [title] is the name [g] gives (the whole title, or its start). */
+    private fun titleFits(g: Guess, title: String): Boolean {
+        val want = letters(g.query)
+        val have = letters(Matcher.baseTitle(title))
+        return when (g.from) {
+            "hashtag", "picture", "cover" -> have == want || (have.length >= 6 && want.startsWith(have))
+            else -> have == want || (have.length >= 5 && (want.startsWith(have) || have.startsWith(want)))
+        }
+    }
+
+    /** Open Library's search, for books Google Books doesn't list (or when it turns the app away). */
+    private fun openLibrary(g: Guess): Found? {
+        val q = "title=" + URLEncoder.encode(g.query, "UTF-8") + (g.author?.let { "&author=" + URLEncoder.encode(it, "UTF-8") } ?: "")
+        val j = JSONObject(Http.request("GET", "https://openlibrary.org/search.json?$q&limit=5&fields=title,author_name,isbn,cover_i,number_of_pages_median", timeoutMs = 12_000).body)
+        val docs = j.optJSONArray("docs") ?: return null
+        for (i in 0 until docs.length()) {
+            val d = docs.optJSONObject(i) ?: continue
+            val title = d.optString("title").ifBlank { continue }
+            if (!titleFits(g, title)) continue
+            val authors = d.optJSONArray("author_name")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+            if (g.author != null && authors.isNotEmpty() && authors.none { a -> letters(a).contains(letters(g.author).takeLast(5)) }) continue
+            val isbn = d.optJSONArray("isbn")?.let { a -> (0 until a.length()).map { a.optString(it) }.firstOrNull { it.length == 13 } }
+            val cover = d.optInt("cover_i").takeIf { it > 0 }?.let { "https://covers.openlibrary.org/b/id/$it-L.jpg" }
+            return Found(title, authors.firstOrNull() ?: g.author, cover, isbn, d.optInt("number_of_pages_median").takeIf { it > 0 }, g.from)
+        }
+        return null
+    }
+
+    private fun google(g: Guess): Found? {
         val q = buildString {
             append("intitle:").append(g.query)
             g.author?.let { append(" inauthor:").append(it) }
@@ -541,20 +588,28 @@ ${picture.joinToString("\n").take(800)}"""
         val urls = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { pictures(post) }
         progress(if (urls.size > 1) "Reading the words on its ${urls.size} pictures" else "Reading the words on its picture")
         val picture = pictureText(context, urls)
+        // The way book posts are written first (quick); the on-device AI only when that finds nothing
+        // (loading and asking it takes a while).
+        val comps = comparisons(post.caption)
         progress("Picking out the books")
-        val guesses = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val comps = comparisons(post.caption)
-            (aiGuesses(post.caption, picture) + guesses(post.caption, picture)).distinctBy { letters(it.query) }
-                .filterNot { letters(it.query) in comps }.take(30)
+        val ruled = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            guesses(post.caption, picture).distinctBy { letters(it.query) }.filterNot { letters(it.query) in comps }.take(30)
         }
-        progress("Checking ${guesses.size} names against Google Books")
-        val found = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val comps = comparisons(post.caption)
-            val checked = guesses.mapNotNull { g -> runCatching { verify(g) }.getOrNull() }
+        suspend fun check(gs: List<Guess>): List<Found> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val checked = gs.mapNotNull { g -> runCatching { verify(g) }.getOrNull() }
                 .filterNot { letters(Matcher.baseTitle(it.title)) in comps }
                 .distinctBy { letters(Matcher.baseTitle(it.title)) + "|" + letters(it.author ?: "") }
-            checked + unlisted(guesses, picture, checked, post.thumbnail)
-        }.toMutableList()
+            checked + unlisted(gs, picture, checked, post.thumbnail, post.caption)
+        }
+        progress("Checking ${ruled.size} names against Google Books")
+        val found = check(ruled).toMutableList()
+        if (found.isEmpty() && io.github.prithirajn.trackersync.ai.Ai.model() != null) {
+            progress("Asking the on-device AI")
+            val asked = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                aiGuesses(post.caption, picture).distinctBy { letters(it.query) }.filterNot { letters(it.query) in comps || it.query.lowercase() in ruled.map { r -> r.query.lowercase() } }.take(15)
+            }
+            if (asked.isNotEmpty()) { progress("Checking what it named"); found += check(asked) }
+        }
         // Nothing named in words: the model looks at the pictures themselves, when it can.
         if (found.isEmpty() && urls.isNotEmpty() && io.github.prithirajn.trackersync.ai.Ai.model() != null) {
             progress("Looking at the pictures")

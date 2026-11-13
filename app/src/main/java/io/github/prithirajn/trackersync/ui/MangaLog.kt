@@ -185,7 +185,7 @@ private fun IssueList(
 private fun PagesPerSheet(vm: AppViewModel, state: Snapshot, key: String, comic: Boolean, onClose: () -> Unit) {
     val c = Cp.colors
     var pages by remember { mutableStateOf(state.pagesPer[key]?.toString() ?: "") }
-    androidx.compose.material3.ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -220,7 +220,7 @@ private fun IssueDaysSheet(vm: AppViewModel, series: String, comic: Boolean, n: 
     var picking by remember { mutableStateOf<Boolean?>(null) } // true: start
     var error by remember { mutableStateOf<String?>(null) }
     val label = io.github.prithirajn.trackersync.sync.ComicIssues.label(n)
-    androidx.compose.material3.ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -266,7 +266,7 @@ private fun VolumeRangeSheet(vm: AppViewModel, state: Snapshot, key: String, vol
     var to by remember { mutableStateOf(have?.maxOrNull()?.let(lab) ?: "") }
     var error by remember { mutableStateOf<String?>(null) }
     val word = if (comic) "issue" else "chapter"
-    androidx.compose.material3.ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

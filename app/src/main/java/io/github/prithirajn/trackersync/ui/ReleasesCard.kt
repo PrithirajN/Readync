@@ -163,7 +163,7 @@ private fun ReleaseSettingsSheet(vm: AppViewModel, state: Snapshot, onClose: () 
             }
         }
     }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

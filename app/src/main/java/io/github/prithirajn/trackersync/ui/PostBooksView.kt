@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.prithirajn.trackersync.R
 import io.github.prithirajn.trackersync.data.Snapshot
 import io.github.prithirajn.trackersync.source.PostBooks
 import io.github.prithirajn.trackersync.sync.Matcher
@@ -75,7 +76,8 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
     // a notification says what came of each. Here: where each has got to, and the newest marked.
     var fresh by remember { mutableStateOf<Long?>(null) }
     val running by ShareJobs.running.collectAsState()
-    val reading = running.entries.firstOrNull { it.key.startsWith("post:") }?.value
+    val readingKey = running.keys.firstOrNull { it.startsWith("post:") }
+    val reading = readingKey?.let { running[it] }
     val lastPost by ShareJobs.lastPost.collectAsState()
     LaunchedEffect(lastPost) {
         val (url, at) = lastPost ?: return@LaunchedEffect
@@ -152,6 +154,14 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
         VSpace(8)
         val busy = working ?: reading
         BigButton(if (busy != null) "$busy…" else "Find the books", { find(link) }, busy = busy != null)
+        // Where it's got to (the button only spins), and a way to stop it.
+        if (busy != null) {
+            VSpace(6)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Quiet("$busy… You can leave the app; a notification says when it's done.", Modifier.weight(1f))
+                if (readingKey != null && working == null) { HSpace(8); PillButton("Stop", { ShareJobs.stop(context, readingKey) }) }
+            }
+        }
         VSpace(6)
         // Books shown only in the video (covers held up, words on screen): screenshots or a screen recording of it.
         BigButton("From screenshots or a recording", {
@@ -201,8 +211,10 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
     fun look(name: String) {
         if (looking != null || name.isBlank()) return
         looking = name
+        // "Title by Author" (or "Title - Author") typed: both used.
+        val parts = name.split(Regex("\\s+by\\s+|\\s+[—–-]\\s+"), limit = 2)
         scope.launch {
-            val f = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { PostBooks.lookUp(name) }.getOrNull() }
+            val f = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { PostBooks.lookUp(parts[0], parts.getOrNull(1)) }.getOrNull() }
             looking = null
             when {
                 f == null -> said = "Couldn't look that up"
@@ -229,7 +241,14 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
                 Text(listOfNotNull(t.post.platform, t.post.creator?.let { if (it.startsWith("@")) it else "@$it" }).joinToString(" · "), style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Quiet((if (isNew) "New · " else "") + "${t.books.size} book${if (t.books.size == 1) "" else "s"} · ${ago(t.at * 1000)}", maxLines = 1)
             }
-            if (!t.post.url.startsWith("media:")) PillButton("Open", { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(t.post.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
+            // The card's own actions, small and together: look again, open the post, remove.
+            if (!t.post.url.startsWith("media:")) {
+                IconCircleButton(R.drawable.lucide_refresh_cw, "Look again", onAgain)
+                HSpace(6)
+                IconCircleButton(R.drawable.lucide_globe, "Open the post", { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(t.post.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
+                HSpace(6)
+            }
+            IconCircleButton(R.drawable.lucide_trash, "Remove", onRemove, tint = c.errorText)
         }
         t.post.caption?.takeIf { it.isNotBlank() }?.let { VSpace(8); Quiet(it, maxLines = 3) }
         if (t.books.isEmpty()) {
@@ -267,49 +286,51 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
                 }
             }
         }
-        VSpace(2)
-        Text(
-            if (showWords) "Hide what was read" else "Missing one? See what was read",
-            style = CpType.small, color = c.accentText,
-            modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { showWords = !showWords }.padding(vertical = 6.dp),
-        )
+        // What to do with the books found, first and side by side.
+        if (chosen.isNotEmpty()) {
+            VSpace(2)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("+ Want to read (${chosen.size})", { vm.addPostBooks(chosen) { said = it } }, Modifier.weight(1f), outlined = false)
+                PillButton("Track prices", { vm.trackPostBooks(chosen) { said = it } }, Modifier.weight(1f))
+            }
+        }
+        // A book the finder missed: a title among the words read off the picture, or one typed.
+        VSpace(10)
+        RowDivider()
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { showWords = !showWords }.padding(vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(if (t.books.isEmpty()) "Find the book yourself" else "Missing one?", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))
+            Text(if (showWords) "Hide" else "Show", style = CpType.small, color = c.accentText)
+        }
         if (showWords) {
-            if (t.seen.isEmpty()) Quiet(if (t.post.url.startsWith("media:")) "No words could be read on them." else "No words could be read on its picture.", color = c.faint)
+            if (t.seen.isEmpty()) Quiet(
+                when {
+                    // Looked at before the words were kept: Look again shows them.
+                    t.books.isEmpty() && !t.post.url.startsWith("media:") -> "Nothing kept from its picture yet: tap ↻ above to read it once more."
+                    t.post.url.startsWith("media:") -> "No words could be read on them."
+                    else -> "No words could be read on its picture."
+                },
+                color = c.faint,
+            )
             else {
-                Quiet("Words read on its picture. Tap one that's a title to look it up.")
+                Quiet("Words read on its picture: tap one that's a title.")
                 VSpace(6)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     for (w in t.seen.take(24)) PillButton(if (looking == w) "Looking…" else w.take(40), { look(w) })
                 }
             }
-            VSpace(8)
-            CpTextField(typed, { typed = it }, "Or type a title", placeholder = "Title (and author)")
-            VSpace(6)
-            PillButton(if (looking != null && looking == typed) "Looking…" else "Look it up", {
-                val parts = typed.split(Regex("\\s+by\\s+|\\s+[—–-]\\s+"), limit = 2)
-                if (parts.size == 2) {
-                    looking = typed
-                    val name = parts[0]; val by = parts[1]
-                    scope.launch {
-                        val f = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { PostBooks.lookUp(name, by) }.getOrNull() }
-                        looking = null
-                        if (f != null && t.books.none { Matcher.sameBook(it.title, it.author, f.title, f.author) }) {
-                            picked.add(f.title); onAdd(f); typed = ""
-                            said = if (f.from == "typed") "Added as written (Google Books doesn't list it yet)" else "Found ${f.title}"
-                        } else said = if (f == null) "Couldn't look that up" else "${f.title} is already here"
+            VSpace(10)
+            CpTextField(
+                typed, { typed = it }, "Or type it", placeholder = "Title by Author",
+                trailing = {
+                    if (looking != null && looking == typed) CircularProgressIndicator(Modifier.size(18.dp), color = c.accent, strokeWidth = 2.dp)
+                    else Box(Modifier.size(36.dp).clip(CircleShape).clickable(enabled = typed.isNotBlank()) { look(typed.trim()) }, contentAlignment = Alignment.Center) {
+                        LucideIcon(R.drawable.lucide_search, Modifier.size(18.dp), if (typed.isNotBlank()) c.accent else c.faint)
                     }
-                } else look(typed)
-            }, outlined = false)
-            VSpace(8)
-        }
-        VSpace(4)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (chosen.isNotEmpty()) {
-                PillButton("+ Want to read (${chosen.size})", { vm.addPostBooks(chosen) { said = it } }, outlined = false)
-                PillButton("Add to price tracker", { vm.trackPostBooks(chosen) { said = it } })
-            }
-            if (!t.post.url.startsWith("media:")) PillButton("Look again", onAgain)
-            PillButton("Remove", onRemove, danger = true)
+                },
+            )
         }
         said?.let { VSpace(6); AnimatedQuiet(it, color = c.textMid) }
     }

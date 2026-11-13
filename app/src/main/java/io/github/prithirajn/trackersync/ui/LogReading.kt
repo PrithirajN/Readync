@@ -105,7 +105,7 @@ internal fun LogReadingSheet(
     val word = if (comic) "issue" else "chapter"
     fun lab(x: Double) = if (comic) "#${ComicIssues.label(x)}" else "Ch. ${ComicIssues.label(x)}"
 
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

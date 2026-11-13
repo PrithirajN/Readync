@@ -54,7 +54,7 @@ fun ServerSignInSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -106,7 +106,7 @@ fun OAuthSignInSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     val c = Cp.colors
     val clipboard = LocalClipboardManager.current
     val redirect = remember { runCatching { t.oauthStart("0".repeat(32)).redirectUri }.getOrNull() }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

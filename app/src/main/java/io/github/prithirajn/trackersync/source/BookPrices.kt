@@ -156,6 +156,80 @@ object BookPrices {
 
     private val EDITION = Regex("(?i)\\b(deluxe|special|collector'?s|limited|anniversary|signed|illustrated|exclusive|sprayed[- ]edges?|gift|premium)\\b(?:\\s+(?:hardcover\\s+)?edition)?")
 
+    private val SMALL = setOf("a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with", "from", "into")
+
+    /**
+     * A shop's shouting, shortened title made readable: "LEVIATHAN WAKES 10TH ANNIV ED" becomes
+     * "Leviathan Wakes 10th Anniversary Edition". Titles already in normal case keep their case.
+     */
+    fun tidyShopTitle(raw: String): String {
+        var t = raw.trim().replace(Regex("\\s+"), " ")
+        val letters = t.filter { it.isLetter() }
+        val shouting = letters.length >= 6 && letters.count { it.isUpperCase() } >= letters.length * 0.8
+        // Shop shorthand spelled out.
+        val words = mapOf(
+            "anniv" to "Anniversary", "annv" to "Anniversary", "edn" to "Edition", "spl" to "Special", "spcl" to "Special",
+            "ltd" to "Limited", "coll" to "Collector's", "collectors" to "Collector's", "illus" to "Illustrated", "dlx" to "Deluxe",
+        )
+        t = t.split(' ').joinToString(" ") { w ->
+            val bare = w.trim('(', ')', ',', '.').lowercase()
+            words[bare]?.let { w.replace(Regex("(?i)" + Regex.escape(bare)), it) } ?: w
+        }
+        // "ED" after an edition word (or at the very end after one): "Edition".
+        t = t.replace(Regex("(?i)\\b(Anniversary|Special|Deluxe|Collector's|Limited|Illustrated|Signed|\\d+(?:st|nd|rd|th))\\s+ED\\b\\.?"), "$1 Edition")
+        // "(PB)", "HB", "Paperback" tags off the end.
+        t = t.replace(Regex("(?i)[\\s(\\[-]*\\b(PB|HB|HBK|PBK)\\b[)\\]]?\\s*$"), "").trim()
+        if (!shouting) return t
+        return t.split(' ').mapIndexed { i, w ->
+            val lower = w.lowercase()
+            when {
+                Regex("^\\d+(st|nd|rd|th)$").matches(lower) -> lower
+                Regex("^[ivxlc]+$").matches(lower) && lower.length <= 4 && i > 0 -> w.uppercase()
+                i > 0 && lower in SMALL -> lower
+                else -> lower.replaceFirstChar { it.uppercase() }.replace(Regex("(?<=['’-])(\\p{L})")) { m -> m.value.uppercase() }.replace("'S", "'s").replace("’S", "’s")
+            }
+        }.joinToString(" ")
+    }
+
+    /** A title without its edition words, for searching ("Leviathan Wakes 10th Anniversary Edition" -> "Leviathan Wakes"). */
+    fun withoutEdition(title: String): String =
+        title.replace(Regex("(?i)[(\\[]?\\s*\\b(\\d+(st|nd|rd|th)\\s+)?(anniversary|deluxe|special|collector'?s|limited|illustrated|signed|exclusive|gift|premium)(\\s+(hardcover\\s+)?edition)?\\b\\s*[)\\]]?"), " ")
+            .replace(Regex("(?i)\\b(hardcover|paperback|edition)\\b"), " ")
+            .replace(Regex("\\s+"), " ").trim().trimEnd(':', '-', '–', ',').trim()
+            .ifBlank { title }
+
+    /**
+     * A tracked book's missing pieces (a shop's shouty title, no cover, no author) filled in from
+     * Google Books: by its ISBN when known (then the ISBN is this edition's), else by its title. Blocking.
+     */
+    fun fillIn(w: PriceWatch): PriceWatch {
+        val title = w.title ?: return w
+        val tidy = tidyShopTitle(title)
+        val needs = w.cover == null || w.author == null || tidy != title
+        if (!needs) return w
+        val q = w.isbn?.filter { it.isDigit() || it == 'X' }?.takeIf { it.length == 13 || it.length == 10 }?.let { "isbn:$it" }
+            ?: ("intitle:" + withoutEdition(tidy) + (w.author?.let { " inauthor:$it" } ?: ""))
+        val v = runCatching {
+            JSONObject(get("https://www.googleapis.com/books/v1/volumes?maxResults=3&printType=books&q=" + URLEncoder.encode(q, "UTF-8")))
+                .optJSONArray("items")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it)?.optJSONObject("volumeInfo") } }
+                ?.firstOrNull { v -> q.startsWith("isbn:") || letters(Matcher.baseTitle(v.optString("title"))) == letters(Matcher.baseTitle(withoutEdition(tidy))) }
+        }.getOrNull()
+        val name = v?.optString("title")?.ifBlank { null }
+        // The edition the shop page is for stays in the name ("Leviathan Wakes (10th Anniversary Edition)").
+        val edition = Regex("(?i)\\b(\\d+(?:st|nd|rd|th)\\s+)?(anniversary|deluxe|special|collector's|limited|illustrated|signed)\\s+edition\\b").find(tidy)?.value
+        val shown = when {
+            name == null -> tidy
+            edition != null && !name.contains(edition, true) -> "$name ($edition)"
+            else -> name
+        }
+        return w.copy(
+            title = shown,
+            author = w.author ?: v?.optJSONArray("authors")?.optString(0)?.ifBlank { null },
+            cover = w.cover ?: v?.optJSONObject("imageLinks")?.let { it.optString("thumbnail").ifBlank { it.optString("smallThumbnail") } }
+                ?.ifBlank { null }?.replace("http://", "https://")?.replace("&edge=curl", ""),
+        )
+    }
+
     /** "Deluxe edition", "Special edition"… when the title says so. */
     fun editionOf(title: String?): String? = title?.let { EDITION.find(it)?.groupValues?.get(1) }
         ?.replace('-', ' ')?.lowercase()?.replaceFirstChar { it.uppercase() }?.let { if (it.endsWith("edges")) it else "$it edition" }
@@ -188,13 +262,16 @@ object BookPrices {
     private val strictEdition = ThreadLocal<Boolean>()
 
     /** What to search a store for: the ISBN, then the title (without its subtitle) and the author's surname. */
-    private fun queries(book: Book): List<String> = listOfNotNull(
-        book.isbn?.filter { it.isDigit() || it == 'X' }?.takeIf { it.length == 13 || it.length == 10 },
-        listOfNotNull(
-            book.displayTitle.substringBefore(":").substringBefore(" (").trim().ifEmpty { book.displayTitle },
-            book.author?.split(",", "&", " and ")?.firstOrNull()?.trim()?.split(" ")?.lastOrNull(),
-        ).joinToString(" "),
-    ).distinct()
+    private fun queries(book: Book): List<String> {
+        val surname = book.author?.split(",", "&", " and ")?.firstOrNull()?.trim()?.split(" ")?.lastOrNull()
+        val title = tidyShopTitle(book.displayTitle).substringBefore(":").substringBefore(" (").trim().ifEmpty { book.displayTitle }
+        return listOfNotNull(
+            book.isbn?.filter { it.isDigit() || it == 'X' }?.takeIf { it.length == 13 || it.length == 10 },
+            listOfNotNull(title, surname).joinToString(" "),
+            // Without "10th Anniversary Edition" and the like, which shops word differently.
+            listOfNotNull(withoutEdition(title), surname).joinToString(" "),
+        ).distinct()
+    }
 
     /** Every store's price for [book] now (one point per store, and Kindle beside print on Amazon). Stores that fail are left out. */
     fun check(book: Book, watch: PriceWatch, now: Long = System.currentTimeMillis() / 1000): Pair<List<PricePoint>, List<String>> {
@@ -770,6 +847,7 @@ object BookPrices {
             )
             s.copy(priceWatch = s.priceWatch + (key to w))
         }
+        fillInWatch(store, key)
         // The other stores, now.
         refresh(store, force = key)
         val title = inLibrary?.displayTitle ?: f.title
@@ -792,7 +870,9 @@ object BookPrices {
         val s0 = store.snapshot
         val due = if (force != null) listOfNotNull(s0.priceWatch[force])
             else s0.priceWatch.values.filter { now - it.checkedAt >= EVERY_SEC }.sortedBy { it.checkedAt }.take(perRun)
-        for (w in due) {
+        for (w0 in due) {
+            fillInWatch(store, w0.document)
+            val w = store.snapshot.priceWatch[w0.document] ?: continue
             val book = w.book(store.snapshot) ?: continue
             val (points, problems) = runCatching { check(book, w, now) }.getOrElse { emptyList<PricePoint>() to listOf(it.message ?: "couldn't check") }
             val found2 = lastListings().filterValues { it.isNotEmpty() }
@@ -825,6 +905,14 @@ object BookPrices {
                 )))
             }
         }
+    }
+
+    /** [fillIn] for one tracked book that isn't in the library (a library book has its own details). */
+    private fun fillInWatch(store: Store, key: String) {
+        val w = store.snapshot.priceWatch[key] ?: return
+        if (key in store.snapshot.books) return
+        val filled = runCatching { fillIn(w) }.getOrNull() ?: return
+        if (filled != w) store.update { s -> s.priceWatch[key]?.let { cur -> s.copy(priceWatch = s.priceWatch + (key to cur.copy(title = filled.title, author = filled.author, cover = filled.cover))) } ?: s }
     }
 
     /** At most this often per book on its own (twice a day). */

@@ -578,13 +578,16 @@ private fun StatsCard(reading: Int, pages: Int?, finished: Int, today: Int? = nu
                         val isToday = !readToday && i == litCount
                         Box(
                             Modifier.padding(start = 4.dp).size(width = 12.dp, height = 8.dp).clip(CpShapes.pill)
-                                .background(
-                                    when {
-                                        lit -> c.accent
-                                        isToday -> c.accent.copy(alpha = 0.25f + 0.5f * b)
-                                        else -> c.screenOff
-                                    },
-                                ),
+                                // Today's blink read while drawing, so only this dot redraws, not the panel.
+                                .drawBehind {
+                                    drawRect(
+                                        when {
+                                            lit -> c.accent
+                                            isToday -> c.accent.copy(alpha = 0.25f + 0.5f * b)
+                                            else -> c.screenOff
+                                        },
+                                    )
+                                },
                         )
                     }
                 }
@@ -887,7 +890,7 @@ private fun BookSheet(
         value = book.coverUrl?.let { u -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { CoverAccent.of(appContext, u) }.getOrNull() } }
     }
     io.github.prithirajn.trackersync.ui.theme.AccentTheme(bookSeed) {
-    ModalBottomSheet(
+    GuardedSheet(
         // The grip is drawn on the book's wallpaper instead, so the colour runs right to the top.
         dragHandle = null,
         onDismissRequest = onClose,
@@ -1251,7 +1254,7 @@ private fun SearchSheet(vm: AppViewModel, tracker: Tracker, book: Book, currentI
     }
     LaunchedEffect(Unit) { if (query.isNotBlank()) run() }
 
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),

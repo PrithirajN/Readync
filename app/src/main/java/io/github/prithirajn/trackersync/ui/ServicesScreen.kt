@@ -567,7 +567,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
 @Composable
 private fun SettingsSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -693,7 +693,7 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
     val waiting = state.pending.values.count { it.service == t.id }
     val failed = state.pending.values.count { it.service == t.id && it.tries > 0 }
     val review = state.links.values.count { it.service == t.id && ((it.externalId == null && it.note == "Needs a match") || (it.externalId != null && !it.confirmed && it.source != io.github.prithirajn.trackersync.data.LinkSource.NONE)) }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -1095,7 +1095,7 @@ private fun BackupCard(vm: AppViewModel) {
     incoming?.let { read ->
         var merging by remember(read) { mutableStateOf(false) }
         var mergeError by remember(read) { mutableStateOf<String?>(null) }
-        ModalBottomSheet(
+        GuardedSheet(
             dragHandle = { SheetGrip() },
             onDismissRequest = { incoming = null },
             sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -1179,7 +1179,7 @@ private fun HistoryImportCard(vm: AppViewModel) {
         var withWant by remember(p) { mutableStateOf(false) }
         var applying by remember(p) { mutableStateOf(false) }
         var applyError by remember(p) { mutableStateOf<String?>(null) }
-        ModalBottomSheet(
+        GuardedSheet(
             dragHandle = { SheetGrip() },
             onDismissRequest = { plan = null },
             sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -1265,6 +1265,20 @@ private fun OnDeviceAiCard(vm: AppViewModel, state: Snapshot) {
     var removing by remember { mutableStateOf(false) }
     var choosing by remember { mutableStateOf(false) }
     val supported = remember { io.github.prithirajn.trackersync.ai.LocalModel.supported() }
+    // A download running in the background (it outlives this screen): shown here, and its ending said once.
+    val dlState = io.github.prithirajn.trackersync.ai.ModelDownload.state.collectAsState()
+    val dl = dlState.value
+    LaunchedEffect(dl?.done, dl?.error) {
+        val d = dl ?: return@LaunchedEffect
+        if (d.done) {
+            model = vm.aiModel(); choosing = false
+            vm.notify("On-device AI is ready", d.name)
+            io.github.prithirajn.trackersync.ai.ModelDownload.clear()
+        } else if (d.error != null) {
+            error = d.error
+            io.github.prithirajn.trackersync.ai.ModelDownload.clear()
+        }
+    }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val name = runCatching {
@@ -1289,6 +1303,17 @@ private fun OnDeviceAiCard(vm: AppViewModel, state: Snapshot) {
             val m = model
             when {
                 !supported -> Quiet("This phone's processor can't run the on-device model (it needs a 64-bit phone).", color = c.errorText)
+                dl != null && !dl.done && dl.error == null -> {
+                    Text("Downloading ${dl.name}… " + (dl.progress?.let { "${(it * 100).toInt()}%" } ?: "starting"), style = CpType.small, color = c.accentText)
+                    VSpace(6)
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { dl.progress ?: 0f }, modifier = Modifier.fillMaxWidth(), color = c.accent, trackColor = c.divider,
+                    )
+                    VSpace(6)
+                    Quiet("It carries on while you use the rest of the app, or leave it: the notification shows how far it's got. If the network drops, it picks up where it stopped.", color = c.faint)
+                    VSpace(8)
+                    PillButton("Stop the download", { io.github.prithirajn.trackersync.ai.ModelDownload.stop(context) }, danger = true)
+                }
                 progress != null -> {
                     Text("${working ?: "Getting the model"}… ${((progress ?: 0f) * 100).toInt()}%", style = CpType.small, color = c.accentText)
                     VSpace(4)
@@ -1319,14 +1344,7 @@ private fun OnDeviceAiCard(vm: AppViewModel, state: Snapshot) {
                             }
                             PillButton("Get", {
                                 error = null
-                                progress = 0f
-                                working = "Downloading ${choice.name}"
-                                vm.downloadModel(choice, { p -> progress = p }) { e ->
-                                    progress = null; working = null
-                                    error = e
-                                    model = vm.aiModel()
-                                    if (e == null) choosing = false
-                                }
+                                vm.downloadModel(choice)
                             }, outlined = false)
                         }
                     }
@@ -1480,7 +1498,7 @@ private fun BackupPasswordSheet(vm: AppViewModel, saving: Boolean, uri: Uri, onC
     var again by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -1585,7 +1603,7 @@ private fun KindleSignInSheet(vm: AppViewModel, onClose: () -> Unit) {
         }, onClose = { inWeb = false })
         return
     }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -1807,7 +1825,7 @@ private fun LibbySignInSheet(vm: AppViewModel, onClose: () -> Unit) {
         return
     }
 
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -2017,7 +2035,7 @@ private fun AudibleSignInSheet(vm: AppViewModel, onClose: () -> Unit) {
         )
         return
     }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -2326,7 +2344,7 @@ internal fun ComicVolumesSheet(vm: AppViewModel, state: Snapshot, key: String, c
         }
     }
     var error by remember { mutableStateOf<String?>(null) }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -2450,7 +2468,7 @@ private fun AniListSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit)
         busy = true; error = null
         vm.linkAniList(t) { e -> busy = false; if (e == null) onClose() else error = e }
     }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -2574,7 +2592,7 @@ private fun MangaUpdatesSheet(vm: AppViewModel, onClose: () -> Unit) {
     var pass by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -2692,7 +2710,7 @@ private fun MoonSheet(vm: AppViewModel, onGuide: () -> Unit, onClose: () -> Unit
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -2964,7 +2982,7 @@ private fun KoHlHint(state: Snapshot, text: String, onOpen: () -> Unit) {
 @Composable
 private fun KoHlGuideSheet(onClose: () -> Unit) {
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -3015,7 +3033,7 @@ private fun KoHlSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -3073,7 +3091,7 @@ private fun MoonGuideSheet(onClose: () -> Unit) {
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val links = androidx.compose.ui.platform.LocalUriHandler.current
     var copied by remember { mutableStateOf(false) }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -3156,7 +3174,7 @@ private fun KosyncSheet(vm: AppViewModel, onClose: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -3197,7 +3215,7 @@ private fun PasswordSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -3244,7 +3262,7 @@ private fun TokenSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     val c = Cp.colors
     val context = LocalContext.current
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -3295,7 +3313,7 @@ private fun PairSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
         link = null; error = null
         vm.startDeviceLink(t, onCode = { link = it }) { e -> if (e == null) onClose() else error = e }
     }
-    ModalBottomSheet(
+    GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = { vm.cancelDeviceLink(); onClose() },
         sheetState = rememberSheetState(skipPartiallyExpanded = true),
@@ -3421,7 +3439,7 @@ private fun WebSignIn(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
 @Composable
 fun ConfirmSheet(title: String, body: String, action: String, onConfirm: () -> Unit, onClose: () -> Unit) {
     val c = Cp.colors
-    ModalBottomSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, sheetState = rememberSheetState(), shape = CpShapes.sheet, containerColor = c.page) {
+    GuardedSheet(dragHandle = { SheetGrip() }, onDismissRequest = onClose, sheetState = rememberSheetState(), shape = CpShapes.sheet, containerColor = c.page) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
             Text(title, style = CpType.section, color = c.text)
             VSpace(8)
