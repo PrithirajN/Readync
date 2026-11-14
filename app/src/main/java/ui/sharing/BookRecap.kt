@@ -202,11 +202,7 @@ object BookRecap {
         d.finish != null -> "Finished " + short(d.finish)
         else -> null
     }
-    private fun stars(r: Double): String {
-        val full = r.toInt().coerceIn(0, 5)
-        val half = r - full >= 0.5
-        return "★".repeat(full) + (if (half) "½" else "")
-    }
+    private fun stars(r: Double): String = starsWithNumber(r)
     private fun hoursText(d: Data): String = if (d.hours >= 10) "${Math.round(d.hours)}" else String.format(Locale.getDefault(), "%.1f", d.hours).removeSuffix(".0").removeSuffix(",0")
     private fun plural(n: Int, one: String) = "$n $one" + if (n == 1) "" else "s"
 
@@ -222,7 +218,7 @@ object BookRecap {
         )
         if (bits.isNotEmpty()) append(": ").append(bits.joinToString(", "))
         append(".")
-        d.rating?.let { append(" ").append(ThreadsAuto.starEmoji(it)) }
+        d.rating?.let { append(" ").append(ThreadsAuto.starEmoji(it)).append(" ").append(ratingLabel(it)) }
     }
 
     // ---- the carousel ----
@@ -716,7 +712,9 @@ object BookRecap {
             val r = d.rating
             val y = if (review != null) 560f else 900f
             if (r != null) {
-                val full = r.toInt().coerceIn(0, 5); val half = r - full >= 0.5
+                // To the nearest half (a 4.8 shows five), with the exact number after.
+                val halves = Math.round(r * 2).toInt().coerceIn(0, 10)
+                val full = halves / 2; val half = halves % 2 == 1
                 val total = full + if (half) 1 else 0
                 val size = 150f
                 for (i in 0 until total) {
@@ -726,6 +724,9 @@ object BookRecap {
                     Ink.line(cv, if (i == full) "½" else "★", 0f, size * 0.35f, f.interBold, size, Ink.SIGNAL, 300f, Paint.Align.CENTER)
                     cv.restore()
                 }
+                // The exact number after the last star, once they've all landed.
+                val kn = ease((lt - 0.25f - total * 0.18f) / 0.45f)
+                if (kn > 0f) Ink.line(cv, ratingLabel(r), 160f + total * 175f - 40f, y + size * 0.3f, f.interBold, size * 0.6f, Ink.alpha(Ink.SIGNAL, (255 * kn).toInt()), 300f)
                 if (review == null) {
                     val k = ease((lt - 1.4f) / 0.5f)
                     Ink.line(cv, "${if (r % 1.0 == 0.0) r.toInt().toString() else r.toString()} out of 5", 104f, y + 140f, f.inter, 48f, Ink.alpha(Ink.TEXT, (255 * k).toInt()), w - 200f)

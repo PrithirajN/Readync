@@ -922,6 +922,9 @@ object SffArticleReader {
         return out
     }
 
+    /** Another outlet's take on the same story, for the end of the reader. */
+    data class Others(val index: Int, val source: String, val title: String, val summary: String?)
+
     private fun escapeHtml(s: String): String =
         s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -966,6 +969,10 @@ object SffArticleReader {
         borderHex: String,
         aiBulletsFromModel: Boolean = false,
         fontScale: Float = 1f,
+        /** The story's topics, shown above it; each opens that topic (readync://tag/…). */
+        tags: List<String> = emptyList(),
+        /** The same story from other outlets (index, outlet, headline, summary), shown after it (readync://perspective/…). */
+        others: List<Others> = emptyList(),
     ): String {
         val rewritten = item.aiHeadline?.takeIf { it.isNotBlank() && !it.equals(item.title, ignoreCase = true) }
         val titleHtml = escapeHtml(rewritten ?: article.title)
@@ -1094,6 +1101,14 @@ object SffArticleReader {
                     th { background: $surfaceHex; font-weight: 700; }
                     pre { background: $surfaceHex; border-radius: 12px; padding: 12px; overflow-x: auto; font-size: 13px; }
                     .end { text-align: center; color: $accentHex; font-size: 14px; margin: 8px 0 26px 0; }
+                    .tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 14px 18px 0 18px; }
+                    .tag { font-family: Inter, sans-serif; font-size: 13px; color: $accentHex; background: $accentTintHex; border-radius: 999px; padding: 4px 10px; text-decoration: none; }
+                    .others { padding: 0 18px 8px 18px; }
+                    .others h2 { font-family: Inter, sans-serif; font-size: 16px; color: $textHex; margin: 6px 0 10px 0; }
+                    .other { display: block; text-decoration: none; background: $surfaceHex; border: 1px solid $borderHex; border-radius: 16px; padding: 12px 14px; margin-bottom: 10px; }
+                    .o-src { font-family: Inter, sans-serif; font-size: 12px; color: $accentHex; margin-bottom: 3px; }
+                    .o-title { font-family: Inter, sans-serif; font-weight: 600; font-size: 15px; color: $textHex; line-height: 1.35; }
+                    .o-sum { font-family: Inter, sans-serif; font-size: 13px; color: $textMidHex; margin-top: 4px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
                     .spoiler { background: $textHex; color: transparent; border-radius: 4px; padding: 0 4px; cursor: pointer; transition: all .2s ease; }
                     .spoiler.revealed { background: $accentTintHex; color: $textHex; }
@@ -1113,6 +1128,7 @@ object SffArticleReader {
             <body>
                 <div id="progress"></div>
                 $mediaHtml
+                ${if (tags.isEmpty()) "" else "<div class=\"tags\">" + tags.joinToString("") { "<a class=\"tag\" href=\"readync://tag/" + java.net.URLEncoder.encode(it, "UTF-8") + "\">#" + escapeHtml(it) + "</a>" } + "</div>"}
                 <article class="story">
                     <div class="outlet"><span class="badge">${escapeHtml(badge)}</span>${escapeHtml(publisher)}</div>
                     <h1 class="headline">$titleHtml</h1>
@@ -1124,6 +1140,10 @@ object SffArticleReader {
                     </div>
                     <div class="end">◆</div>
                 </article>
+                ${if (others.isEmpty()) "" else "<section class=\"others\"><h2>Other perspectives on this story</h2>" + others.joinToString("") { o ->
+                    "<a class=\"other\" href=\"readync://perspective/${o.index}\"><div class=\"o-src\">${escapeHtml(o.source)}</div><div class=\"o-title\">${escapeHtml(o.title)}</div>" +
+                        (o.summary?.takeIf { it.isNotBlank() }?.let { "<div class=\"o-sum\">${escapeHtml(it.take(220))}</div>" } ?: "") + "</a>"
+                } + "</section>"}
                 $commentsHtml
                 <script>
                     // The opening paragraph (a real one, not a caption or a line of credits) gets the drop cap.

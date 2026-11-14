@@ -92,8 +92,25 @@ fun GuardedSheet(
         {
             androidx.compose.foundation.layout.Box(
                 androidx.compose.ui.Modifier.fillMaxWidth().drawBehind {
+                    // Only the top edge and its rounded corners, fading out down the sides: a whole
+                    // outline drawn here showed as a box around the grip and the title.
                     val r = 28.dp.toPx()
-                    drawRoundRect(edge, size = androidx.compose.ui.geometry.Size(size.width, size.height + r * 2), cornerRadius = androidx.compose.ui.geometry.CornerRadius(r), style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
+                    val stroke = 1.dp.toPx()
+                    val half = stroke / 2f
+                    val w = size.width
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(half, r + r * 0.6f)
+                        lineTo(half, r)
+                        arcTo(androidx.compose.ui.geometry.Rect(half, half, half + 2 * r, half + 2 * r), 180f, 90f, false)
+                        lineTo(w - r - half, half)
+                        arcTo(androidx.compose.ui.geometry.Rect(w - 2 * r - half, half, w - half, half + 2 * r), 270f, 90f, false)
+                        lineTo(w - half, r + r * 0.6f)
+                    }
+                    drawPath(
+                        path,
+                        androidx.compose.ui.graphics.Brush.verticalGradient(0f to edge, (r / (r + r * 0.6f)) to edge, 1f to Color.Transparent, startY = 0f, endY = r + r * 0.6f),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(stroke),
+                    )
                 },
                 contentAlignment = androidx.compose.ui.Alignment.Center,
             ) { inner() }

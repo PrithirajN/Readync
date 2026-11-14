@@ -422,7 +422,7 @@ object Wrapped {
                 val x = x0 + (i % cols) * (cw2 + gap); val y = 500f + (i / cols) * (ch2 + starRoom + gap)
                 Ink.drawBook(cv, cover(b), RectF(x, y, x + cw2, y + ch2), tint, f, b.displayTitle)
                 b.rating?.takeIf { it > 0 && starsShown }?.let { r ->
-                    Ink.line(cv, "★".repeat(Math.round(r).toInt().coerceIn(1, 5)), x + cw2 / 2, y + ch2 + 18f + starSize, f.inter, starSize, Ink.SIGNAL, cw2, Paint.Align.CENTER)
+                    Ink.line(cv, starsWithNumber(r), x + cw2 / 2, y + ch2 + 18f + starSize, f.inter, starSize, Ink.SIGNAL, cw2, Paint.Align.CENTER)
                 }
             }
             if (d.finished.size > shown.size) Ink.line(cv, "and ${d.finished.size - shown.size} more", W / 2f, 1680f, f.inter, 36f, Ink.DIM, W - 192f, Paint.Align.CENTER)
@@ -455,7 +455,7 @@ object Wrapped {
             Ink.line(cv, star.author, W / 2f, 1520f, f.inter, 40f, Ink.DIM, W - 192f, Paint.Align.CENTER)
             val line = when {
                 fast != null -> "in ${fast.second} day${if (fast.second == 1) "" else "s"}" + (star.pageCount?.let { " · ${Math.round(it.toDouble() / fast.second)} pages a day" } ?: "")
-                else -> star.rating?.let { "★".repeat(Math.round(it).toInt().coerceIn(1, 5)) } ?: ""
+                else -> star.rating?.let { starsWithNumber(it) } ?: ""
             }
             Ink.line(cv, line, W / 2f, 1620f, f.interBold, 48f, Ink.SIGNAL, W - 192f, Paint.Align.CENTER)
         }

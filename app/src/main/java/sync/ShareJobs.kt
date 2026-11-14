@@ -45,18 +45,22 @@ object ShareJobs {
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .addTag("shared-link")
             .build()
-        WorkManager.getInstance(context).enqueueUniqueWork("share-$kind-" + Integer.toHexString(url.hashCode()), ExistingWorkPolicy.KEEP, req)
+        WorkManager.getInstance(context).enqueueUniqueWork(workName(kind, url), ExistingWorkPolicy.KEEP, req)
     }
 
     /** Stops the work on a link ("post:<link>" or "price:<link>"). */
     fun stop(context: Context, key: String) {
         val kind = key.substringBefore(':')
         val url = key.substringAfter(':')
-        WorkManager.getInstance(context).cancelUniqueWork("share-$kind-" + Integer.toHexString(url.hashCode()))
+        WorkManager.getInstance(context).cancelUniqueWork(workName(kind, url))
         running.update { it - key }
     }
 
     internal fun progress(key: String, text: String) = running.update { it + (key to text) }
+
+    /** The job's name: one per post however its link was shared (a shop page by its whole link). */
+    private fun workName(kind: String, url: String) =
+        "share-$kind-" + Integer.toHexString((if (kind == "post") PostBooks.keyOf(url) else url).hashCode())
 }
 
 /** One shared link's work (see [ShareJobs]). */
@@ -84,7 +88,7 @@ class ShareWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val r = runCatching { PostBooks.find(app, url) { ShareJobs.progress(key, it) } }
         r.onSuccess { t ->
             synchronized(PostBooks) {
-                PostBooks.save(app, listOf(t) + PostBooks.saved(app).filter { it.post.url != t.post.url })
+                PostBooks.save(app, listOf(t) + PostBooks.saved(app).filter { PostBooks.keyOf(it.post.url) != PostBooks.keyOf(t.post.url) && PostBooks.keyOf(it.post.url) != PostBooks.keyOf(url) })
             }
             ShareJobs.lastPost.value = t.post.url to t.at
             runCatching { Notices.postBooks(app, t) }

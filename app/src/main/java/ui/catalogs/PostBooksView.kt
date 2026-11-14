@@ -87,7 +87,7 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
         traps.clear(); traps.addAll(PostBooks.saved(context))
         fresh = at
         if (PostBooks.linkIn(link) == url) link = ""
-        val t = traps.firstOrNull { it.at == at && it.post.url == url }
+        val t = traps.firstOrNull { it.at == at && PostBooks.keyOf(it.post.url) == PostBooks.keyOf(url) }
         error = if (t != null && t.books.isEmpty()) "No books named in that post's caption or picture. Under it, see the words read on its picture: tap a title, or type one." else null
     }
     val postError by ShareJobs.postError.collectAsState()
@@ -230,10 +230,11 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
         }
     }
 
-    VSpace(16)
+    VSpace(12)
+    // Slim: a little in from the screen's edges, tight inside.
     Column(
-        Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(CpShapes.card).background(c.surface)
-            .border(if (isNew) 2.dp else 1.dp, if (isNew) c.accent else c.hairline, CpShapes.card).padding(14.dp),
+        Modifier.padding(horizontal = 24.dp).fillMaxWidth().clip(CpShapes.card).background(c.surface)
+            .border(if (isNew) 2.dp else 1.dp, if (isNew) c.accent else c.hairline, CpShapes.card).padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(c.accentTint), contentAlignment = Alignment.Center) {
@@ -253,12 +254,12 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
             }
             IconCircleButton(R.drawable.lucide_trash, "Remove", onRemove, tint = c.errorText)
         }
-        t.post.caption?.takeIf { it.isNotBlank() }?.let { VSpace(8); Quiet(it, maxLines = 2) }
+        t.post.caption?.takeIf { it.isNotBlank() }?.let { VSpace(6); Quiet(it, maxLines = 1) }
         if (t.books.isEmpty()) {
             VSpace(8)
             Quiet("No books found in it.", color = c.faint)
         } else {
-            VSpace(12)
+            VSpace(8)
             // Just the covers, in a row (scrolls when there are many): tap one to choose it.
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 for (f in t.books) {
@@ -268,7 +269,7 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
                             .border(if (on) 2.dp else 1.dp, if (on) c.accent else c.hairline, RoundedCornerShape(8.dp))
                             .bouncyClickable(RoundedCornerShape(8.dp), pressedScale = 0.96f, onClickLabel = "Choose ${f.title}") { focus = f.title },
                     ) {
-                        BookCover(f.cover, f.title, 76.dp, 114.dp)
+                        BookCover(f.cover, f.title, 60.dp, 90.dp)
                         if (inLibrary(f)) Box(
                             Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp).clip(CircleShape).background(c.accent),
                             contentAlignment = Alignment.Center,
@@ -278,12 +279,12 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
             }
             val f = t.books.firstOrNull { it.title == focus }
             if (f != null) {
-                VSpace(8)
+                VSpace(6)
                 Text(
                     f.title + (f.author?.let { " · $it" } ?: "") + if (inLibrary(f)) " · in your library" else "",
                     style = CpType.small, color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                VSpace(8)
+                VSpace(6)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton("Details", { details = f }, Modifier.weight(1f))
                     PillButton(if (inLibrary(f)) "In library" else "Want to read", { vm.addPostBooks(listOf(f)) { said = it } }, Modifier.weight(1f), outlined = inLibrary(f))
@@ -292,10 +293,10 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
             }
         }
         // A book the finder missed: a title among the words read off the picture, or one typed.
-        VSpace(10)
+        VSpace(8)
         RowDivider()
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { showWords = !showWords }.padding(vertical = 10.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { showWords = !showWords }.padding(top = 8.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(if (t.books.isEmpty()) "Find the book yourself" else "Missing one?", style = CpType.body, color = c.text, modifier = Modifier.weight(1f))

@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -142,11 +143,20 @@ internal fun SffArticleReaderSheet(
         onDismissRequest = { finishAndClose() },
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
+        // The dialog's window exactly the screen: left to wrap its content, it came out taller than
+        // the screen and the bar along the bottom (save, 👍 👎, AI, share) sat just below it, out of sight.
+        val dialogView = androidx.compose.ui.platform.LocalView.current
+        androidx.compose.runtime.SideEffect {
+            (dialogView.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window?.let { w ->
+                w.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+                androidx.core.view.WindowCompat.setDecorFitsSystemWindows(w, false)
+            }
+        }
         Column(
             Modifier
                 .fillMaxSize()
                 .background(c.page)
-                .windowInsetsPadding(WindowInsets.systemBars)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
         ) {
             // 1. The top bar: close, the outlet and how long it takes, text size, and the web page.
             Row(
@@ -221,13 +231,23 @@ internal fun SffArticleReaderSheet(
                     borderHex = c.hairline.hex(),
                     aiBulletsFromModel = bulletsFromLlm,
                     fontScale = fontScale,
+                    tags = cluster.canonicalTags,
+                    others = cluster.perspectives.mapIndexedNotNull { idx, p ->
+                        if (idx == perspectiveIndex) null else SffArticleReader.Others(idx, p.source, p.title, p.summary)
+                    },
                 )
                 ArtifactReaderWebView(
                     html = doc,
                     baseUrl = readerArticle.originalUrl ?: currentItem.url,
                     background = c.page,
                     modifier = Modifier.fillMaxWidth().weight(1f),
-                    onOpenLink = { link -> pageUrl = link; liveWebViewMode = true },
+                    onOpenLink = { link ->
+                        when {
+                            link.startsWith("readync://perspective/") -> link.substringAfterLast('/').toIntOrNull()?.let { perspectiveIndex = it; liveWebViewMode = false }
+                            link.startsWith("readync://tag/") -> onSelectTag(java.net.URLDecoder.decode(link.substringAfter("readync://tag/"), "UTF-8"))
+                            else -> { pageUrl = link; liveWebViewMode = true }
+                        }
+                    },
                 )
                 // Bottom action bar.
                 val context = androidx.compose.ui.platform.LocalContext.current
@@ -598,7 +618,7 @@ private fun ArtifactReaderWebView(html: String, baseUrl: String?, background: Co
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val target = request?.url?.toString() ?: return true
-                        if (request?.isForMainFrame == true && (target.startsWith("http://") || target.startsWith("https://"))) openLink(target)
+                        if (request?.isForMainFrame == true && (target.startsWith("http://") || target.startsWith("https://") || target.startsWith("readync://"))) openLink(target)
                         return true
                     }
                     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {

@@ -339,9 +339,10 @@ object ThreadsAuto {
         book.status == io.github.prithirajn.readync.data.ReadStatus.FINISHED || book.status == io.github.prithirajn.readync.data.ReadStatus.DNF
 
     /** "⭐⭐⭐⭐½" for 4.5. */
+    /** Stars to the nearest half (4.8 shows five, 4.3 four and a half); the exact number goes beside them. */
     fun starEmoji(rating: Double): String {
-        val whole = rating.toInt().coerceIn(0, 5)
-        return "\u2B50".repeat(whole) + if (rating - whole >= 0.5) "\u00BD" else ""
+        val halves = Math.round(rating * 2).toInt().coerceIn(0, 10)
+        return "\u2B50".repeat(halves / 2) + if (halves % 2 == 1) "\u00BD" else ""
     }
 
     /** "My review of The Gate of the Feral Gods by Matt Dinniman ⭐⭐⭐⭐½" (and where you stopped, for one you didn't finish). */
@@ -370,7 +371,8 @@ object ThreadsAuto {
         "Life's too short. Stopped {name}{by} at {pct}%.",
     )
     /** Ways to show the stars: {stars} the emoji, {n} the number. */
-    private val STAR_LINES = listOf("{stars}", "{stars} ({n}/5)", "Rating: {stars}", "{n}/5 {stars}", "My rating: {stars}")
+    // Every wording has the exact number too: stars alone can't show a 4.8.
+    private val STAR_LINES = listOf("{stars} {n}", "{stars} ({n}/5)", "Rating: {stars} {n}", "{n}/5 {stars}", "My rating: {stars} ({n}/5)")
 
     /** How many wordings a review post has (each its own opener and way of showing the stars). */
     fun reviewWordings(book: Book): Int =

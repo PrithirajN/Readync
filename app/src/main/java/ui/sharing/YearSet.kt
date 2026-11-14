@@ -406,7 +406,7 @@ private fun coverCard(context: Context, s: Snapshot, b: Book, ink: Boolean, size
     b.author?.let { cv.drawText(it, w / 2f, y, p); y += 60f }
     val avg = s.rubric.mapNotNull { s.rubricScores[b.document]?.get(it) }.takeIf { it.isNotEmpty() }?.average()
     val line = listOfNotNull(
-        b.rating?.let { r -> "★".repeat(r.toInt()) + if (r % 1.0 >= 0.5) "½" else "" },
+        b.rating?.let { r -> starsWithNumber(r) },
         avg?.let { "rubric ${fmt(it)}/10" },
     ).joinToString("   ")
     if (line.isNotEmpty()) { p.color = l.accent; p.textSize = 40f; cv.drawText(line, w / 2f, y, p); y += 70f }

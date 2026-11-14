@@ -76,8 +76,23 @@ object PostBooks {
 
     fun saved(context: Context): List<Trap> = runCatching {
         val a = JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("traps", "[]"))
-        (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(Trap::from) }
+        // The same post shared twice (each share's link carries its own tracking bits) is kept once, the newest.
+        (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(Trap::from) }.sortedByDescending { it.at }.distinctBy { keyOf(it.post.url) }
     }.getOrDefault(emptyList())
+
+    /**
+     * One post however its link was shared: "?igsh=…", "?utm_source=…", /reel/ or /p/, a trailing
+     * slash, www or m. aside. Instagram, TikTok, YouTube and Threads by the post's own id.
+     */
+    fun keyOf(url: String): String {
+        val u = url.trim()
+        Regex("instagram\\.com/(?:[^/?#]+/)?(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)").find(u)?.let { return "ig:" + it.groupValues[1] }
+        Regex("tiktok\\.com/.*?/(?:video|photo)/(\\d+)").find(u)?.let { return "tt:" + it.groupValues[1] }
+        Regex("(?:youtube\\.com/(?:watch\\?(?:.*&)?v=|shorts/|live/)|youtu\\.be/)([A-Za-z0-9_-]{6,})").find(u)?.let { return "yt:" + it.groupValues[1] }
+        Regex("threads\\.(?:net|com)/@[^/]+/post/([A-Za-z0-9_-]+)").find(u)?.let { return "th:" + it.groupValues[1] }
+        return u.substringBefore('#').substringBefore('?').trimEnd('/').lowercase()
+            .replace("://www.", "://").replace("://m.", "://")
+    }
 
     fun save(context: Context, traps: List<Trap>) {
         val a = JSONArray().also { arr -> traps.take(60).forEach { arr.put(it.toJson()) } }
@@ -277,7 +292,7 @@ One book per line, at most five. Write nothing else. If there's no book you're s
             out.putIfAbsent(t.lowercase(), Guess(t, a?.trim()?.takeIf { it.length in 3..60 }, from, handle))
         }
         // A seller's "Vogt - 300" lines name who wrote the books, not what they are: left out here.
-        val text = caption.orEmpty().lines().filterNot { PRICED.containsMatchIn(it) }.joinToString("\n")
+        val text = caption.orEmpty().lines().filterNot { PRICED.containsMatchIn(it) }.joinToString("\n").replace(PRICED_INLINE, " ")
         // "Title by Author" (also "Title - Author" on a list line).
         for (line in text.split('\n', '•', '|')) {
             Regex("""["“]?([A-Z0-9][^"“”\n]{2,80}?)["”]?\s+(?:by|-|–|—)\s+(@?[\p{L}0-9_][\p{L}0-9_.'\- ]{1,40}?)(?=$|[,.!?;:)(\n]|\s{2}|\s[#@])""").findAll(line).forEach { m ->
@@ -333,10 +348,21 @@ One book per line, at most five. Write nothing else. If there's no book you're s
     /** A seller's list line: a name, then its price ("Vogt - 300", "Ian Watson - ₹200 each"). */
     private val PRICED = Regex("""(?i)^\s*([\p{L}][\p{L}.' ]{1,40}?)\s*[-–—:=]\s*(?:₹|rs\.?|inr|\$|£|€)?\s*\d{2,6}\s*(?:/-)?\s*(?:each|only|rs|inr|/-)?\s*$""")
 
+    /**
+     * The same, inside running text: a post's caption read from its page arrives as one line
+     * ("Vogt - 300 Cj Cherryh - 300 Ian Watson - 200 each"), each name in capitals before its price.
+     */
+    private val PRICED_INLINE = Regex("""\b([A-Z][\p{L}.']*(?:\s+[A-Z][\p{L}.']*){0,3})\s*[-–—:=]\s*(?:₹|[Rr]s\.?|INR|\$|£|€)?\s*\d{2,6}\b(?:\s*/-)?(?:\s+each)?""")
+
     /** The authors a seller's post lists with prices: who wrote the books it shows, not their titles. */
-    fun pricedNames(caption: String?): List<String> =
-        caption.orEmpty().lines().mapNotNull { PRICED.find(it)?.groupValues?.get(1)?.trim() }
-            .filter { it.split(' ').size <= 4 && letters(it).length >= 3 }.distinct()
+    fun pricedNames(caption: String?): List<String> {
+        val text = caption.orEmpty()
+        val byLine = text.lines().mapNotNull { PRICED.find(it)?.groupValues?.get(1)?.trim() }
+        val inline = PRICED_INLINE.findAll(text).map { it.groupValues[1].trim() }.toList()
+        return (byLine + inline).filter { it.split(' ').size <= 4 && letters(it).length >= 3 }
+            .filterNot { it.lowercase() in setOf("likes", "comments", "comment", "views", "rs", "price") }
+            .distinctBy { letters(it) }
+    }
 
     private val PARTICLES = setOf("van", "von", "de", "der", "den", "la", "le", "du", "di", "da", "del", "st", "st.", "mc", "mac", "and", "&")
 

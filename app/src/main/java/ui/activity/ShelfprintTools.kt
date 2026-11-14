@@ -499,7 +499,7 @@ internal fun renderTop(
         }
         // Stars, then the title in up to two lines under the cover, its volume or issue number kept.
         p.typeface = sans; p.textSize = fit.star; p.color = accent
-        val stars = b.rating?.let { r -> "★".repeat(r.toInt()) + if (r % 1.0 >= 0.5) "½" else "" } ?: ""
+        val stars = b.rating?.let { r -> starsWithNumber(r) } ?: ""
         val starBase = rect.bottom + fit.star + 6f
         cv.drawText(stars, rect.left, starBase, p)
         if (titles) {

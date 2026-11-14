@@ -766,6 +766,13 @@ object QuoteCard {
             val fill = (rating - i).coerceIn(0.0, 1.0).toFloat()
             if (fill > 0f) { cv.save(); cv.clipRect(cx - size / 2f, cy - size / 2f, cx - size / 2f + size * fill, cy + size / 2f); cv.drawPath(p, onP); cv.restore() }
         }
+        // The exact rating beside the stars ("4.5"), so a half star can't be misread.
+        val num = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = on; textSize = size * 0.82f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+        }
+        val label = ratingLabel(rating)
+        cv.drawText(label, x + size * 5.72f + size * 0.35f, cy + num.textSize * 0.36f, num)
     }
 
     /**

@@ -262,6 +262,14 @@ object PageboundTracker : Tracker {
             return request(session, "PUT", "/api/v1/reviews/${Http.enc(id)}", JSONObject().put("review", edit))
         }
         var r = send()
+        // 404 on an edit: the review id we had isn't one Pagebound knows (deleted there, or an id
+        // from another part of its answer). Look it up afresh; with none, write it as a new one.
+        if (r.code == 404 && existingId != null) {
+            val tried = existingId
+            existingId = findReview(session, link, ubKey, userBookId)?.takeIf { it != tried }
+            r = send()
+            if (r.code == 404 && existingId != null) { existingId = null; r = send() }
+        }
         // 422 ("User book has already been taken"): a review is there already. Find it and update it.
         if (r.code == 422 && existingId == null) {
             existingId = runCatching { JSONObject(r.body) }.getOrNull()?.let { reviewIdIn(it, userBookId) }
