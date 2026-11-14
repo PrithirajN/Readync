@@ -196,6 +196,12 @@ fun DnfSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> Unit,
         StarPicker(rating) { rating = it }
         VSpace(12)
         MultiLineField(why, { why = it }, "Why you stopped (optional)", "It goes with your rating, as your review", minHeight = 90)
+        // What happens to it, remembered for next time.
+        VSpace(14)
+        Text("When you set a book aside", style = CpType.label, color = c.textMid)
+        ToggleLine("Play a little scene in its genre", DnfPrefs.scene(state)) { vm.setDnfScene(it) }
+        if (CollectionHooks.available) ToggleLine("Take it off my bookcases", DnfPrefs.offShelves(state)) { vm.setDnfOffShelves(it) }
+        ToggleLine("Count it toward this year's books", DnfPrefs.counts(state)) { vm.setDnfCounts(it) }
         error?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
         VSpace(16)
         BigButton("Mark as Did not finish", {

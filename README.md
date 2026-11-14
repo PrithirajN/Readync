@@ -81,12 +81,13 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 ### 📚 Your collection
 - **The books you own**, with format, price paid and where: scan the barcodes on your shelves, or mark any book. Owned books you haven't started wait off your trackers, with what they're worth.
 - **Series gaps**: the books missing between the ones you own, and the next one to read, with price tracking in a tap.
-- **Your shelves, drawn**: build your real bookcases (tall, cube grid, floating ledges, low), each spine as thick as its page count in its cover's colour, arranged by series, author, genre or colour. Tap a spine to pull it out.
+- **Your shelves, drawn**: build your real bookcases (tall, cube grid, floating ledges, low), each spine as thick as its page count in its cover's colour, arranged by series, author, genre or colour. A series wears matching spines (one colour, the same bands, its numbers at the foot). Tap a spine to lift the book out in 3D: turn it with a finger, and flip it to see your stars and review on the back.
+- **What it's worth**: your owned books as a wall of covers with their prices (what you paid, else the price tracker's latest), and the total as a shop receipt to save or share.
 - **A calendar** of reading days, starts and finishes, books added, releases and price drops, and **stamps** for milestones.
 - **A journal page** for any book: cover taped on, your dates, stars, review and highlights, in handwriting, to share.
 
 ### 🎁 Made from your reading
-- **Quote cards**: ten looks, from Book card (15 layouts) and Book photo to System window and Wordprint, coloured from the cover.
+- **Quote cards**: nine looks, from Book card (15 layouts) and Book photo to System window, coloured from the cover.
 - **Moving quotes**: a highlight as a short video for Reels, Stories or Threads, made in a live studio.
 - **Book recap**: a finished book in numbers, as a 15-second video or a carousel of one-stat pictures.
 - **Wrapped**: your month or year in reading as story slides, down to your reader type.
@@ -106,12 +107,13 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 
 ### ✨ And more
 - **Catalogs**: the 50 newest books across all your OPDS servers, and every server searched at once, with download details and paste-a-list setup.
-- **Books in a post**: paste or share a TikTok, Instagram, Threads or YouTube post (or screenshots or a screen recording of one, read on your phone frame by frame) and the books it names are found (caption, the words on every picture of a carousel, hashtags; comparisons like "X meets Y" left out), checked against Google Books (a book the caption and cover both name is kept even before Google lists it), then added to Want to Read or price-tracked. Read in the background with a notification when done, so you can share and go back to scrolling. Missed one? Tap it among the words read on the picture, or type its title.
+- **Books in a post**: paste or share a TikTok, Instagram, Threads or YouTube post (or screenshots or a screen recording of one, read on your phone frame by frame) and the books it names are found (caption, the words on every picture of a carousel, hashtags; comparisons like "X meets Y" left out), checked against Google Books (a book the caption and cover both name is kept even before Google lists it), then added to Want to Read or price-tracked; tap a cover for Details (a short description, the rating on each of your sites and overall, and genres). Read in the background with a notification when done, so you can share and go back to scrolling. Missed one? Tap it among the words read on the picture, or type its title.
 - **Copies for quotes**: books you're reading kept privately inside the app, for the lines around your quotes.
 - **Price tracker** for Amazon.in, Bookswagon and Atlantic Books, plus any other bookshop's page you give it (Flipkart, Crossword…), with your own target price.
 - **SFF news** set like a magazine, with a Screen view for films and series, and a clean reader.
 - **Library checks, a rating rubric, a top-books image and a reading-log export** on the Activity tab: books whose dates or page counts would throw your numbers off, scores on what matters to you beside your stars (with a gut-vs-rubric chart), your year's top 10 or 20 as one ranked image, and every book as an Excel or CSV file.
 - **Import your history** from Goodreads, StoryGraph, Hardcover, Seekquel or KOReader.
+- **Setting a book aside** (Did not finish): a short scene in its genre (embers for fantasy, stars for science fiction, petals for romance, rain for thrillers, loose pages for non-fiction, leaves for the rest), and your choice of taking it off your bookcases and counting it toward this year's books.
 - **Live Updates** (Android 16): a reading session's timer, a catalog download and a sync you started stay at the top of your notifications, with a chip by the clock.
 - **Widgets**, a Quick Settings tile and app shortcuts.
 - **Backups** locked with a password, or a data-only copy to move phones.

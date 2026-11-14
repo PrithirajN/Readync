@@ -47,9 +47,13 @@ object Insights {
         val goal: Int,
         /** Books you'd have finished by today at an even pace through the year. */
         val expectedByNow: Double,
+        /** Books set aside this year, counted when you've chosen to (see DnfPrefs). */
+        val setAside: List<Book> = emptyList(),
     ) {
+        /** Books toward the year: finished, plus set aside when they count. */
+        val count: Int get() = finished.size + setAside.size
         /** Books ahead (+) or behind (−) an even pace; null without a goal. */
-        val ahead: Int? get() = if (goal <= 0) null else Math.round(finished.size - expectedByNow).toInt()
+        val ahead: Int? get() = if (goal <= 0) null else Math.round(count - expectedByNow).toInt()
     }
 
     fun year(s: Snapshot, today: LocalDate, zone: ZoneId = ZoneId.systemDefault()): Year {
@@ -59,11 +63,15 @@ object Insights {
             b.status == ReadStatus.FINISHED &&
                 (b.finishedAt ?: b.timestamp).let { t -> t > 0 && Instant.ofEpochSecond(t).atZone(zone).year == y }
         }.sortedByDescending { it.finishedAt ?: it.timestamp }
-        val pages = finished.sumOf { it.pageCount ?: 0 }
+        // Books set aside this year, when you've chosen to count them (their pages as far as you got).
+        val setAside = if (!io.github.prithirajn.trackersync.ui.DnfPrefs.counts(s)) emptyList() else s.books.values.filter { b ->
+            b.status == ReadStatus.DNF && b.timestamp > 0 && Instant.ofEpochSecond(b.timestamp).atZone(zone).year == y
+        }
+        val pages = finished.sumOf { it.pageCount ?: 0 } + setAside.sumOf { b -> ((b.pageCount ?: 0) * b.percent / 100.0).toInt() }
         val goal = s.settings.yearGoal
         val dayOfYear = today.dayOfYear.toDouble()
         val daysInYear = today.lengthOfYear().toDouble()
-        return Year(y, finished, pages, goal, if (goal > 0) goal * dayOfYear / daysInYear else 0.0)
+        return Year(y, finished, pages, goal, if (goal > 0) goal * dayOfYear / daysInYear else 0.0, setAside)
     }
 
     // ---- What happened lately ----

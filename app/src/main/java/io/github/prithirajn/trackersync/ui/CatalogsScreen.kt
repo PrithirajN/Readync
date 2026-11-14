@@ -116,6 +116,7 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     val status = remember { mutableStateMapOf<String, SearchState>() }
     val found = remember { mutableStateListOf<Pair<Opds.Server, Opds.Entry>>() }
     var searched by remember { mutableStateOf("") }
+    var archiveSearchRunning by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf<Opds.Server?>(null) }
     var addingNew by remember { mutableStateOf(false) }
     var browsing by remember { mutableStateOf<Opds.Server?>(null) }
@@ -157,10 +158,10 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     // Every server at once, a moment after you stop typing; results come in as each answers.
     LaunchedEffect(query, servers.map { it.id }, wikiArticleUrl) {
         val q = query.trim()
-        if (q.length < 2) { found.clear(); status.clear(); searched = ""; return@LaunchedEffect }
+        if (q.length < 2) { found.clear(); status.clear(); searched = ""; archiveSearchRunning = false; return@LaunchedEffect }
         delay(650)
         searched = q; only = null
-        found.clear(); status.clear()
+        found.clear(); status.clear(); archiveSearchRunning = true
         servers.forEach { status[it.id] = SearchState() }
         val tasks = servers.map { s ->
             scope.async {
@@ -175,7 +176,10 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
         }
         (tasks + scope.async {
             val r = withContext(Dispatchers.IO) { runCatching { SamArchive.search(context, q) } }
-            if (searched == q) r.onSuccess { found.addAll(it) }
+            if (searched == q) {
+                r.onSuccess { found.addAll(it) }
+                archiveSearchRunning = false
+            }
         }).awaitAll()
     }
 
@@ -311,8 +315,8 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
                     }
                 }
             }
-            val still = status.values.any { it.running }
-            if (hits.isEmpty() && !still) item(key = "none") { Quiet("Nothing on your catalogs or Sam's Archives for “$searched”.", Modifier.padding(16.dp)) }
+            val still = status.values.any { it.running } || archiveSearchRunning
+            if (hits.isEmpty() && !still) item(key = "none") { Quiet("Nothing on your catalogs or the configured archive source for “$searched”.", Modifier.padding(16.dp)) }
             // Three to a row, covers first.
             items(hits.chunked(3), key = { row -> "hr-" + row.first().key }) { row ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -368,7 +372,7 @@ private fun WikipediaMirrorSheet(
     val c = Cp.colors
     LaunchedEffect(Unit) { onRefresh() }
     PlainSheet("Wikipedia-listed website URLs", onClose) {
-        Quiet("Set the English Wikipedia article for Sam's Archives. Readync discovers the listed Sam archive domains and checks them. Once this points to a Sam's Archives article, its free/slow EPUB links can appear alongside your OPDS catalog search. Anna's Archive is only the temporary default for testing link discovery; it is never searched or downloaded from.")
+        Quiet("Set an English Wikipedia article for Anna's Archive (testing) or Sam's Archives. Readync discovers the listed archive domains, checks which ones respond, and searches them alongside your OPDS catalogs. Anna's Archive is enabled as a temporary end-to-end test source; replace this URL with your Sam's Archives article when it is ready. Only explicitly free/slow links are used, never premium/fast links. Downloaded files are checked to ensure they are readable EPUBs before Readync keeps them.")
         VSpace(10)
         CpTextField(articleUrl, onArticleUrlChange, "Wikipedia article URL", placeholder = WikipediaMirrorLookup.DEFAULT_ARTICLE_URL, keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
         VSpace(8)

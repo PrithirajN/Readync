@@ -3066,13 +3066,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         ManualBooks.setStatus(store, document, ReadStatus.DNF)
                     } else io.github.prithirajn.trackersync.sync.ProgressOverride.set(store, document, percent = percent, status = ReadStatus.DNF)
                     if (rating != null || !review.isNullOrBlank()) FinishFlow.save(store, document, rating, review?.trim()?.ifBlank { null })
+                    // Set aside as you chose on the sheet: off your bookcases, if you keep them.
+                    if (DnfPrefs.offShelves(store.snapshot)) runCatching { CollectionHooks.takeOffShelves(store, document) }
                 }
                 null
             } catch (e: Exception) { e.message ?: "Couldn't mark it" }
-            if (err == null) { notify("Marked Did not finish", "It goes to your trackers now."); syncNow(quiet = true) }
+            if (err == null) {
+                val s = store.snapshot
+                val b = s.books[document]
+                if (b != null && DnfPrefs.scene(s)) DnfScenes.show.value = DnfScenes.Shown(b.displayTitle, b.coverUrl, percent ?: b.percent, DnfScenes.styleFor(s, b))
+                notify("Marked Did not finish", "It goes to your trackers now.")
+                syncNow(quiet = true)
+            }
             done(err)
         }
     }
+
+    /** What happens when a book is set aside: its scene, off your bookcases, counted toward the year. */
+    fun setDnfScene(on: Boolean) = store.update { DnfPrefs.withScene(it, on) }
+    fun setDnfOffShelves(on: Boolean) = store.update { DnfPrefs.withOffShelves(it, on) }
+    fun setDnfCounts(on: Boolean) = store.update { DnfPrefs.withCounts(it, on) }
 
     /** The review's slides, to see before posting. */
     fun reviewSlides(document: String, theme: Int, done: (List<android.graphics.Bitmap>) -> Unit) {

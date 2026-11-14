@@ -2,7 +2,7 @@ package io.github.prithirajn.trackersync.source
 
 import android.content.Context
 
-/** Public-build stand-in: Sam's Archives is available only in the private studio source set. */
+/** Public-build stand-in: Archive search is available only in the private studio source set. */
 object SamArchive {
     fun hasSource(context: Context): Boolean = false
 

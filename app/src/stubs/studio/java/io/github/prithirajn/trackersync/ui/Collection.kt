@@ -15,6 +15,7 @@ object CollectionHooks {
     const val available = false
     fun summary(state: Snapshot): String = ""
     fun ownedLabel(state: Snapshot, book: Book): String? = null
+    fun takeOffShelves(store: io.github.prithirajn.trackersync.data.Store, document: String) {}
 }
 
 @Composable

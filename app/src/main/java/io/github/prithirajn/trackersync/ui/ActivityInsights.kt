@@ -235,7 +235,7 @@ private fun WeekBars(w: Insights.Week) {
 private fun YearCard(vm: AppViewModel, state: Snapshot) {
     val c = Cp.colors
     val today = remember { LocalDate.now() }
-    val y = remember(state.books, state.settings.yearGoal) { Insights.year(state, today) }
+    val y = remember(state.books, state.settings.yearGoal, state.extras) { Insights.year(state, today) }
     if (y.finished.isEmpty() && y.goal == 0 && state.books.isEmpty()) return
     var editing by remember { mutableStateOf(false) }
     val tick = rememberTick()
@@ -245,24 +245,25 @@ private fun YearCard(vm: AppViewModel, state: Snapshot) {
         CpCard {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    GoalRing(y.finished.size, y.goal)
+                    GoalRing(y.count, y.goal)
                     HSpace(16)
                     Column(Modifier.weight(1f)) {
                         Text(
-                            if (y.goal > 0) "${y.finished.size} of ${y.goal} books" else "${y.finished.size} book${if (y.finished.size == 1) "" else "s"} finished",
+                            if (y.goal > 0) "${y.count} of ${y.goal} books" else "${y.count} book${if (y.count == 1) "" else "s"}" + if (y.setAside.isEmpty()) " finished" else "",
                             style = CpType.section, color = c.text,
                         )
+                        if (y.setAside.isNotEmpty()) Quiet("${y.finished.size} finished, ${y.setAside.size} set aside")
                         if (y.pages > 0) Quiet(String.format(Locale.getDefault(), "%,d print pages", y.pages))
                         y.ahead?.let { a ->
                             Text(
                                 when {
-                                    y.finished.size >= y.goal -> "Goal reached 🎉"
+                                    y.count >= y.goal -> "Goal reached 🎉"
                                     a > 0 -> "$a ahead of pace"
                                     a < 0 -> "${-a} behind pace"
                                     else -> "Right on pace"
                                 },
                                 style = CpType.small,
-                                color = if (a >= 0 || y.finished.size >= y.goal) c.accentText else c.warn,
+                                color = if (a >= 0 || y.count >= y.goal) c.accentText else c.warn,
                             )
                         }
                         VSpace(6)
@@ -273,7 +274,7 @@ private fun YearCard(vm: AppViewModel, state: Snapshot) {
                             modifier = Modifier
                                 .clip(CpShapes.pill)
                                 .bouncyClickable(CpShapes.pill, pressedScale = 0.94f, role = Role.Button) {
-                                    if (y.goal == 0 && !editing) vm.updateSettings { it.copy(yearGoal = maxOf(12, y.finished.size + 6)) }
+                                    if (y.goal == 0 && !editing) vm.updateSettings { it.copy(yearGoal = maxOf(12, y.count + 6)) }
                                     editing = !editing
                                 }
                                 .padding(vertical = 4.dp),

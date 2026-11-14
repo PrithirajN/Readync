@@ -203,6 +203,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
         }
         Toaster(vm, Modifier.align(Alignment.BottomCenter))
         CrashReport()
+        DnfSceneOverlay()
     }
     }
     }
