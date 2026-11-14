@@ -8,15 +8,15 @@ plugins {
 }
 
 android {
-    namespace = "io.github.prithirajn.trackersync"
+    namespace = "io.github.prithirajn.readync"
     compileSdk = 36
 
     defaultConfig {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 357
-        versionName = "3.7.1"
+        versionCode = 363
+        versionName = "3.8.2"
         // Only the processors phones and e-readers use (64-bit and older 32-bit ARM). The on-device
         // AI, text recognition and barcode libraries are native code, one copy per processor type, so
         // leaving out x86 (emulators, a few old tablets) takes away about half the APK.
@@ -74,9 +74,9 @@ android {
     // The shared edition never gets Kindle, Libby or Audible, even when building privately.
     val hasPrivate = file("src/private").exists()
     sourceSets {
-        getByName("main") { java.srcDir(if (hasPrivate) "src/private/studio/java" else "src/stubs/studio/java") }
-        getByName("full") { java.srcDir(if (hasPrivate) "src/private/connectors/java" else "src/stubs/connectors/java") }
-        getByName("lite") { java.srcDir("src/stubs/connectors/java") }
+        getByName("main") { java.srcDir(if (hasPrivate) "src/private/studio" else "src/stubs/studio") }
+        getByName("full") { java.srcDir(if (hasPrivate) "src/private/connectors" else "src/stubs/connectors") }
+        getByName("lite") { java.srcDir("src/stubs/connectors") }
     }
 
     buildTypes {

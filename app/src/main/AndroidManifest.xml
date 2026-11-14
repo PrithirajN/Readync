@@ -14,13 +14,13 @@
     <!-- Cleartext is allowed so a self-hosted crosspoint-sync on the LAN (http://host:port) works,
          as it does in the CrossPoint Sync companion app. Every tracker is reached over HTTPS. -->
     <application
-        android:name=".TrackerSyncApp"
+        android:name=".ReadyncApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.TrackerSync"
+        android:theme="@style/Theme.Readync"
         android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config">
         <!-- The on-device model runs on the phone's GPU where these are available (else its CPU). -->
@@ -58,7 +58,7 @@
              "Icon colour follows your book" on, the app turns on the one nearest the latest
              book's cover (see IconSwitcher). Green is the usual one. -->
         <activity-alias
-            android:name=".Launcher"
+            android:name="io.github.prithirajn.trackersync.Launcher"
             android:targetActivity=".MainActivity"
             android:enabled="true"
             android:exported="true"
@@ -73,7 +73,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherTeal"
+            android:name="io.github.prithirajn.trackersync.LauncherTeal"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -88,7 +88,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherBlue"
+            android:name="io.github.prithirajn.trackersync.LauncherBlue"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -103,7 +103,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherIndigo"
+            android:name="io.github.prithirajn.trackersync.LauncherIndigo"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -118,7 +118,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherPurple"
+            android:name="io.github.prithirajn.trackersync.LauncherPurple"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -133,7 +133,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherRose"
+            android:name="io.github.prithirajn.trackersync.LauncherRose"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -148,7 +148,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherRed"
+            android:name="io.github.prithirajn.trackersync.LauncherRed"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -163,7 +163,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherOrange"
+            android:name="io.github.prithirajn.trackersync.LauncherOrange"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -178,7 +178,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherAmber"
+            android:name="io.github.prithirajn.trackersync.LauncherAmber"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -193,7 +193,7 @@
                 android:resource="@xml/shortcuts" />
         </activity-alias>
         <activity-alias
-            android:name=".LauncherSlate"
+            android:name="io.github.prithirajn.trackersync.LauncherSlate"
             android:targetActivity=".MainActivity"
             android:enabled="false"
             android:exported="true"
@@ -210,7 +210,7 @@
 
         <!-- Quick Settings tile: sync now, and when it last synced. -->
         <service
-            android:name=".widget.SyncTileService"
+            android:name="io.github.prithirajn.trackersync.widget.SyncTileService"
             android:exported="true"
             android:icon="@drawable/ic_stat_sync"
             android:label="@string/tile_sync"
@@ -232,7 +232,7 @@
         </provider>
 
         <receiver
-            android:name=".widget.RingWidget"
+            android:name="io.github.prithirajn.trackersync.widget.RingWidget"
             android:exported="true"
             android:label="@string/widget_progress_name">
             <intent-filter>
@@ -244,7 +244,7 @@
         </receiver>
 
         <receiver
-            android:name=".widget.ShelfWidget"
+            android:name="io.github.prithirajn.trackersync.widget.ShelfWidget"
             android:exported="true"
             android:label="@string/widget_shelf_name">
             <intent-filter>
@@ -256,7 +256,7 @@
         </receiver>
 
         <receiver
-            android:name=".widget.SyncWidget"
+            android:name="io.github.prithirajn.trackersync.widget.SyncWidget"
             android:exported="true"
             android:label="@string/app_name">
             <intent-filter>
@@ -267,7 +267,7 @@
                 android:resource="@xml/sync_widget_info" />
         </receiver>
         <receiver
-            android:name=".widget.DeviceWidget"
+            android:name="io.github.prithirajn.trackersync.widget.DeviceWidget"
             android:exported="true"
             android:label="@string/widget_device_name">
             <intent-filter>
@@ -279,7 +279,7 @@
         </receiver>
 
         <receiver
-            android:name=".widget.HighlightWidget"
+            android:name="io.github.prithirajn.trackersync.widget.HighlightWidget"
             android:exported="true"
             android:label="@string/widget_highlight_name">
             <intent-filter>
@@ -290,6 +290,17 @@
                 android:resource="@xml/highlight_widget_info" />
         </receiver>
             <receiver android:name=".ui.LiveUpdateReceiver" android:exported="false" />
+        <!-- WorkManager is set up by the app (ReadyncApp), which runs work saved under the old class names. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
         <!-- WorkManager's foreground service, for the AI model download (a few GB). -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"

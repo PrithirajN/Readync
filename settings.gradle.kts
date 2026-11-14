@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TrackerSync"
+rootProject.name = "Readync"
 include(":app")

@@ -10,7 +10,7 @@
         <intent
             android:action="io.github.prithirajn.trackersync.SNAP_PAGE"
             android:targetPackage="io.github.prithirajn.trackersync"
-            android:targetClass="io.github.prithirajn.trackersync.MainActivity" />
+            android:targetClass="io.github.prithirajn.readync.MainActivity" />
     </shortcut>
     <shortcut
         android:shortcutId="add"
@@ -21,7 +21,7 @@
         <intent
             android:action="io.github.prithirajn.trackersync.ADD_BOOK"
             android:targetPackage="io.github.prithirajn.trackersync"
-            android:targetClass="io.github.prithirajn.trackersync.MainActivity" />
+            android:targetClass="io.github.prithirajn.readync.MainActivity" />
     </shortcut>
     <shortcut
         android:shortcutId="sync"
@@ -32,6 +32,6 @@
         <intent
             android:action="io.github.prithirajn.trackersync.SYNC"
             android:targetPackage="io.github.prithirajn.trackersync"
-            android:targetClass="io.github.prithirajn.trackersync.MainActivity" />
+            android:targetClass="io.github.prithirajn.readync.MainActivity" />
     </shortcut>
 </shortcuts>

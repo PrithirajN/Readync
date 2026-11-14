@@ -6,7 +6,7 @@
 -keepattributes SourceFile,LineNumberTable,*Annotation*,Signature,InnerClasses,EnclosingMethod
 
 # Read by name (Backup checks which edition it is).
--keep class io.github.prithirajn.trackersync.BuildConfig { *; }
+-keep class io.github.prithirajn.readync.BuildConfig { *; }
 
 # The on-device AI: native code calls back into these classes.
 -keep class com.google.ai.edge.litertlm.** { *; }
