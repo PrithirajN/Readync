@@ -722,9 +722,30 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
                 selecting = !selecting; picked.clear()
                 if (selecting) picked.addAll(items.map { it.clip.id })
             })
-            // With an on-device model: what they add up to, and where you were.
-            if (aiReady && items.size >= 2) PillButton("Sum up", { summing = true })
-            if (canCatchUp) PillButton("Catch me up", { catchingUp = true })
+            // With an on-device model, its two helpers behind one button, each saying what it does:
+            // where you are in the story (from the book's pages), and what your highlights add up to.
+            val canSum = aiReady && items.size >= 2
+            if (canSum || canCatchUp) Box {
+                var aiMenu by remember { mutableStateOf(false) }
+                PillButton("\u2726 Ask AI", { aiMenu = true })
+                androidx.compose.material3.DropdownMenu(
+                    expanded = aiMenu, onDismissRequest = { aiMenu = false },
+                    containerColor = c.surface, shape = CpShapes.control,
+                ) {
+                    @Composable
+                    fun item(title: String, line: String, onClick: () -> Unit) = androidx.compose.material3.DropdownMenuItem(
+                        text = {
+                            Column(Modifier.padding(vertical = 4.dp)) {
+                                Text(title, style = CpType.bodyStrong, color = c.text)
+                                Text(line, style = CpType.small, color = c.quiet)
+                            }
+                        },
+                        onClick = { aiMenu = false; onClick() },
+                    )
+                    if (canCatchUp) item("Where was I?", "The story up to your page, from the book itself") { catchingUp = true }
+                    if (canSum) item("What stood out", "The themes running through your highlights") { summing = true }
+                }
+            }
         }
     }
 

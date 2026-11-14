@@ -62,6 +62,11 @@ class MainActivity : ComponentActivity() {
         return list?.takeIf { it.isNotEmpty() }?.take(20)
     }
 
+    /** Said straight away, over whatever is on screen, so a share is never silent. */
+    private fun said(text: String) {
+        runCatching { android.widget.Toast.makeText(this, text.replace("  ", " "), android.widget.Toast.LENGTH_LONG).show() }
+    }
+
     /** Shortcuts, notifications and shared links all arrive here. */
     private fun handle(intent: Intent?) {
         val action = when (intent?.action) {
@@ -76,10 +81,12 @@ class MainActivity : ComponentActivity() {
             ACTION_DEALS -> AppAction.Deals
             ACTION_SFF -> AppAction.Sff(intent.getStringExtra(EXTRA_STORY))
             // Screenshots or a screen recording of a book post: its books found on Catalogs › Posts.
-            Intent.ACTION_SEND_MULTIPLE -> media(intent)?.let { io.github.prithirajn.trackersync.ui.PostShare.media.value = it; AppAction.Posts }
+            Intent.ACTION_SEND_MULTIPLE -> media(intent)?.let { io.github.prithirajn.trackersync.ui.PostShare.media.value = it; said("Looking for books in those pictures…"); AppAction.Posts }
             Intent.ACTION_SEND -> if (intent.type?.let { it.startsWith("image/") || it.startsWith("video/") } == true)
                 media(intent)?.let { io.github.prithirajn.trackersync.ui.PostShare.media.value = it; AppAction.Posts }
-            else intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
+            // The shared words (some apps send them only as a CharSequence, or only in the clip data).
+            else (intent.getStringExtra(Intent.EXTRA_TEXT) ?: intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+                ?: runCatching { intent.clipData?.getItemAt(0)?.coerceToText(this)?.toString() }.getOrNull())?.let { text ->
                 // A TikTok, Instagram or YouTube post: its books found on Catalogs › Posts.
                 val post = io.github.prithirajn.trackersync.source.PostBooks.linkIn(text)
                     ?.takeIf { io.github.prithirajn.trackersync.source.PostBooks.platformOf(it) != null }
@@ -89,11 +96,13 @@ class MainActivity : ComponentActivity() {
                 when {
                     post != null -> {
                         io.github.prithirajn.trackersync.sync.ShareJobs.findPost(this, post)
+                        said("Looking for books in that ${io.github.prithirajn.trackersync.source.PostBooks.platformOf(post) ?: ""} post… you'll get a notification")
                         io.github.prithirajn.trackersync.ui.PostShare.pending.value = post
                         AppAction.Posts
                     }
                     shop != null -> {
                         io.github.prithirajn.trackersync.sync.ShareJobs.trackPrice(this, shop)
+                        said("Tracking that book's price… you'll get a notification")
                         AppAction.Deals
                     }
                     else -> ShareLinks.query(text)?.let { AppAction.AddFromShare(it) } ?: AppAction.AddBook

@@ -487,6 +487,34 @@ object EpubText {
      * that doesn't match exactly is tried again ignoring punctuation and case, as crosspoint-sync
      * does. Null when it isn't found, or is found more than once.
      */
+    /**
+     * Where [quote] is in [book], even when the words come up more than once (a line the title is
+     * taken from, a phrase repeated): the one in the highlight's chapter ([spine]) and nearest its
+     * place in the book ([percent], 0–1); the first, when there's nothing to go by. Null when it isn't there.
+     */
+    fun findNear(book: Book, quote: String, spine: Int? = null, percent: Double? = null): Place? {
+        find(book, quote, spine)?.let { return it }
+        fun every(needle: String, f: (Int) -> String): List<Place> =
+            (0 until book.size).flatMap { i -> (book.chapter(i)?.find(needle, f) ?: emptyList()).map { Place(i, it.first, it.second) } }
+        val exact = normalized(quote, ::strict)
+        if (exact.isEmpty()) return null
+        var hits = every(exact, ::strict)
+        if (hits.isEmpty()) {
+            val rough = normalized(quote, ::loose)
+            if (rough.codePointCount(0, rough.length) >= 12) hits = every(rough, ::loose)
+        }
+        if (hits.isEmpty()) return null
+        if (hits.size == 1) return hits[0]
+        val inChapter = spine?.let { sp -> hits.filter { it.spine == sp } }.orEmpty()
+        val pool = inChapter.ifEmpty { hits }
+        if (pool.size == 1 || percent == null) return pool.first()
+        // Nearest to where the highlight is in the whole book, counted by the chapters' lengths.
+        val lengths = (0 until book.size).map { book.chapter(it)?.length ?: 0 }
+        val starts = lengths.runningFold(0L) { acc, n -> acc + n }
+        val want = starts.last() * percent.coerceIn(0.0, 1.0)
+        return pool.minByOrNull { kotlin.math.abs(starts[it.spine] + it.start - want) }
+    }
+
     fun find(book: Book, quote: String, spine: Int? = null): Place? {
         val exact = normalized(quote, ::strict)
         if (exact.isEmpty()) return null

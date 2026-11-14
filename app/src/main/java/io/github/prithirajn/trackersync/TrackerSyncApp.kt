@@ -55,7 +55,7 @@ class TrackerSyncApp : Application() {
                     // The real page around it, when you've photographed it.
                     // (or, without a photo, from the app's own copy of the book).
                     val page = store.snapshot.clipPages[clip.id]
-                        ?: runCatching { io.github.prithirajn.trackersync.source.BookCopies.around(this, clip.document, clip.text, clip.spine) }.getOrNull()
+                        ?: runCatching { io.github.prithirajn.trackersync.source.BookCopies.around(this, clip.document, clip.text, clip.spine, percent = clip.percent) }.getOrNull()
                     val found = page?.let { io.github.prithirajn.trackersync.sync.PageContext.find(it, clip.text) }
                     if (found != null) c.copy(before = found.before, after = found.after) else c
                 },
@@ -65,6 +65,10 @@ class TrackerSyncApp : Application() {
         }
         // The app's own copies of books (from your OPDS catalogs), for the words around a quote.
         io.github.prithirajn.trackersync.source.BookCopies.install(this)
+        // A downloaded copy is checked against your highlights of the book before it's kept.
+        io.github.prithirajn.trackersync.source.BookCopies.highlightsOf = { doc ->
+            io.github.prithirajn.trackersync.sync.Highlights.forBook(store.snapshot, doc).map { it.clip.text to it.clip.percent }
+        }
         // Posts made in your name (Threads, Micro.blog) are told about in a notification.
         io.github.prithirajn.trackersync.sync.Notices.app = this
         io.github.prithirajn.trackersync.source.BookCopies.onBackground = { book, copy, why ->

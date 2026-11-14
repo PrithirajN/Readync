@@ -1,5 +1,6 @@
 package io.github.prithirajn.trackersync.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
@@ -24,6 +25,7 @@ import io.github.prithirajn.trackersync.ui.theme.CpType
  * it was last tried, with the button to try again or remove it. Shown once there's something to say
  * (a copy, a try, or a book you're reading with copies turned on).
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun CopyCard(vm: AppViewModel, book: Book, alwaysShow: Boolean = false) {
     if (book.isMangaOrComic) return
@@ -58,9 +60,17 @@ fun CopyCard(vm: AppViewModel, book: Book, alwaysShow: Boolean = false) {
                 }
                 copy != null -> {
                     Quiet("Kept in the app · from ${serverName(copy.server)} · ${sizeOf(copy.size)} · ${ago(copy.at * 1000)}")
+                    // How it was checked to be this book (title, author, length, your highlights in it).
+                    copy.checked?.let { ch ->
+                        if (ch.startsWith("⚠")) Quiet(ch + ". Remove it and look again, or keep it if you know it's right.", color = c.errorText)
+                        else Quiet("✓ Checked: $ch", color = c.good)
+                    }
                     Quiet("Quote Studio uses it for the lines around your passages.", color = c.faint)
                     VSpace(10)
-                    PillButton("Remove the copy", { vm.toggleBookCopy(book.document) })
+                    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (copy.checked == null || copy.checked.startsWith("⚠")) PillButton("Check it's this book", { vm.recheckCopy(book.document) })
+                        PillButton("Remove the copy", { vm.toggleBookCopy(book.document) })
+                    }
                 }
                 failed != null -> {
                     Quiet("Couldn't get one: ${failed.message ?: "not found"}" + (failed.at.takeIf { it > 0 }?.let { " · ${ago(it * 1000)}" } ?: ""), color = c.errorText)

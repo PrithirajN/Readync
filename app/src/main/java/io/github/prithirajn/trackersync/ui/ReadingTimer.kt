@@ -187,7 +187,7 @@ fun WhoIsSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     AiSheet("Who's this?", onClose) {
-        Quiet("A name, a place or a word from the book. The answer comes only from what's before your place (${book.percent}%), so nothing ahead is given away.", color = c.faint)
+        Quiet("A name, a place or a word from the book. The answer comes only from the book's pages before your place (${book.percent}%) and your highlights, so nothing ahead is given away.", color = c.faint)
         VSpace(12)
         CpTextField(term, { term = it.take(60); error = null }, "Name or word", placeholder = "e.g. Mordecai")
         VSpace(10)

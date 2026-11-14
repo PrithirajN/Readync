@@ -17,7 +17,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -79,11 +81,19 @@ fun GuardedSheet(
         guard?.dismiss = { latest.value() }
         onDispose { guard?.dismiss = null }
     }
+    // Set apart from the page behind: that page dimmed well down, and a fine light edge along the
+    // sheet's top so its outline reads even when both are the same dark colour.
+    val dark = io.github.prithirajn.trackersync.ui.theme.Cp.colors.isDark
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
+        modifier = androidx.compose.ui.Modifier.border(
+            androidx.compose.foundation.BorderStroke(1.dp, if (dark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.08f)),
+            shape,
+        ),
         sheetState = sheetState,
         shape = shape,
         containerColor = containerColor,
+        scrimColor = Color.Black.copy(alpha = if (dark) 0.66f else 0.45f),
         dragHandle = dragHandle,
         content = content,
     )

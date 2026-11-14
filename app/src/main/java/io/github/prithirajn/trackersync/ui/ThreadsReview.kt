@@ -61,49 +61,51 @@ internal fun PlainSheet(title: String, onClose: () -> Unit, content: @Composable
     }
 }
 
-/**
- * On a book's page, with Threads connected: whether its new highlights go to Threads (off until
- * you turn it on, per book), and, once it's finished or you've stopped, posting your review.
- */
+/** On a book's page, with Threads connected, once it's finished or you've stopped: posting your review. */
 @Composable
 fun ThreadsBookCard(vm: AppViewModel, state: Snapshot, book: Book, onReview: () -> Unit) {
-    if (state.threadsToken == null) return
+    if (state.threadsToken == null || !ThreadsAuto.canReview(book)) return
     val c = Cp.colors
-    val on = book.document in state.threadsBooks
     VSpace(16)
     CpCard {
         Column(Modifier.padding(16.dp)) {
+            val posted = state.threadsReviewed[book.document]
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                    Text("Post to Threads", style = CpType.bodyStrong, color = c.text)
+                    Text(if (book.status == ReadStatus.DNF) "Your verdict on Threads" else "Your review on Threads", style = CpType.body, color = c.text)
                     Quiet(
-                        if (on) "New highlights, quotes and notes from this book go to @${state.threadsUser ?: "you"} after each sync, each as a Book card."
-                        else "Off for this book. Turn it on and its new highlights go to Threads by themselves (ones already here aren't posted).",
+                        when {
+                            posted != null -> "Posted ${ago(posted * 1000)}."
+                            book.rating == null && book.review.isNullOrBlank() -> "Rate it first, then post your stars and review."
+                            else -> "Your stars and review as slides to swipe through."
+                        },
                         color = c.faint,
                     )
                 }
-                CpToggle(on, { vm.setThreadsForBook(book.document, it) }, "Post this book's highlights to Threads")
+                PillButton(if (posted != null) "Post again" else "Post review", onReview, outlined = posted != null)
             }
-            if (ThreadsAuto.canReview(book)) {
-                VSpace(12)
-                RowDivider()
-                VSpace(12)
-                val posted = state.threadsReviewed[book.document]
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text(if (book.status == ReadStatus.DNF) "Your verdict" else "Your review", style = CpType.body, color = c.text)
-                        Quiet(
-                            when {
-                                posted != null -> "Posted ${ago(posted * 1000)}."
-                                book.rating == null && book.review.isNullOrBlank() -> "Rate it first, then post your stars and review."
-                                else -> "Your stars and review as slides to swipe through."
-                            },
-                            color = c.faint,
-                        )
-                    }
-                    PillButton(if (posted != null) "Post again" else "Post review", onReview, outlined = posted != null)
-                }
+        }
+    }
+}
+
+/** On a book's Highlights tab, with Threads connected: whether its new highlights go to Threads (off until you turn it on). */
+@Composable
+fun ThreadsHighlightsToggle(vm: AppViewModel, state: Snapshot, book: Book) {
+    if (state.threadsToken == null) return
+    val c = Cp.colors
+    val on = book.document in state.threadsBooks
+    VSpace(12)
+    CpCard {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                Text("Post to Threads", style = CpType.bodyStrong, color = c.text)
+                Quiet(
+                    if (on) "New highlights, quotes and notes from this book go to @${state.threadsUser ?: "you"} after each sync, each as a Book card."
+                    else "Off for this book. Turn it on and its new highlights go to Threads by themselves (ones already here aren't posted).",
+                    color = c.faint,
+                )
             }
+            CpToggle(on, { vm.setThreadsForBook(book.document, it) }, "Post this book's highlights to Threads")
         }
     }
 }

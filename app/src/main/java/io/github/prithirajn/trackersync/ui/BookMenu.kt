@@ -369,6 +369,10 @@ private fun DatesSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
         vm.loadDates(book.document) { d, e ->
             loading = false; loaded = d; error = e
             start = dayOf(d?.started); finish = dayOf(d?.finished)
+            // The reader's start after its finish: the book opened again later (a look back, a reread).
+            val st = start; val fi = finish
+            if (e == null && st != null && fi != null && st > fi)
+                error = "Your reader says you started on ${st.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy"))}, after you finished: probably when you opened it again. Pick when you really started (or clear it), then Save."
         }
     }
     MenuSheet("Reading dates", onClose) {
@@ -411,13 +415,17 @@ private fun DatesSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
 
     picking?.let { which ->
         val today = LocalDate.now()
-        val initial = (if (which == "start") start else finish) ?: today
+        // A start no later than the finish, a finish no earlier than the start, neither after today.
+        val latest = if (which == "start") finish?.takeIf { it < today } ?: today else today
+        val earliest = if (which == "finish") start?.takeIf { it <= today } else null
+        val initial = ((if (which == "start") start else finish) ?: latest).let { d -> if (d > latest) latest else if (earliest != null && d < earliest) earliest else d }
         val picker = rememberDatePickerState(
             initialSelectedDateMillis = initial.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
             selectableDates = object : SelectableDates {
-                // No later than today, as the server allows.
-                override fun isSelectableDate(utcTimeMillis: Long) =
-                    !Instant.ofEpochMilli(utcTimeMillis).atZone(ZoneOffset.UTC).toLocalDate().isAfter(today)
+                override fun isSelectableDate(utcTimeMillis: Long): Boolean {
+                    val d = Instant.ofEpochMilli(utcTimeMillis).atZone(ZoneOffset.UTC).toLocalDate()
+                    return !d.isAfter(latest) && (earliest == null || !d.isBefore(earliest))
+                }
             },
         )
         DatePickerDialog(
@@ -426,6 +434,7 @@ private fun DatesSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
                 TextButton(onClick = {
                     val day = picker.selectedDateMillis?.let { Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate() }
                     if (which == "start") start = day else finish = day
+                    if (start == null || finish == null || start!! <= finish!!) error = null
                     picking = null
                 }) { Text("OK", color = c.accentText) }
             },

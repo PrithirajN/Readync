@@ -142,14 +142,20 @@ fun CatchUpSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(true) }
     LaunchedEffect(book.document) { vm.aiCatchUp(book.document) { r, e -> result = r; error = e; busy = false } }
-    AiSheet("Catch me up", onClose) {
+    AiSheet("Where was I?", onClose) {
         when {
-            busy -> AiThinking("Going over your highlights so far…")
+            busy -> AiThinking("Going over the pages before your place…")
             error != null -> Text(error ?: "", style = CpType.small, color = c.errorText)
             else -> result?.let { r ->
                 AiResult("Where you were, at ${book.percent}%", r) {}
                 VSpace(6)
-                Quiet("Only from your highlights and notes up to where you are, so nothing ahead is given away.", color = c.faint)
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val hasCopy = remember(book.document) { io.github.prithirajn.trackersync.source.BookCopies.has(context, book.document) }
+                Quiet(
+                    if (hasCopy) "From the pages just before your place in the app's copy of the book, and your highlights, so nothing ahead is given away."
+                    else "From your highlights and notes up to where you are, so nothing ahead is given away. Keep a copy of the book (Edit book › Copy for quotes) for a fuller catch-up from its pages.",
+                    color = c.faint,
+                )
             }
         }
     }
@@ -166,7 +172,7 @@ fun HighlightSummarySheet(vm: AppViewModel, state: Snapshot, book: Book, onClose
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(true) }
     LaunchedEffect(book.document) { vm.aiSummarizeHighlights(book.document) { r, e -> result = r; error = e; busy = false } }
-    AiSheet("Your highlights, summed up", onClose) {
+    AiSheet("What stood out", onClose) {
         val r = result
         when {
             busy -> AiThinking("Reading your ${clips.size} highlights…")

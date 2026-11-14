@@ -359,13 +359,15 @@ fun SheetGrip() {
     Row(
         Modifier
             .onGloballyPositioned { co ->
-                val loc = IntArray(2)
-                view.getLocationOnScreen(loc)
-                // The grip's top on the screen (measured outside its padding, so the room added doesn't move it).
-                val top = loc[1] + co.positionInWindow().y.toInt()
-                // Up against the top of the screen (a tall sheet), or would reach under the bar without the
-                // room: the bar's height is kept free. A sheet that stops lower gets none.
-                val need = if (top <= 1 || top + clear < barPx) barPx else 0
+                // Decided by how tall the sheet is, not where it is right now: a sheet tall enough to reach
+                // the top of the screen keeps the bar's room the whole time, even while it's dragged
+                // (deciding by position made everything in it jump up and down as it moved).
+                // The sheet: the first box around the grip that's taller than the grip itself.
+                var up = co.parentLayoutCoordinates
+                while (up != null && up.size.height <= co.size.height + 1) up = up.parentLayoutCoordinates
+                val sheetHeight = up?.size?.height ?: return@onGloballyPositioned
+                val screen = view.rootView.height
+                val need = if (sheetHeight - clear + barPx >= screen - 2) barPx else 0
                 if (need != clear) clear = need
             }
             .padding(top = 12.dp + with(density) { clear.toDp() }, bottom = 10.dp),

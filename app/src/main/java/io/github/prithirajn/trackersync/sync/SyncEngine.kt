@@ -1046,7 +1046,10 @@ class SyncEngine(private val store: Store) {
                     document = doc,
                     title = item.title,
                     author = item.author,
-                    percentage = if (manual) old!!.percentage else item.fraction ?: old?.percentage ?: 0.0,
+                    // Finished there with no position sent (comics, logged books): read to the end.
+                    percentage = if (manual) old!!.percentage
+                        else if (item.status == ReadStatus.FINISHED && (item.fraction ?: 0.0) <= 0.0) 1.0
+                        else item.fraction ?: old?.percentage ?: 0.0,
                     status = if (manual) old!!.status else item.status,
                     timestamp = if (manual) old!!.timestamp else if (item.updatedAt > 0) item.updatedAt else old?.timestamp ?: now / 1000,
                     coverUrl = item.coverUrl ?: old?.coverUrl,

@@ -12,6 +12,9 @@ interface TextModel {
 
     /** What the model makes of a picture (the file at [imagePath]) with [prompt]; null for a model that can't see pictures. */
     fun look(imagePath: String, prompt: String): String? = null
+
+    /** About how much text (characters) one prompt can carry: small models little, Gemma 4 a few pages. */
+    val readChars: Int get() = 5000
 }
 
 /**
@@ -589,23 +592,35 @@ object Assistant {
      * Where you were in a book you're coming back to: a few sentences in second person from your
      * own highlights and notes up to where you are (nothing past it), so it can't spoil anything.
      */
-    fun catchUp(m: TextModel, book: Book, clips: List<Clipping>, daysAway: Int?): String? {
+    fun catchUp(m: TextModel, book: Book, clips: List<Clipping>, daysAway: Int?, before: String? = null, chapter: String? = null): String? {
         val upTo = clips.filter { (it.percent ?: 0.0) <= book.percentage + 0.005 }.sortedBy { it.percent ?: 0.0 }
-        if (upTo.isEmpty()) return null
+        if (upTo.isEmpty() && before.isNullOrBlank()) return null
+        val budget = (m.readChars - 1400).coerceAtLeast(2500)
+        // The book's own words just before your place carry most of it; your highlights the rest.
+        val story = before?.trim()?.takeLast(if (upTo.isEmpty()) budget else budget * 3 / 4)
         val listed = fit(upTo.map { c ->
             val at = c.percent?.let { " (at ${Math.round(it * 100)}%)" } ?: ""
             "- \"${c.text.trim()}\"$at" + (c.note?.takeIf { it.isNotBlank() }?.let { " my note: ${it.trim()}" } ?: "")
-        }.reversed(), MAX_PROMPT_CHARS - 1200).reversed()
+        }.reversed(), budget - (story?.length ?: 0)).reversed()
         val prompt = buildString {
             appendLine("I'm coming back to \"${book.displayTitle}\"" + (book.author?.let { " by $it" } ?: "") + ". I'm ${book.percent}% through" + (daysAway?.takeIf { it > 1 }?.let { " and haven't read it for $it days" } ?: "") + ".")
-            appendLine("These are the passages I highlighted so far, in order, with my notes:")
-            listed.forEach { appendLine(it) }
+            if (story != null) {
+                appendLine()
+                appendLine("The pages just before where I stopped" + (chapter?.let { " (in \"$it\")" } ?: "") + ":")
+                appendLine(story)
+            }
+            if (listed.isNotEmpty()) {
+                appendLine()
+                appendLine("Passages I highlighted so far, in order, with my notes:")
+                listed.forEach { appendLine(it) }
+            }
             appendLine()
-            appendLine("In 3 or 4 sentences, remind me where I was: what was going on and what I was paying attention to, using only these passages and notes. Speak to me as \"you\". Don't guess what happens next or add anything that isn't in them.")
+            appendLine("Remind me where I am in the story in 3 to 5 sentences: who is in the scene, where they are, what has just happened, and what they're trying to do or facing next. Use the characters' names. Speak to me as \"you\" (\"You'd just reached…\").")
+            appendLine("Tell the story, not my reading: don't describe the passages or my highlights themselves. Use only what's above, never what you know of the book, and don't guess what happens later.")
             append("Reply with the sentences only.")
         }
         val out = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null)
-        return out.takeIf { it.length in 30..1500 }
+        return out.takeIf { it.length in 30..1800 }
     }
 
     // ---- Who's this? ----
@@ -619,14 +634,14 @@ object Assistant {
         val hl = clips.filter { it.text.contains(term, ignoreCase = true) || it.note?.contains(term, ignoreCase = true) == true }
             .ifEmpty { clips.takeLast(8) }
             .map { "- \"${it.text.trim()}\"" + (it.note?.takeIf { n -> n.isNotBlank() }?.let { n -> " (my note: ${n.trim()})" } ?: "") }
-        val from = fit(passages.map { "- $it" } + hl, MAX_PROMPT_CHARS - 1400)
+        val from = fit(passages.map { "- $it" } + hl, (m.readChars - 1400).coerceAtLeast(MAX_PROMPT_CHARS - 1400))
         if (from.isEmpty()) return null
         val prompt = buildString {
             appendLine("I'm reading \"${book.displayTitle}\"" + (book.author?.let { " by $it" } ?: "") + " and I'm ${book.percent}% through.")
             appendLine("Here is everything from the book up to where I am that might mention \"$term\":")
             from.forEach { appendLine(it) }
             appendLine()
-            appendLine("Using only these lines, remind me in 2 or 3 sentences who or what \"$term\" is and what has happened with them so far. Don't use anything you know about the book beyond these lines and don't guess what happens later. If the lines don't say, reply exactly: Not clear from what you've read so far.")
+            appendLine("Using only these lines, remind me in 2 to 4 sentences who or what \"$term\" is: who they are to the other characters, what they're like, and what they've done so far. A name can appear as part of a longer name or a nickname: use those lines too. Don't use anything you know about the book beyond these lines and don't guess what happens later. If the lines really don't say, reply exactly: Not clear from what you've read so far.")
             append("Reply with the sentences only.")
         }
         val out = clean(runCatching { m.generate(prompt) }.getOrNull() ?: return null)

@@ -244,7 +244,7 @@ fun MultiShareSheet(book: Book, facts: BookFacts?, clips: List<Clipping>, markdo
         VSpace(8)
         if (asSheet) Segmented(listOf(false, true), night, { if (it) "Night" else "Paper" }, { night = it }, Modifier.fillMaxWidth())
         else FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (l in QuoteCard.Look.entries.filter { it != QuoteCard.Look.PAGE }) PillButton(l.label, { look = l }, outlined = look != l)
+            for (l in QuoteCard.Look.entries.filter { it != QuoteCard.Look.PAGE && it != QuoteCard.Look.WORDPRINT }) PillButton(l.label, { look = l }, outlined = look != l)
         }
         VSpace(8)
         Segmented(listOf(false, true), story, { if (it) "Story" else "Post" }, { story = it }, Modifier.fillMaxWidth())

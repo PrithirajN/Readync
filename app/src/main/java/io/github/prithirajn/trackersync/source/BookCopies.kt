@@ -30,10 +30,15 @@ object BookCopies {
         val title: String,
         val size: Long,
         val at: Long,
+        /** How it was checked to be this book ("5 of 6 of your highlights are in it"). */
+        val checked: String? = null,
     )
 
     /** Why a copy couldn't be had. */
-    class CopyException(message: String) : Exception(message)
+    open class CopyException(message: String) : Exception(message)
+
+    /** A downloaded file that turned out not to be the book (thrown away; the next match is tried). */
+    class WrongBook(message: String) : CopyException(message)
 
     private const val PREFS = "bookcopies"
     private const val RETRY_SEC = 3 * 24 * 3600L
@@ -90,7 +95,7 @@ object BookCopies {
             val a = JSONArray(raw ?: "[]")
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)
-                val c = Copy(o.getString("document"), o.getString("file"), o.optString("server"), o.optString("title"), o.optLong("size"), o.optLong("at"))
+                val c = Copy(o.getString("document"), o.getString("file"), o.optString("server"), o.optString("title"), o.optLong("size"), o.optLong("at"), o.optString("checked").ifBlank { null })
                 if (File(dir(context), c.file).isFile) out[c.document] = c
             }
         }
@@ -102,7 +107,7 @@ object BookCopies {
     @Synchronized
     private fun save(context: Context, all: Map<String, Copy>) {
         val a = JSONArray()
-        for (c in all.values) a.put(JSONObject().put("document", c.document).put("file", c.file).put("server", c.server).put("title", c.title).put("size", c.size).put("at", c.at))
+        for (c in all.values) a.put(JSONObject().put("document", c.document).put("file", c.file).put("server", c.server).put("title", c.title).put("size", c.size).put("at", c.at).put("checked", c.checked ?: ""))
         prefs(context).edit().putString("copies", a.toString()).apply()
         _copies.value = all
     }
@@ -152,11 +157,12 @@ object BookCopies {
      * and as much after, cut at sentence ends so it starts and stops cleanly. Null with no copy, or
      * when the passage isn't found exactly once. Blocking.
      */
-    fun around(context: Context, document: String, quote: String, spine: Int? = null, chars: Int = 900): String? {
+    fun around(context: Context, document: String, quote: String, spine: Int? = null, chars: Int = 900, percent: Double? = null): String? {
         val q = quote.trim()
-        if (q.length < 12) return null
+        if (q.length < 8) return null
         val book = open(context, document) ?: return null
-        val place = runCatching { EpubText.find(book, q, spine?.takeIf { it >= 0 }) }.getOrNull() ?: return null
+        // Found even when the words come up more than once in the book (a line the title is taken from).
+        val place = runCatching { EpubText.findNear(book, q, spine?.takeIf { it >= 0 }, percent) }.getOrNull() ?: return null
         val ch = book.chapter(place.spine) ?: return null
         val beforeRaw = ch.textOf((place.start - chars).coerceAtLeast(0), place.start)
         val afterRaw = ch.textOf(place.end, (place.end + chars).coerceAtMost(ch.length))
@@ -179,11 +185,11 @@ object BookCopies {
      * sentence), and its chapter's title: what a caption needs to know what the passage is about,
      * with nothing from after it. Null with no copy, or when the passage isn't found. Blocking.
      */
-    fun before(context: Context, document: String, quote: String, spine: Int? = null, chars: Int = 1200): Pair<String, String?>? {
+    fun before(context: Context, document: String, quote: String, spine: Int? = null, chars: Int = 1200, percent: Double? = null): Pair<String, String?>? {
         val q = quote.trim()
-        if (q.length < 12) return null
+        if (q.length < 8) return null
         val book = open(context, document) ?: return null
-        val place = runCatching { EpubText.find(book, q, spine?.takeIf { it >= 0 }) }.getOrNull() ?: return null
+        val place = runCatching { EpubText.findNear(book, q, spine?.takeIf { it >= 0 }, percent) }.getOrNull() ?: return null
         val ch = book.chapter(place.spine) ?: return null
         val raw = ch.textOf((place.start - chars).coerceAtLeast(0), place.start)
         val text = if (place.start - chars > 0) {
@@ -198,6 +204,82 @@ object BookCopies {
             EpubText.outline(File(dir(context), c.file).readBytes()).firstOrNull { it.spine == place.spine }?.title
         }.getOrNull()?.takeIf { it.isNotBlank() && it.length <= 80 }
         return tidy to title
+    }
+
+    /**
+     * Where a reading position ([upTo], 0–1) falls in [book]: its chapter and how far into it, counted
+     * by the chapters' lengths the way a reader's position runs.
+     */
+    private fun placeOf(book: EpubText.Book, upTo: Double): Pair<Int, Int> {
+        val lengths = (0 until book.size).map { book.chapter(it)?.length ?: 0 }
+        val total = lengths.sum().coerceAtLeast(1)
+        var left = (total * upTo.coerceIn(0.0, 1.0)).toLong()
+        for ((i, n) in lengths.withIndex()) {
+            if (left <= n) return i to left.toInt()
+            left -= n
+        }
+        return (book.size - 1).coerceAtLeast(0) to (lengths.lastOrNull() ?: 0)
+    }
+
+    /**
+     * The book's words just before [upTo] in this phone's copy (about [chars] characters, across
+     * chapter ends when the place is near a chapter's start), with the chapter's title. Nothing from
+     * after the place. Null with no copy. Blocking.
+     */
+    fun textBefore(context: Context, document: String, upTo: Double, chars: Int = 6000): Pair<String, String?>? {
+        val book = open(context, document) ?: return null
+        val (spine, at) = placeOf(book, upTo)
+        val pieces = ArrayList<String>()
+        var need = chars
+        var i = spine
+        var end = at
+        while (i >= 0 && need > 0) {
+            val ch = book.chapter(i)
+            if (ch != null) {
+                val stop = end.coerceAtMost(ch.length)
+                val start = (stop - need).coerceAtLeast(0)
+                val t = ch.textOf(start, stop).replace(Regex("\\s+"), " ").trim()
+                if (t.isNotEmpty()) { pieces.add(0, t); need -= t.length }
+            }
+            i--
+            end = Int.MAX_VALUE
+        }
+        val text = pieces.joinToString("\n\n").let { t ->
+            // Start at a sentence.
+            val cut = Regex("[.!?…][\"”’)]?\\s+").find(t)?.range?.last
+            if (cut != null && cut < 300 && t.length > chars / 2) t.substring(cut + 1) else t
+        }.trim()
+        if (text.length < 80) return null
+        val title = runCatching {
+            val c = get(context, document) ?: return@runCatching null
+            EpubText.outline(File(dir(context), c.file).readBytes()).lastOrNull { it.spine <= spine }?.title
+        }.getOrNull()?.takeIf { it.isNotBlank() && it.length <= 80 }
+        return text to title
+    }
+
+    /**
+     * Sentences that mention [term] (or its parts: "Sunny" in "Sunny Lambert", a surname alone) in
+     * this phone's copy, before [upTo] only, nearest first, each with the sentence before it for
+     * context. Empty with no copy. Blocking.
+     */
+    fun mentionsBefore(context: Context, document: String, term: String, upTo: Double, max: Int = 30): List<String> {
+        val book = open(context, document) ?: return emptyList()
+        val (spine, at) = placeOf(book, upTo)
+        val needles = (listOf(term) + term.split(' ').filter { it.length >= 4 }).map { it.lowercase() }.distinct()
+        val out = ArrayList<String>()
+        for (i in spine downTo 0) {
+            val ch = book.chapter(i) ?: continue
+            val txt = ch.textOf(0, if (i == spine) at.coerceAtMost(ch.length) else ch.length)
+            if (needles.none { txt.contains(it, ignoreCase = true) }) continue
+            val sentences = Regex("""[^.!?\n]+[.!?]+["”’)]?""").findAll(txt).map { it.value.replace(Regex("\\s+"), " ").trim() }.toList()
+            for (k in sentences.indices.reversed()) {
+                val x = sentences[k]
+                if (x.length !in 15..500 || needles.none { Regex("\\b" + Regex.escape(it) + "\\b", RegexOption.IGNORE_CASE).containsMatchIn(x) }) continue
+                out += listOfNotNull(sentences.getOrNull(k - 1)?.takeIf { it.length < 300 }, x).joinToString(" ")
+                if (out.size >= max) return out
+            }
+        }
+        return out
     }
 
     // ---- finding and fetching a copy ----
@@ -230,44 +312,110 @@ object BookCopies {
             Matcher.normalizeText(n).split(' ').filter { it.length >= 2 }.lastOrNull()
         }.toSet() + Matcher.normalizeText(names).split(' ').filter { it.length >= 4 }
 
-    /** Looks for [book] as an EPUB on every saved catalog at once; the first server in your list that has it wins. Blocking. */
-    fun find(context: Context, book: Book): Found? {
+    /** Looks for [book] as an EPUB on saved OPDS catalogs and the configured Sam archive at once. Blocking. */
+    fun find(context: Context, book: Book): Found? = findAll(context, book).firstOrNull()
+
+    /** Every catalog entry that looks like [book], your first catalog's first: tried in turn until one checks out. Blocking. */
+    fun findAll(context: Context, book: Book): List<Found> {
         val servers = Opds.load(context)
-        if (servers.isEmpty()) throw CopyException("Add an OPDS catalog first (Catalogs tab)")
         val query = book.displayTitle.substringBefore(':').trim().ifEmpty { book.displayTitle }
-        val pool = Executors.newFixedThreadPool(minOf(4, servers.size))
+        val pool = Executors.newFixedThreadPool(minOf(4, servers.size.coerceAtLeast(1)))
         try {
             val tasks = servers.map { srv ->
                 pool.submit(Callable {
                     runCatching { Opds.search(context, srv, query) }.getOrDefault(emptyList())
-                        .firstNotNullOfOrNull { e -> if (same(book, e)) epubOf(e)?.let { Found(srv, e, it) } else null }
+                        .filter { e -> same(book, e) }
+                        // Not another book of the series, nor a translation.
+                        .filter { e -> Matcher.volume(e.title).let { v -> v == null || Matcher.volume(book.displayTitle).let { it == null || it == v } } }
+                        .filter { e -> !Matcher.otherLanguage(e.title, book.displayTitle) }
+                        .mapNotNull { e -> epubOf(e)?.let { Found(srv, e, it) } }
+                        .take(3)
                 })
             }
-            for (t in tasks) {
-                val got = runCatching { t.get(45, TimeUnit.SECONDS) }.getOrNull()
-                if (got != null) return got
-            }
-            return null
+            val catalogMatches = tasks.flatMap { t -> runCatching { t.get(45, TimeUnit.SECONDS) }.getOrNull().orEmpty() }
+            val samMatches = runCatching { SamArchive.search(context, query) }.getOrDefault(emptyList())
+                .mapNotNull { (srv, e) ->
+                    if (!same(book, e)) return@mapNotNull null
+                    if (Matcher.volume(e.title).let { v -> v != null && Matcher.volume(book.displayTitle)?.let { it != v } == true }) return@mapNotNull null
+                    if (Matcher.otherLanguage(e.title, book.displayTitle)) return@mapNotNull null
+                    epubOf(e)?.let { Found(srv, e, it) }
+                }
+            if (catalogMatches.isEmpty() && samMatches.isEmpty()) throw CopyException("None of your OPDS catalogs or Sam's Archives has it as an EPUB")
+            return (catalogMatches + samMatches).distinctBy { it.acquisition.href }.take(5)
         } finally {
             pool.shutdownNow()
         }
     }
 
+    /** Your highlights of a book (their words and where they are), to check a copy against (set by the app). */
+    @Volatile var highlightsOf: ((String) -> List<Pair<String, Double?>>)? = null
+
+    /**
+     * Whether a downloaded EPUB really is [book]: its own title and author, not another volume or a
+     * sample, and (the surest sign) your highlights found in its text. Null when it is, with how it was
+     * checked; the reason when it isn't.
+     */
+    private fun check(book: Book, bytes: ByteArray, epub: EpubText.Book): Pair<String?, String?> {
+        val (title, creator) = runCatching { EpubText.metadata(bytes) }.getOrDefault(null to null)
+        if (title != null) {
+            val want = Matcher.baseTitle(book.displayTitle)
+            val got = Matcher.baseTitle(title)
+            if (want.isNotEmpty() && got.isNotEmpty() && want != got && !got.startsWith(want) && !want.startsWith(got))
+                return null to "The file is “$title”, not this book"
+            val vb = Matcher.volume(book.displayTitle); val vf = Matcher.volume(title)
+            if (vb != null && vf != null && vb != vf) return null to "The file is another book of the series (“$title”)"
+            if (Matcher.otherLanguage(title, book.displayTitle)) return null to "The file is in another language (“$title”)"
+        }
+        if (creator != null && !book.author.isNullOrBlank()) {
+            val mine = surnames(book.author!!)
+            if (mine.isNotEmpty() && surnames(creator).none { it in mine }) return null to "The file is by $creator, not ${book.author}"
+        }
+        // A sample or a cut-down edition: far less text than the book's pages would hold.
+        val chars = (0 until epub.size).sumOf { (epub.chapter(it)?.length ?: 0).toLong() }
+        book.pageCount?.takeIf { it >= 120 }?.let { pages -> if (chars < pages * 600L) return null to "The file looks like a sample (far shorter than the book)" }
+        // Your highlights in its text.
+        val sample = highlightsOf?.invoke(book.document).orEmpty().filter { it.first.trim().length >= 25 }
+            .sortedByDescending { it.first.length }.take(8)
+        if (sample.size >= 2) {
+            val found = sample.count { (t, at) -> runCatching { EpubText.findNear(epub, t.trim(), null, at) }.getOrNull() != null }
+            if (found == 0) return null to "None of your highlights are in the file (another edition or another book)"
+            return "$found of ${sample.size} of your highlights are in it" to null
+        }
+        return (if (title != null) "Its title and author match" else "Its catalog entry matches") to null
+    }
+
     /** Fetches [found] into the app's storage as [book]'s copy. Blocking. */
-    fun fetch(context: Context, book: Book, found: Found, cancel: AtomicBoolean = AtomicBoolean(false), progress: (Opds.Progress) -> Unit = {}): Copy {
+    fun fetch(context: Context, book: Book, found: Found, cancel: AtomicBoolean = AtomicBoolean(false), trust: Boolean = false, progress: (Opds.Progress) -> Unit = {}): Copy {
         val name = "copy-" + Integer.toHexString(book.document.hashCode()) + "-" + System.currentTimeMillis() / 1000 + ".epub"
         val file = File(dir(context), name)
         val size = Opds.downloadTo(found.server, found.acquisition, file, cancel, progress)
-        // Only a real EPUB is kept.
+        // Only a real EPUB that is this book is kept.
         val bytes = file.readBytes()
-        if (EpubText.open(bytes) == null) { file.delete(); throw CopyException("${found.server.name}'s file isn't a readable EPUB") }
+        val epub = EpubText.open(bytes) ?: run { file.delete(); throw CopyException("${found.server.name}'s file isn't a readable EPUB") }
+        val (ok, wrong) = check(book, bytes, epub)
+        // One you picked yourself is kept anyway, with what didn't match said beside it.
+        if (wrong != null && !trust) { file.delete(); throw WrongBook("${found.server.name}: $wrong") }
+        val checked = ok ?: "⚠ $wrong (kept because you chose it)"
         val all = LinkedHashMap(load(context))
         all[book.document]?.let { old -> File(dir(context), old.file).delete() }
-        val c = Copy(book.document, name, found.server.name, found.entry.title, size, System.currentTimeMillis() / 1000)
+        val c = Copy(book.document, name, found.server.name, found.entry.title, size, System.currentTimeMillis() / 1000, checked)
         all[book.document] = c
         synchronized(opened) { opened.remove(book.document) }
         save(context, all)
         return c
+    }
+
+    /** Checks a copy kept before checks were made (or again): what it found, kept with the copy. Blocking. */
+    fun recheck(context: Context, book: Book): String? {
+        val c = get(context, book.document) ?: return null
+        val bytes = runCatching { File(dir(context), c.file).readBytes() }.getOrNull() ?: return null
+        val epub = EpubText.open(bytes) ?: return "⚠ The file isn't a readable EPUB"
+        val (ok, wrong) = check(book, bytes, epub)
+        val said = ok ?: "⚠ $wrong"
+        val all = LinkedHashMap(load(context))
+        all[book.document] = c.copy(checked = said)
+        save(context, all)
+        return said
     }
 
     /** Finds [book] on your catalogs and keeps a copy. Blocking. */
@@ -277,12 +425,23 @@ object BookCopies {
             noteTried(context, book.document)
             setStatus(book.document, Status(Status.LOOKING, "Looking on your ${Opds.load(context).size} catalogs"))
             progress(Opds.Progress("Looking on your catalogs"))
-            val found = find(context, book) ?: throw CopyException("None of your catalogs has it as an EPUB")
-            setStatus(book.document, Status(Status.DOWNLOADING, "From ${found.server.name}"))
-            val c = fetch(context, book, found, cancel) { p ->
-                setStatus(book.document, Status(Status.DOWNLOADING, "From ${found.server.name}", done = p.done, total = p.total))
-                progress(p)
+            val candidates = findAll(context, book)
+            if (candidates.isEmpty()) throw CopyException("None of your catalogs has it as an EPUB")
+            // Each match in turn until one checks out as this book (the others are thrown away).
+            val wrong = ArrayList<String>()
+            var c: Copy? = null
+            for (found in candidates) {
+                if (cancel.get()) throw CopyException("Stopped")
+                setStatus(book.document, Status(Status.DOWNLOADING, "From ${found.server.name}"))
+                c = try {
+                    fetch(context, book, found, cancel) { p ->
+                        setStatus(book.document, Status(Status.DOWNLOADING, "From ${found.server.name}", done = p.done, total = p.total))
+                        progress(p)
+                    }
+                } catch (e: WrongBook) { wrong += e.message.orEmpty(); null }
+                if (c != null) break
             }
+            if (c == null) throw CopyException("Found ${candidates.size}, but none was this book: " + wrong.joinToString("; "))
             prefs(context).edit().remove("why:${book.document}").apply()
             setStatus(book.document, Status(Status.KEPT, "From ${c.server}"))
             return c
@@ -309,7 +468,7 @@ object BookCopies {
      */
     fun refresh(books: Collection<Book>) {
         val context = appContext ?: return
-        if (!auto(context) || Opds.load(context).isEmpty()) return
+        if (!auto(context) || (Opds.load(context).isEmpty() && !SamArchive.hasSource(context))) return
         val have = load(context)
         val next = books
             .filter { it.status == io.github.prithirajn.trackersync.data.ReadStatus.READING && it.document !in have && !it.isMangaOrComic }

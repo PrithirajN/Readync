@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -196,13 +199,13 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
 private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew: Boolean = false, onRemove: () -> Unit, onAgain: () -> Unit, onAdd: (PostBooks.Found) -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
-    // Every book picked to start with, except the ones already in your library.
     fun inLibrary(f: PostBooks.Found) = state.books.values.any { b ->
         (f.isbn != null && b.isbn?.filter { it.isDigit() } == f.isbn) || Matcher.sameBook(f.title, f.author, b.title ?: "", b.author)
     }
-    val picked = remember(t.at) { mutableStateListOf<String>().also { l -> l.addAll(t.books.filter { !inLibrary(it) }.map { it.title }) } }
+    // The book the three buttons act on: the first one not in your library, to start with.
+    var focus by remember(t.at) { mutableStateOf(t.books.firstOrNull { !inLibrary(it) }?.title ?: t.books.firstOrNull()?.title) }
     var said by remember(t.at) { mutableStateOf<String?>(null) }
-    val chosen = t.books.filter { it.title in picked }
+    var details by remember(t.at) { mutableStateOf<PostBooks.Found?>(null) }
     // What was read on the post's pictures, to pick a title the finder missed, or one typed.
     val scope = rememberCoroutineScope()
     var showWords by remember(t.at) { mutableStateOf(t.books.isEmpty()) }
@@ -220,7 +223,7 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
                 f == null -> said = "Couldn't look that up"
                 t.books.any { Matcher.sameBook(it.title, it.author, f.title, f.author) } -> said = "${f.title} is already here"
                 else -> {
-                    picked.add(f.title); onAdd(f); typed = ""
+                    focus = f.title; onAdd(f); typed = ""
                     said = if (f.from == "typed") "Added as written (Google Books doesn't list it yet)" else "Found ${f.title}"
                 }
             }
@@ -250,48 +253,42 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
             }
             IconCircleButton(R.drawable.lucide_trash, "Remove", onRemove, tint = c.errorText)
         }
-        t.post.caption?.takeIf { it.isNotBlank() }?.let { VSpace(8); Quiet(it, maxLines = 3) }
+        t.post.caption?.takeIf { it.isNotBlank() }?.let { VSpace(8); Quiet(it, maxLines = 2) }
         if (t.books.isEmpty()) {
             VSpace(8)
             Quiet("No books found in it.", color = c.faint)
         } else {
             VSpace(12)
-            // Three to a row: tap one to leave it out (or put it back).
-            for (row in t.books.chunked(3)) {
-                Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    for (f in row) Box(Modifier.weight(1f)) {
-                        val on = f.title in picked
-                        val have = inLibrary(f)
-                        Column(Modifier.fillMaxWidth().bouncyClickable(RoundedCornerShape(8.dp), pressedScale = 0.96f, onClickLabel = if (on) "Leave out" else "Pick") {
-                            if (on) picked.remove(f.title) else picked.add(f.title)
-                        }) {
-                            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                                Box {
-                                    BookCover(f.cover, f.title, this@BoxWithConstraints.maxWidth, this@BoxWithConstraints.maxWidth * 1.5f)
-                                    Box(
-                                        Modifier.align(Alignment.TopEnd).padding(5.dp).size(22.dp).clip(CircleShape)
-                                            .background(if (on) c.accent else c.page.copy(alpha = 0.75f))
-                                            .border(1.5.dp, if (on) c.accent else c.hairline, CircleShape),
-                                        contentAlignment = Alignment.Center,
-                                    ) { if (on) Text("✓", style = CpType.small.copy(fontSize = 12.sp), color = androidx.compose.ui.graphics.Color.White) }
-                                }
-                            }
-                            VSpace(5)
-                            Text(f.title, fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, lineHeight = 16.sp, color = if (on) c.text else c.quiet, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            f.author?.let { Text(it, style = CpType.small.copy(fontSize = 11.sp), color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                            if (have) Text("In your library", style = CpType.small.copy(fontSize = 11.sp), color = c.accentText, maxLines = 1)
-                        }
+            // Just the covers, in a row (scrolls when there are many): tap one to choose it.
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                for (f in t.books) {
+                    val on = f.title == focus
+                    Box(
+                        Modifier.clip(RoundedCornerShape(8.dp))
+                            .border(if (on) 2.dp else 1.dp, if (on) c.accent else c.hairline, RoundedCornerShape(8.dp))
+                            .bouncyClickable(RoundedCornerShape(8.dp), pressedScale = 0.96f, onClickLabel = "Choose ${f.title}") { focus = f.title },
+                    ) {
+                        BookCover(f.cover, f.title, 76.dp, 114.dp)
+                        if (inLibrary(f)) Box(
+                            Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp).clip(CircleShape).background(c.accent),
+                            contentAlignment = Alignment.Center,
+                        ) { Text("✓", style = CpType.small.copy(fontSize = 10.sp), color = androidx.compose.ui.graphics.Color.White) }
                     }
-                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
-        }
-        // What to do with the books found, first and side by side.
-        if (chosen.isNotEmpty()) {
-            VSpace(2)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillButton("+ Want to read (${chosen.size})", { vm.addPostBooks(chosen) { said = it } }, Modifier.weight(1f), outlined = false)
-                PillButton("Track prices", { vm.trackPostBooks(chosen) { said = it } }, Modifier.weight(1f))
+            val f = t.books.firstOrNull { it.title == focus }
+            if (f != null) {
+                VSpace(8)
+                Text(
+                    f.title + (f.author?.let { " · $it" } ?: "") + if (inLibrary(f)) " · in your library" else "",
+                    style = CpType.small, color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                VSpace(8)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton("Details", { details = f }, Modifier.weight(1f))
+                    PillButton(if (inLibrary(f)) "In library" else "Want to read", { vm.addPostBooks(listOf(f)) { said = it } }, Modifier.weight(1f), outlined = inLibrary(f))
+                    PillButton("Track", { vm.trackPostBooks(listOf(f)) { said = it } }, Modifier.weight(1f))
+                }
             }
         }
         // A book the finder missed: a title among the words read off the picture, or one typed.
@@ -333,5 +330,77 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
             )
         }
         said?.let { VSpace(6); AnimatedQuiet(it, color = c.textMid) }
+    }
+    details?.let { d -> PostBookDetailsSheet(vm, d, onWant = { vm.addPostBooks(listOf(d)) { said = it } }, onTrack = { vm.trackPostBooks(listOf(d)) { said = it } }, onClose = { details = null }) }
+}
+
+/** A book found in a post, looked at more closely: its description, ratings and genres. */
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun PostBookDetailsSheet(vm: AppViewModel, f: PostBooks.Found, onWant: () -> Unit, onTrack: () -> Unit, onClose: () -> Unit) {
+    val c = Cp.colors
+    var info by remember(f) { mutableStateOf<io.github.prithirajn.trackersync.source.QuickDetails.Info?>(null) }
+    var failed by remember(f) { mutableStateOf(false) }
+    var more by remember(f) { mutableStateOf(false) }
+    LaunchedEffect(f) { vm.postBookDetails(f) { r -> if (r == null) failed = true else info = r } }
+    GuardedSheet(onDismissRequest = onClose, containerColor = c.surface) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+            Row {
+                BookCover(info?.cover ?: f.cover, f.title, 72.dp, 108.dp)
+                HSpace(14)
+                Column(Modifier.weight(1f)) {
+                    Text(f.title, fontFamily = Lora, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 22.sp, color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    f.author?.let { VSpace(2); Text(it, style = CpType.body, color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    info?.let { i ->
+                        val facts = listOfNotNull(i.year?.toString(), i.pages?.let { "$it pages" }).joinToString(" · ")
+                        if (facts.isNotEmpty()) { VSpace(2); Quiet(facts) }
+                        i.rating?.let { r ->
+                            VSpace(8)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("★ " + String.format(java.util.Locale.US, "%.1f", r), style = CpType.bodyStrong, color = c.accentText)
+                                i.ratingsCount?.let { n -> HSpace(6); Quiet("${String.format(java.util.Locale.US, "%,d", n)} ratings") }
+                            }
+                        }
+                    }
+                }
+            }
+            VSpace(14)
+            val i = info
+            when {
+                i == null && !failed -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), color = c.accent, strokeWidth = 2.dp)
+                    HSpace(10)
+                    Quiet("Asking Hardcover, Goodreads, Seekquel and Google Books…")
+                }
+                i == null -> Quiet("Couldn't get its details just now.", color = c.errorText)
+                else -> {
+                    // Each site's rating, small, under the overall one.
+                    if (i.ratings.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            for ((site, r) in i.ratings) Chip("$site ${String.format(java.util.Locale.US, "%.1f", r)}")
+                        }
+                        VSpace(12)
+                    }
+                    if (i.genres.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            for (g in i.genres) Chip(g, color = c.accentText, background = c.accentTint)
+                        }
+                        VSpace(12)
+                    }
+                    val d = i.description
+                    if (d != null) {
+                        Text(d, style = CpType.body, color = c.text, maxLines = if (more) Int.MAX_VALUE else 6, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clickable { more = !more })
+                        VSpace(8)
+                    } else Quiet("No description on any site yet.", color = c.faint)
+                    if (i.sources.isNotEmpty()) { VSpace(4); Quiet("From " + i.sources.joinToString(", "), color = c.faint) }
+                }
+            }
+            VSpace(16)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("Want to read", { onWant(); onClose() }, Modifier.weight(1f), outlined = false)
+                PillButton("Track price", { onTrack(); onClose() }, Modifier.weight(1f))
+            }
+        }
     }
 }

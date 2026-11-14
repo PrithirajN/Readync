@@ -24,10 +24,15 @@ object PageBrowser {
         io.github.prithirajn.trackersync.source.SffArticleReader.browser = { url -> fetch(app, url) }
         io.github.prithirajn.trackersync.source.SffSources.browser = { url -> fetch(app, url, timeoutMs = 18_000) }
         io.github.prithirajn.trackersync.source.BookPrices.browser = { url -> fetch(app, url, timeoutMs = 20_000) }
+        io.github.prithirajn.trackersync.source.BookPrices.browserUntil = { url, ready -> fetch(app, url, timeoutMs = 25_000, ready = ready) }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    fun fetch(context: Context, url: String, timeoutMs: Long = 25_000): String? {
+    /**
+     * [ready]: what the page must contain before it's handed back (search results a shop's script
+     * fills in after the page itself has loaded); it's looked at again every second or so until then.
+     */
+    fun fetch(context: Context, url: String, timeoutMs: Long = 25_000, ready: Regex? = null): String? {
         if (Looper.myLooper() == Looper.getMainLooper()) return null // never block the screen
         val main = Handler(Looper.getMainLooper())
         val latch = CountDownLatch(1)
@@ -48,9 +53,10 @@ object PageBrowser {
                     val title = s.substringBefore('\u0001')
                     val page = s.substringAfter('\u0001', "")
                     val checking = title.contains("just a moment", true) || title.contains("attention required", true) || page.length < 500
-                    if (!checking) { html = page; latch.countDown() }
-                    else if (++tries < 14) { waiting = true; main.postDelayed({ grab() }, 1200) }
-                    else latch.countDown()
+                    val notYet = ready != null && !ready.containsMatchIn(page)
+                    if (!checking && !notYet) { html = page; latch.countDown() }
+                    else if (++tries < (timeoutMs / 1200).toInt().coerceAtLeast(3)) { waiting = true; main.postDelayed({ grab() }, 1200) }
+                    else { if (!checking && page.length >= 500) html = page; latch.countDown() }
                 }
             }
             w.webViewClient = object : WebViewClient() {

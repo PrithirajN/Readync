@@ -127,7 +127,7 @@ fun QuoteShareSheet(
     LaunchedEffect(clip.id, text) {
         if (page == null && book != null) {
             val around = withContext(Dispatchers.IO) {
-                runCatching { io.github.prithirajn.trackersync.source.BookCopies.around(context, book.document, text, clip.spine) }.getOrNull()
+                runCatching { io.github.prithirajn.trackersync.source.BookCopies.around(context, book.document, text, clip.spine, percent = clip.percent) }.getOrNull()
             }
             if (page == null && around != null) page = around
         }
@@ -203,7 +203,7 @@ fun QuoteShareSheet(
             Text(if (standalone) "Share this note" else "Share this passage", style = CpType.section, color = c.text, modifier = Modifier.riseIn(0))
             VSpace(14)
             // The Book photo has its own tile and studio, so it isn't one of the looks to flick through.
-            val looks = QuoteCard.Look.entries.filter { it != QuoteCard.Look.PAGE }
+            val looks = QuoteCard.Look.entries.filter { it != QuoteCard.Look.PAGE && it != QuoteCard.Look.WORDPRINT }
             // Which way the last change of look went, so the picture slides the same way.
             var dir by remember { mutableStateOf(1) }
             fun pick(l: QuoteCard.Look) {
@@ -362,65 +362,61 @@ fun QuoteShareSheet(
             VSpace(16)
             BigButton("Share", { bmp?.let { b -> runCatching { QuoteCard.share(context, b, plain) }.onFailure { said = "Couldn't open sharing; try Save image instead." } } }, enabled = bmp != null)
             VSpace(8)
+            // Everything else, small and together: copy, save, and straight into a post.
+            var burst by remember { mutableStateOf(0) }
+            Box {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BigButton("Copy image", {
+                PillButton("Copy", {
                     bmp?.let { runCatching { QuoteCard.copy(context, it) }.onSuccess { tick(); said = "Copied. Paste it into any app that takes pictures." }.onFailure { said = "Couldn't copy it; use Share instead." } }
-                }, Modifier.weight(1f), filled = false, enabled = bmp != null)
-                BigButton("Save image", {
+                }, Modifier.weight(1f))
+                PillButton("Save", {
                     bmp?.let {
                         val ok = runCatching { QuoteCard.save(context, it) }.getOrDefault(false)
                         said = if (ok) "Saved to Pictures › ${io.github.prithirajn.trackersync.Edition.name}." else "Couldn't save here; use Share and pick your gallery."
                         if (ok) tick()
                     }
-                }, Modifier.weight(1f), filled = false, enabled = bmp != null)
-            }
-            VSpace(8)
-            // Straight into a new Threads post, picture and words: the dark key, with a little burst.
-            var burst by remember { mutableStateOf(0) }
-            Box {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BigButton("Post to Threads", {
-                bmp?.let { b ->
-                    // The picture shows the passage: the words are your note, the book and its tag, not the passage again.
-                    val how = runCatching { QuoteCard.postToThreads(context, b, SocialCaption.forPicture(book, facts, if (standalone) null else content.note, x = false).take(500)) }.getOrNull()
-                    if (how == "app" || how == "web") burst++
-                    said = when (how) {
-                        "app" -> "Opened in Threads with the picture. The words are copied too, if you need to paste them."
-                        "web" -> "Threads isn't installed, so it opened in the browser with the words (a picture can't go that way; save it and add it there)."
-                        else -> "Couldn't open Threads."
+                }, Modifier.weight(1f))
+                PillButton("Threads", {
+                    bmp?.let { b ->
+                        // The picture shows the passage: the words are your note, the book and its tag, not the passage again.
+                        val how = runCatching { QuoteCard.postToThreads(context, b, SocialCaption.forPicture(book, facts, if (standalone) null else content.note, x = false).take(500)) }.getOrNull()
+                        if (how == "app" || how == "web") burst++
+                        said = when (how) {
+                            "app" -> "Opened in Threads with the picture. The words are copied too, if you need to paste them."
+                            "web" -> "Threads isn't installed, so it opened in the browser with the words (a picture can't go that way; save it and add it there)."
+                            else -> "Couldn't open Threads."
+                        }
                     }
-                }
-            }, Modifier.weight(1.4f), look = KeyKind.INK, enabled = bmp != null)
-            BigButton("Post to X", {
-                bmp?.let { b ->
-                    val how = runCatching { XPost.pictures(context, listOf(b), SocialCaption.forPicture(book, facts, if (standalone) null else content.note, x = true)) }.getOrNull()
-                    if (how == "app" || how == "web") burst++
-                    said = XPost.said(how)
-                }
-            }, Modifier.weight(1f), look = KeyKind.INK, enabled = bmp != null)
+                }, Modifier.weight(1f))
+                PillButton("X", {
+                    bmp?.let { b ->
+                        val how = runCatching { XPost.pictures(context, listOf(b), SocialCaption.forPicture(book, facts, if (standalone) null else content.note, x = true)) }.getOrNull()
+                        if (how == "app" || how == "web") burst++
+                        said = XPost.said(how)
+                    }
+                }, Modifier.weight(0.7f))
             }
             Confetti(burst, Modifier.matchParentSize())
             }
-            // The passage as a short video, made in the video studio.
+            // The passage as a video, or as words: the two other ways, side by side.
             VSpace(8)
             var filming by remember { mutableStateOf(false) }
             var filmCover by remember { mutableStateOf<Bitmap?>(null) }
             LaunchedEffect(book?.coverUrl) {
                 filmCover = withContext(Dispatchers.IO) { book?.coverUrl?.let { u -> runCatching { CoverCache.load(context, u, 1200) }.getOrNull() } }
             }
-            BigButton("\u25B6 Make it a video", { filming = true }, filled = false)
-            if (filming) VideoStudio(QuoteVideo.Input(content.text, content.note, content.title, content.author, content.where, filmCover), plain) { filming = false }
-            said?.let { VSpace(8); AnimatedQuiet(it, color = c.faint) }
-            VSpace(12)
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                PillButton("Share as text instead", {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("\u25B6 Make it a video", { filming = true }, Modifier.weight(1f))
+                PillButton("Share as text", {
                     val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                         type = "text/plain"
                         putExtra(android.content.Intent.EXTRA_TEXT, plain)
                     }
                     runCatching { context.startActivity(android.content.Intent.createChooser(send, if (standalone) "Share note" else "Share quote")) }
-                })
+                }, Modifier.weight(1f))
             }
+            if (filming) VideoStudio(QuoteVideo.Input(content.text, content.note, content.title, content.author, content.where, filmCover), plain) { filming = false }
+            said?.let { VSpace(8); AnimatedQuiet(it, color = c.faint) }
         }
     }
     if (studio) {

@@ -223,7 +223,12 @@ object LocalModel {
         } ?: return null
         // Qwen3 reasons out loud first unless asked not to; the answers here are short and direct.
         val noThinking = f.name.lowercase().contains("qwen3")
+        // Gemma 4 runs with an 8,192-token context here: room for several pages of the book.
+        val big = Regex("gemma-?4", RegexOption.IGNORE_CASE).containsMatchIn(f.name)
+        val qwenMid = Regex("qwen3[-_]?1\\.7b", RegexOption.IGNORE_CASE).containsMatchIn(f.name)
         return object : TextModel {
+            override val readChars: Int get() = if (big) 18_000 else if (qwenMid) 8_000 else 5_000
+
             // One answer at a time, each in a fresh conversation (no memory of earlier ones). Thinking
             // turned off (the answers here are short), and an answer stopped at [MAX_ANSWER] tokens.
             override fun generate(prompt: String): String = synchronized(lock) {

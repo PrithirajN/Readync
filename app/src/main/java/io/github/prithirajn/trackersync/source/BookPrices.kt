@@ -69,6 +69,9 @@ object BookPrices {
     /** A browser for shops that turn plain requests away (set by the app). */
     @Volatile var browser: ((String) -> String?)? = null
 
+    /** The same unseen browser, waiting until the page shows what's wanted (results a shop's script fills in). */
+    @Volatile var browserUntil: ((String, Regex?) -> String?)? = null
+
     /** Which store a pasted address belongs to. */
     fun shopOf(url: String): String? {
         val u = url.lowercase()
@@ -146,6 +149,13 @@ object BookPrices {
         val same = b.startsWith(a) || a.startsWith(b) || full.startsWith(a)
         val va = Matcher.volume(book.displayTitle); val vb = Matcher.volume(title)
         return same && (va == null || vb == null || va == vb)
+    }
+
+    /** [block] with any printing of the book counting, not only the edition followed. */
+    private fun <T> loose(block: () -> T): T {
+        val was = strictEdition.get()
+        strictEdition.set(false)
+        try { return block() } finally { strictEdition.set(was) }
     }
 
     /** Each store's listings found while looking for the book being checked (editions to choose from). */
@@ -360,52 +370,166 @@ object BookPrices {
     private fun bookswagon(book: Book, link: String?, now: Long, pinned: Boolean = false): List<PricePoint> {
         val isbn = isbn13(book)
         fun abs(u: String) = if (u.startsWith("/")) "https://www.bookswagon.com$u" else u
-        fun titleOf(html: String) = Regex("""<h1[^>]*>\s*([^<]+)</h1>""").find(html)?.groupValues?.get(1)?.trim()
+        fun titleOf(html: String) = bwTitle(html)
         var url: String? = link
         var page0: String? = null
         var rejected = false
         if (url != null) {
             page0 = get(url)
             // A page found earlier (not one you chose) that turns out to be another book is let go.
-            if (!pinned && !matches(book, titleOf(page0!!), Regex("/(\\d{13})").find(url)?.groupValues?.get(1))) { url = null; page0 = null; rejected = true }
+            // (Any printing of it counts here: Bookswagon often has another edition than the one followed.)
+            val linkIsbn = link?.let { Regex("/(\\d{13})").find(it)?.groupValues?.get(1) }
+            val linkTitle = titleOf(page0!!)
+            if (!pinned && !loose { matches(book, linkTitle, linkIsbn) }) { url = null; page0 = null; rejected = true }
         }
+        // Bookswagon's own search first (/search-books/leviathan-wakes): one page lists every edition it
+        // has, each with its price, so nothing more needs opening to compare them.
+        var tile: BwTile? = null
         if (url == null) {
-            for (qRaw in queries(book)) {
-                // Bookswagon's search takes the words as a slug ("the-gate-of-the-feral-gods"); the encoded form as a fallback.
+            val title = withoutEdition(tidyShopTitle(book.displayTitle)).substringBefore(":").substringBefore(" (").trim()
+            val surname = book.author?.split(",", "&", " and ")?.firstOrNull()?.trim()?.split(" ")?.lastOrNull()
+            val searches = listOfNotNull(title, surname?.let { "$title $it" }, isbn).distinct()
+            for (qRaw in searches) {
                 val slug = qRaw.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
-                val q = URLEncoder.encode(qRaw, "UTF-8").replace("+", "%20")
-                val page = listOf("https://www.bookswagon.com/search-books/$slug", "https://www.bookswagon.com/search-books/$q", "https://www.bookswagon.com/search-books?q=$q")
-                    .distinct().firstNotNullOfOrNull { u -> runCatching { get(u) }.getOrNull()?.takeIf { BW_LINK.containsMatchIn(it) } } ?: continue
-                val hits = BW_LINK.findAll(page).map { abs(it.groupValues[1]) to it.groupValues[2] }.distinctBy { it.second }.toList()
-                // The exact ISBN first, then the first few results: each that is this book kept as a listing.
-                val exact = hits.firstOrNull { isbn != null && it.second == isbn }
-                val pages = HashMap<String, String>()
-                val found = ArrayList<PriceListing>()
-                for ((u, i) in listOfNotNull(exact) + hits.filter { it != exact }.take(5)) {
-                    val h = runCatching { get(u) }.getOrNull() ?: continue
-                    if (matches(book, titleOf(h), i)) { pages[u] = h; found += bookswagonListing(u, h) }
+                val page = bwGet("https://www.bookswagon.com/search-books/$slug", BW_LINK)?.takeIf { BW_LINK.containsMatchIn(it) } ?: continue
+                val tiles = bwTiles(page)
+                // Your exact edition first, then the others that are this book, in Bookswagon's order.
+                val ours = tiles.filter { t -> (isbn != null && t.isbn == isbn) || loose { matches(book, t.title, t.isbn) } }
+                    .sortedBy { if (isbn != null && it.isbn == isbn) 0 else 1 }
+                if (ours.isEmpty()) continue
+                val found = ours.map { t -> PriceListing("bookswagon", t.url, t.title, t.format, null, null, editionOf(t.title), t.price) }
+                val chosen = if (isbn != null && ours.first().isbn == isbn) found.first().also { listings.get()?.put("bookswagon", found) } else pick("bookswagon", found)
+                if (chosen != null) {
+                    tile = ours.firstOrNull { it.url == chosen.url }
+                    url = chosen.url
+                    page0 = bwGet(chosen.url)
+                    break
                 }
-                val chosen = pick("bookswagon", found)
-                if (chosen != null) { url = chosen.url; page0 = pages[chosen.url] }
-                if (url != null) break
             }
-            if (url == null || page0 == null) return listOf(PricePoint("bookswagon", now, null, inStock = false, url = if (rejected) "drop" else null))
         }
-        val html: String = page0!!
+        // Then its pages addressed by ISBN (/book/<name>/<isbn>): the book's own ISBN, then the ISBNs
+        // Google Books knows for the title (its other printings), each opened straight away.
+        if (url == null) {
+            val found = ArrayList<PriceListing>()
+            val pages = HashMap<String, String>()
+            fun tryIsbn(i: String) {
+                for (u in bwAddresses(book, i)) {
+                    val h = bwGet(u) ?: continue
+                    val t = titleOf(h) ?: continue
+                    if (matches(book, t, i)) { pages[u] = h; found += bookswagonListing(u, h) }
+                    return
+                }
+            }
+            isbn?.let { tryIsbn(it) }
+            if (found.isEmpty()) {
+                loose { for (i in googleIsbns(book).filter { it != isbn }.take(5)) tryIsbn(i) }
+            }
+            val best = pick("bookswagon", found)
+            if (best != null) { url = best.url; page0 = pages[best.url] }
+        }
+        if (url == null) return listOf(PricePoint("bookswagon", now, null, inStock = false, url = if (rejected) "drop" else null))
+        // Found in the search but its own page wouldn't open: the search's price stands.
+        if (page0 == null) {
+            val t = tile ?: return listOf(PricePoint("bookswagon", now, null, inStock = false, url = url))
+            return listOf(PricePoint("bookswagon", now, t.price, t.mrp?.takeIf { t.price == null || it > t.price }, t.price != null, t.format, url, t.title))
+        }
+        var html: String = page0!!
+        // A page whose price is filled in by its script: read as a browser would.
+        if (bwPrice(html) == null) browser?.invoke(url!!)?.takeIf { bwPrice(it) != null }?.let { html = it }
         val title = titleOf(html)
         // Structured data first, then the page's own price labels.
         val ld = Regex(""""price"\s*:\s*"?([\d,.]+)"?""").find(html)?.groupValues?.get(1)
         val labelled = Regex("""(?is)(?:our\s*price|offer\s*price|lblOfferPrice|actualprice|sell(?:ing)?\s*price)[^₹]{0,200}₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)
         val mrp = Regex("""(?is)(?:M\.?R\.?P\.?|lblMrp|mrp)[^₹]{0,120}₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)
-        val price = money(ld) ?: money(labelled)
+        val price = money(ld) ?: money(labelled) ?: bwPrice(html) ?: tile?.price
         val out = Regex("""(?i)out\s+of\s+stock|currently\s+unavailable|not\s+available""").containsMatchIn(html) && price == null
         val binding = bookswagonListing(url!!, html).format
-        return listOf(PricePoint("bookswagon", now, price, money(mrp)?.takeIf { price == null || it > price }, !out && price != null, binding, url, title))
+        val listPrice = money(mrp) ?: tile?.mrp
+        return listOf(PricePoint("bookswagon", now, price, listPrice?.takeIf { price == null || it > price }, !out && price != null, binding ?: tile?.format, url, title ?: tile?.title))
     }
+
+    /** One book in Bookswagon's search results: its page, ISBN, title, and the prices shown under it. */
+    private data class BwTile(val url: String, val isbn: String, val title: String?, val price: Double?, val mrp: Double?, val format: String?)
+
+    /**
+     * The books on a Bookswagon search page, each with its price and list price (the struck-out one),
+     * read from the part of the page between its link and the next book's.
+     */
+    private fun bwTiles(page: String): List<BwTile> {
+        val links = BW_LINK.findAll(page).toList()
+        val out = LinkedHashMap<String, BwTile>()
+        for ((k, m) in links.withIndex()) {
+            val isbn = m.groupValues[2]
+            if (isbn in out) continue
+            val end = links.drop(k + 1).firstOrNull { it.groupValues[2] != isbn }?.range?.first ?: (m.range.last + 6000).coerceAtMost(page.length)
+            val chunk = page.substring(m.range.first, end)
+            val parts = chunk.replace(Regex("(?is)<(script|style)\\b.*?</\\1>"), " ").split(Regex("<[^>]+>"))
+                .map { unescape(it).replace(Regex("\\s+"), " ").trim() }.filter { it.isNotEmpty() }
+            val amounts = Regex("(?:₹|Rs\\.?)\\s*([\\d,]+(?:\\.\\d+)?)").findAll(parts.joinToString(" ")).mapNotNull { money(it.groupValues[1]) }.toList()
+            val (mrp, price) = when {
+                amounts.size >= 2 -> if (amounts[0] >= amounts[1]) amounts[0] to amounts[1] else amounts[1] to amounts[0]
+                else -> null to amounts.firstOrNull()
+            }
+            // Its title: the line just before "By:", else the picture's description.
+            val byAt = parts.indexOfFirst { it.startsWith("By", true) && (it.length <= 3 || it[2] == ':' || it[2] == ' ') }
+            val title = parts.getOrNull(byAt - 1)?.takeIf { byAt > 0 && !it.endsWith("%") && !it.contains('₹') }
+                ?: Regex("""(?i)(?:alt|title)="([^"]{3,200})"""").find(chunk)?.groupValues?.get(1)?.let(::unescape)
+            val format = Regex("(?i)\\b(Paperback|Hardcover|Hardback|Board book|Mass Market)\\b").find(chunk)?.value?.replaceFirstChar { it.uppercase() }?.replace("Hardback", "Hardcover")
+            val u = m.groupValues[1].let { if (it.startsWith("/")) "https://www.bookswagon.com$it" else it }
+            out[isbn] = BwTile(u, isbn, title?.trim(), price, mrp, format)
+        }
+        return out.values.toList()
+    }
+
+    /** A Bookswagon page: fetched plainly, else through the unseen browser (its bot check turns some requests away). */
+    private fun bwGet(u: String, ready: Regex? = BW_PAGE): String? =
+        runCatching { get(u) }.getOrNull()?.takeIf { it.length > 2000 && !it.contains("Just a moment", true) && (ready == null || ready.containsMatchIn(it)) }
+            // Not there in the plain page (turned away, or filled in by the shop's script): opened in the
+            // app's unseen browser, which waits for it.
+            ?: browserUntil?.invoke(u, ready) ?: browser?.invoke(u)
+
+    /** A Bookswagon page's title: its heading (tags inside it dropped), else its og:title. */
+    private fun bwTitle(html: String): String? =
+        Regex("""(?is)<h1[^>]*>(.*?)</h1>""").find(html)?.groupValues?.get(1)?.replace(Regex("<[^>]+>"), " ")?.let(::unescape)
+            ?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotBlank() }
+            ?: meta(html, "og:title")?.let(::unescape)?.substringBefore(" | ")?.removePrefix("Buy ")?.substringBefore(" by ")?.trim()
+
+    /** A Bookswagon book page that has loaded: its title heading. */
+    private val BW_PAGE = Regex("<h1[^>]*>\\s*[^<\\s]")
+
+    /** The selling price on a Bookswagon page, however it's marked up. */
+    private fun bwPrice(html: String): Double? =
+        money(Regex(""""price"\s*:\s*"?([\d,.]+)"?""").find(html)?.groupValues?.get(1))
+            ?: money(Regex("""itemprop=["']price["'][^>]*content=["']([\d.,]+)""").find(html)?.groupValues?.get(1))
+            ?: money(Regex("""(?is)(?:our\s*price|offer\s*price|lblOfferPrice|lblourprice|actualprice|sell(?:ing)?\s*price|price-?box|sellingprice)[^₹]{0,240}₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1))
+
+    /**
+     * Bookswagon's address for a book's page: /book/<the title's and author's main words>/<ISBN>
+     * ("infinite-state-richard-swan/9781250386229"), as the shop writes it, then a plain one.
+     */
+    private fun bwAddresses(book: Book, isbn: String): List<String> {
+        val stop = setOf("the", "a", "an", "of", "and", "in", "to", "for", "on", "at", "by", "with", "from", "edition", "book", "novel")
+        fun words(t: String?) = t.orEmpty().lowercase().replace(Regex("[^a-z0-9 ]"), " ").split(' ').filter { it.isNotBlank() && it !in stop }
+        val title = withoutEdition(tidyShopTitle(book.displayTitle)).substringBefore(":")
+        val slug = (words(title).take(4) + words(book.author?.substringBefore(',')?.substringBefore('&'))).take(5).joinToString("-").ifBlank { "book" }
+        return listOf("https://www.bookswagon.com/book/$slug/$isbn", "https://www.bookswagon.com/book/book/$isbn").distinct()
+    }
+
+    /** The ISBN-13s Google Books knows for this title (its printings), for opening Bookswagon's pages directly. */
+    private fun googleIsbns(book: Book): List<String> = runCatching {
+        val q = "intitle:" + withoutEdition(tidyShopTitle(book.displayTitle)).substringBefore(":").trim() +
+            (book.author?.substringBefore(',')?.trim()?.split(' ')?.lastOrNull()?.let { " inauthor:$it" } ?: "")
+        val items = JSONObject(get("https://www.googleapis.com/books/v1/volumes?maxResults=10&printType=books&q=" + URLEncoder.encode(q, "UTF-8"))).optJSONArray("items")
+            ?: return@runCatching emptyList<String>()
+        (0 until items.length()).mapNotNull { items.optJSONObject(it)?.optJSONObject("volumeInfo") }
+            .filter { v -> matches(book.copy(isbn = null), v.optString("title")) }
+            .flatMap { v -> v.optJSONArray("industryIdentifiers")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty() }
+            .filter { it.optString("type") == "ISBN_13" }.map { it.optString("identifier") }.filter { it.length == 13 }.distinct()
+    }.getOrDefault(emptyList())
 
     /** A Bookswagon page as a listing: binding, publisher, pages and price. */
     private fun bookswagonListing(url: String, html: String): PriceListing {
-        val title = Regex("""<h1[^>]*>\s*([^<]+)</h1>""").find(html)?.groupValues?.get(1)?.trim()
+        val title = bwTitle(html)
         val binding = Regex("""(?i)(?:binding|format)\s*(?:[:\s]|</?[a-z][^>]*>){0,8}(Paperback|Hardcover|Hardback|Board book|Mass Market)""").find(html)?.groupValues?.get(1)
             ?: Regex("""(?i)\b(Paperback|Hardcover|Hardback|Board book|Mass Market)\b""").find(html)?.value
         val price = money(Regex(""""price"\s*:\s*"?([\d,.]+)"?""").find(html)?.groupValues?.get(1))
@@ -896,7 +1020,7 @@ object BookPrices {
                     val rest = byCheck[h.at].orEmpty().filter { it.store != h.store && it.price != null && it.inStock && it.format != "Kindle" }.mapNotNull { it.price }
                     h.price == null || h.format == "Kindle" || rest.isEmpty() || h.price >= rest.min() * 0.4
                 }.filter { h ->
-                    h.store !in wrong && (h.store in cur.pinned || h.title == null || matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) }))
+                    h.store !in wrong && (h.store in cur.pinned || h.title == null || (if (h.store == "bookswagon") loose { matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) }) } else matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) })))
                 }
                 s.copy(priceWatch = s.priceWatch + (w.document to cur.copy(
                     history = (keep + points2.map { if (it.url == "drop") it.copy(url = null) else it }).takeLast(400),

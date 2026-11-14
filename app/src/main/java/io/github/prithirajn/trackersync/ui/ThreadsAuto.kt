@@ -46,7 +46,7 @@ object ThreadsAuto {
         if (!s.threadsAnyLook) return book3
         val others = listOf(
             QuoteCard.Look.SPOTLIGHT, QuoteCard.Look.HIGHLIGHTER, QuoteCard.Look.SPINE, QuoteCard.Look.EDITORIAL,
-            QuoteCard.Look.TYPEWRITER, QuoteCard.Look.INDEX_CARD, QuoteCard.Look.WORDPRINT,
+            QuoteCard.Look.TYPEWRITER, QuoteCard.Look.INDEX_CARD,
         ).map { Style(it) }
         val gamey = s.webNovels.containsKey(book.document) || "SPIRE" in BookShot.sectorsFor(s, book)
         return book3 + others + (if (gamey) listOf(Style(QuoteCard.Look.SYSTEM)) else emptyList())
@@ -323,7 +323,7 @@ object ThreadsAuto {
         val m = model(s) ?: return null
         // What comes just before the (first) passage in the app's copy of the book, so the model knows the scene.
         val first = clips.firstOrNull() ?: return null
-        val before = runCatching { io.github.prithirajn.trackersync.source.BookCopies.before(context, book.document, first.text, first.spine) }.getOrNull()
+        val before = runCatching { io.github.prithirajn.trackersync.source.BookCopies.before(context, book.document, first.text, first.spine, percent = first.percent) }.getOrNull()
         return runCatching {
             io.github.prithirajn.trackersync.ai.Assistant.postCaption(m, QuoteCard.shortTitle(book.displayTitle), book.author, clips.map { it.text }, before?.first, before?.second)
         }.getOrNull()
@@ -486,11 +486,12 @@ object ThreadsAuto {
                 ThreadsClient.post(user, token, words, imageUrl, altText(item, x.book), topic(store, x.book), io.github.prithirajn.trackersync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, x.book, listOf(item.clip.text)))
                 usedKey = look.key
             } else {
-                // A different layout for each card (none the same as the last post's first).
-                val order = styles.filter { it.key != st.threadsLastLook }.shuffled().let { l -> (l + styles.shuffled()).take(x.items.size) }
+                // One style for every card in the post (a different one from the last post's).
+                val one = styles.filter { it.key != st.threadsLastLook }.ifEmpty { styles }.random()
+                val order = List(x.items.size) { one }
                 // One after another, in the order they were made, so the cards keep it.
                 val images = x.items.mapIndexed { k, item ->
-                    pictureUrl(context, st, item, x.book, order[k], styles, noteOnCard = true).first to altText(item, x.book)
+                    pictureUrl(context, st, item, x.book, order[k], listOf(one), noteOnCard = true).first to altText(item, x.book)
                 }
                 val passages = x.items.map { it.clip.text }
                 val words = aiCaption(context, st, x.book, x.items.map { it.clip })?.let { it + "\n\n" + bookLine(x.book) } ?: sessionText(x)

@@ -268,7 +268,7 @@ One book per line, at most five. Write nothing else. If there's no book you're s
     )
 
     /** The names a post's caption and picture give, most likely first. */
-    fun guesses(caption: String?, picture: List<String>): List<Guess> {
+    fun guesses(caption: String?, picture: List<String>, authors: List<String> = pricedNames(caption)): List<Guess> {
         val out = LinkedHashMap<String, Guess>()
         fun add(q: String, a: String?, from: String, handle: String? = null) {
             val t = q.replace(Regex("^[\\s\\d.)\\-–—•*#📚📖✨🔥⭐️❤️]+"), "").replace(Regex("[\\s:;,.!?\\-–—]+$"), "").trim()
@@ -276,7 +276,8 @@ One book per line, at most five. Write nothing else. If there's no book you're s
             if (t.lowercase().replace(" ", "") in NOT_BOOKS) return
             out.putIfAbsent(t.lowercase(), Guess(t, a?.trim()?.takeIf { it.length in 3..60 }, from, handle))
         }
-        val text = caption.orEmpty()
+        // A seller's "Vogt - 300" lines name who wrote the books, not what they are: left out here.
+        val text = caption.orEmpty().lines().filterNot { PRICED.containsMatchIn(it) }.joinToString("\n")
         // "Title by Author" (also "Title - Author" on a list line).
         for (line in text.split('\n', '•', '|')) {
             Regex("""["“]?([A-Z0-9][^"“”\n]{2,80}?)["”]?\s+(?:by|-|–|—)\s+(@?[\p{L}0-9_][\p{L}0-9_.'\- ]{1,40}?)(?=$|[,.!?;:)(\n]|\s{2}|\s[#@])""").findAll(line).forEach { m ->
@@ -298,7 +299,16 @@ One book per line, at most five. Write nothing else. If there's no book you're s
         // The picture's lines: two or three words or more, in title or capital letters (not the app's
         // own buttons and counts: likes, follow, reply, views…).
         val chrome = Regex("(?i)^(follow|following|reply|replies|share|like[sd]?|views?|comments?|send|save|repost|more|original audio|see translation|add comment|suggested|sponsored)\\b|\\b\\d+(\\.\\d+)?[KkMm]\\b|^@")
+        // A line with one of the post's authors in it ("IAN WATSON THE BOOK OF BEING"): the rest is the
+        // title, checked with that author. A line that's only the author ("A.E. van Vogt") isn't a title.
+        fun authored(l: String): Pair<String, String>? {
+            for (a in authors) withoutAuthor(l, a)?.let { return it to a }
+            return null
+        }
+        fun onlyAuthor(l: String) = authors.any { a -> withoutAuthor(l, a) == "" }
         for (l in picture) {
+            val byAuthor = authored(l)
+            if (byAuthor != null) { if (byAuthor.first.isNotEmpty()) add(byAuthor.first, byAuthor.second, "picture"); continue }
             if (l.split(' ').size in 2..8 && Regex("^[A-Z0-9]").containsMatchIn(l) && !chrome.containsMatchIn(l)) add(l, null, "picture")
         }
         // A cover's title is often split over lines ("LAST SONG" / "OF ASH"): neighbouring short lines put together.
@@ -308,6 +318,9 @@ One book per line, at most five. Write nothing else. If there's no book you're s
             val part = short.subList(i, i + n)
             if (part.any { it.split(' ').size > 4 || chrome.containsMatchIn(it) || !Regex("^[A-Za-z0-9]").containsMatchIn(it) }) continue
             val joined = part.joinToString(" ")
+            val byAuthor = authored(joined)
+            if (byAuthor != null) { if (byAuthor.first.split(' ').size in 2..8) add(byAuthor.first, byAuthor.second, "picture"); continue }
+            if (part.any { onlyAuthor(it) }) continue
             if (joined.split(' ').size in 2..8 && Regex("^[A-Z0-9]").containsMatchIn(joined)) add(joined, null, "picture")
         }
         // Hashtags that name a book or series (#fourthwing), after the rest.
@@ -315,6 +328,50 @@ One book per line, at most five. Write nothing else. If there's no book you're s
             if (h.lowercase() !in NOT_BOOKS && !h.lowercase().startsWith("book")) add(h.replace(Regex("([a-z])([A-Z])"), "$1 $2"), null, "hashtag")
         }
         return out.values.toList()
+    }
+
+    /** A seller's list line: a name, then its price ("Vogt - 300", "Ian Watson - ₹200 each"). */
+    private val PRICED = Regex("""(?i)^\s*([\p{L}][\p{L}.' ]{1,40}?)\s*[-–—:=]\s*(?:₹|rs\.?|inr|\$|£|€)?\s*\d{2,6}\s*(?:/-)?\s*(?:each|only|rs|inr|/-)?\s*$""")
+
+    /** The authors a seller's post lists with prices: who wrote the books it shows, not their titles. */
+    fun pricedNames(caption: String?): List<String> =
+        caption.orEmpty().lines().mapNotNull { PRICED.find(it)?.groupValues?.get(1)?.trim() }
+            .filter { it.split(' ').size <= 4 && letters(it).length >= 3 }.distinct()
+
+    private val PARTICLES = setOf("van", "von", "de", "der", "den", "la", "le", "du", "di", "da", "del", "st", "st.", "mc", "mac", "and", "&")
+
+    /**
+     * [line] with [author] taken out: what's left (maybe nothing), or null when the author isn't in it.
+     * The author is found by their surname; the initials, first names and "van"s before it go with it.
+     */
+    internal fun withoutAuthor(line: String, author: String): String? {
+        val words = line.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val names = author.split(Regex("[\\s.]+")).map { letters(it) }.filter { it.isNotEmpty() }
+        val surname = names.lastOrNull()?.takeIf { it.length >= 3 } ?: return null
+        val at = words.indexOfFirst { letters(it) == surname }
+        if (at < 0) return null
+        var from = at
+        while (from > 0) {
+            val w = words[from - 1]
+            val l = letters(w)
+            val initials = Regex("^([A-Za-z]\\.){1,3}$").matches(w) || (l.length <= 2 && w.all { it.isUpperCase() || it == '.' })
+            if (l in names || l in PARTICLES || w.lowercase() in PARTICLES || initials) from-- else break
+        }
+        // A co-author written next to it ("C.J. Cherryh Mercedes Lackey") is left in: the title is the longer side.
+        val before = words.subList(0, from)
+        val after = words.subList(at + 1, words.size)
+        val rest = if (after.size >= before.size) after else before
+        return rest.joinToString(" ").trim().trim('-', '–', '—', ':', ',', ' ')
+    }
+
+    /** A "book" whose title is only a person the post names as an author ("A. E. van Vogt"): not one of its books. */
+    fun isAuthorName(title: String, authors: Collection<String>): Boolean {
+        val t = letters(Matcher.baseTitle(title))
+        if (t.isEmpty() || title.trim().split(Regex("\\s+")).size > 5) return false
+        return authors.any { a ->
+            val surname = a.split(Regex("[\\s.]+")).map { letters(it) }.lastOrNull { it.isNotEmpty() } ?: return@any false
+            surname.length >= 3 && (t == letters(a) || t.endsWith(surname))
+        }
     }
 
     /** The names the on-device AI reads out of the caption and picture text, as "Title — Author" lines. */
@@ -591,27 +648,33 @@ ${picture.joinToString("\n").take(800)}"""
         // The way book posts are written first (quick); the on-device AI only when that finds nothing
         // (loading and asking it takes a while).
         val comps = comparisons(post.caption)
+        // A seller's list ("Vogt - 300 / Cj Cherryh - 300 / Ian Watson - 200 each") says how many books
+        // to expect at least, and who wrote them.
+        val priced = pricedNames(post.caption)
+        val wanted = maxOf(1, priced.size)
         progress("Picking out the books")
         val ruled = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            guesses(post.caption, picture).distinctBy { letters(it.query) }.filterNot { letters(it.query) in comps }.take(30)
+            guesses(post.caption, picture, priced).distinctBy { letters(it.query) }.filterNot { letters(it.query) in comps }.take(30)
         }
         suspend fun check(gs: List<Guess>): List<Found> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val checked = gs.mapNotNull { g -> runCatching { verify(g) }.getOrNull() }
-                .filterNot { letters(Matcher.baseTitle(it.title)) in comps }
+            val checked = gs.mapNotNull { g -> runCatching { verify(g) ?: g.author?.takeIf { g.from == "picture" }?.let { verify(g.copy(author = null)) } }.getOrNull() }
+                .filterNot { letters(Matcher.baseTitle(it.title)) in comps || isAuthorName(it.title, priced) }
                 .distinctBy { letters(Matcher.baseTitle(it.title)) + "|" + letters(it.author ?: "") }
             checked + unlisted(gs, picture, checked, post.thumbnail, post.caption)
         }
         progress("Checking ${ruled.size} names against Google Books")
         val found = check(ruled).toMutableList()
-        if (found.isEmpty() && io.github.prithirajn.trackersync.ai.Ai.model() != null) {
+        // Fewer books than the post shows: the AI reads the words again, then looks at the pictures.
+        if (found.size < wanted && io.github.prithirajn.trackersync.ai.Ai.model() != null) {
             progress("Asking the on-device AI")
             val asked = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 aiGuesses(post.caption, picture).distinctBy { letters(it.query) }.filterNot { letters(it.query) in comps || it.query.lowercase() in ruled.map { r -> r.query.lowercase() } }.take(15)
             }
             if (asked.isNotEmpty()) { progress("Checking what it named"); found += check(asked) }
+            dedupe(found)
         }
         // Nothing named in words: the model looks at the pictures themselves, when it can.
-        if (found.isEmpty() && urls.isNotEmpty() && io.github.prithirajn.trackersync.ai.Ai.model() != null) {
+        if (found.size < wanted && urls.isNotEmpty() && io.github.prithirajn.trackersync.ai.Ai.model() != null) {
             progress("Looking at the pictures")
             val files = pictureFiles(context, urls)
             val seen = coverGuesses(context, files)
@@ -620,10 +683,17 @@ ${picture.joinToString("\n").take(800)}"""
                 progress("Checking what it saw against Google Books")
                 found += kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     seen.mapNotNull { g -> runCatching { verify(g) ?: g.author?.let { verify(g.copy(author = null)) } }.getOrNull() }
-                        .distinctBy { letters(Matcher.baseTitle(it.title)) + "|" + letters(it.author ?: "") }
+                        .filterNot { letters(Matcher.baseTitle(it.title)) in comps || isAuthorName(it.title, priced) }
                 }
+                dedupe(found)
             }
         }
         return Trap(post, found, System.currentTimeMillis() / 1000, picture.take(40))
+    }
+
+    /** The same book found twice (by its words and by its picture): kept once, the first time. */
+    private fun dedupe(found: MutableList<Found>) {
+        val seen = HashSet<String>()
+        found.retainAll { seen.add(letters(Matcher.baseTitle(it.title))) }
     }
 }

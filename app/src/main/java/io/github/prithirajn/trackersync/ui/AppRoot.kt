@@ -5,6 +5,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -141,8 +142,16 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                             is AppAction.Sff -> pager.animateScrollToPage(Tab.SFF.ordinal)
                             // The Services tab opens the screen itself.
                             is AppAction.ServicePage -> pager.animateScrollToPage(Tab.SERVICES.ordinal)
-                            AppAction.Posts -> { AppActions.pending.value = null; CatalogsGo.mode.value = "Posts"; pager.animateScrollToPage(Tab.CATALOGS.ordinal) }
-                            AppAction.Deals -> { AppActions.pending.value = null; CatalogsGo.mode.value = "Deals"; pager.animateScrollToPage(Tab.CATALOGS.ordinal) }
+                            AppAction.Posts, AppAction.Deals -> {
+                                CatalogsGo.mode.value = if (pendingAction == AppAction.Posts) "Posts" else "Deals"
+                                AppActions.pending.value = null
+                                tab = Tab.CATALOGS
+                                // Opened from a share with the app not running: the pager isn't laid out on the
+                                // first frame, and a move asked for then is lost. Wait for it, then move.
+                                androidx.compose.runtime.snapshotFlow { pager.layoutInfo.visiblePagesInfo.isNotEmpty() }.first { it }
+                                runCatching { pager.animateScrollToPage(Tab.CATALOGS.ordinal) }
+                                if (pager.currentPage != Tab.CATALOGS.ordinal) pager.scrollToPage(Tab.CATALOGS.ordinal)
+                            }
                             else -> {
                                 if (pager.currentPage != Tab.LIBRARY.ordinal) pager.animateScrollToPage(Tab.LIBRARY.ordinal)
                             }

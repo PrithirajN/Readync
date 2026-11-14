@@ -2151,6 +2151,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Checks the app's copy of a book is really it (its title, author, length, and your highlights in it). */
+    fun recheckCopy(document: String) {
+        val app = getApplication<Application>()
+        val b = store.snapshot.books[document] ?: return
+        viewModelScope.launch {
+            val said = withContext(Dispatchers.IO) { runCatching { io.github.prithirajn.trackersync.source.BookCopies.recheck(app, b) }.getOrNull() }
+            when {
+                said == null -> notify("Couldn't check the copy", error = true)
+                said.startsWith("⚠") -> notify("This copy may not be the book", said.removePrefix("⚠ "), error = true)
+                else -> notify("It's the right book", said)
+            }
+        }
+    }
+
     /** Keeps catalog entry [entry] from [server] as the app's copy of library book [document]. */
     fun keepCatalogCopy(document: String, server: io.github.prithirajn.trackersync.source.Opds.Server, entry: io.github.prithirajn.trackersync.source.Opds.Entry) {
         val app = getApplication<Application>()
@@ -2159,7 +2173,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val acq = copies.epubOf(entry) ?: run { notify("It has no EPUB to keep", error = true); return }
         notify("Getting a copy for quotes", b.displayTitle)
         viewModelScope.launch {
-            val r = withContext(Dispatchers.IO) { runCatching { copies.fetch(app, b, io.github.prithirajn.trackersync.source.BookCopies.Found(server, entry, acq)) } }
+            val r = withContext(Dispatchers.IO) { runCatching { copies.fetch(app, b, io.github.prithirajn.trackersync.source.BookCopies.Found(server, entry, acq), trust = true) } }
             r.onSuccess { notify("Kept a copy for quotes", b.displayTitle) }
                 .onFailure { e -> notify("Couldn't keep a copy", e.message ?: "Something went wrong", error = true) }
         }
@@ -2311,6 +2325,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             notify(msg)
             done(msg)
+        }
+    }
+
+    /** A quick look at a book found in a post: description, ratings and genres from the linked sites and Google Books. */
+    fun postBookDetails(f: io.github.prithirajn.trackersync.source.PostBooks.Found, done: (io.github.prithirajn.trackersync.source.QuickDetails.Info?) -> Unit) {
+        viewModelScope.launch {
+            done(runCatching { io.github.prithirajn.trackersync.source.QuickDetails.gather(store.snapshot, f.title, f.author, f.isbn, f.cover) }.getOrNull())
         }
     }
 
@@ -3415,12 +3436,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             io.github.prithirajn.trackersync.ai.Assistant.tidyTitle(m, title, author.ifBlank { null })
         }, done)
 
-    /** Where you were in a book you're coming back to, from your highlights so far. */
+    /** Where you were in a book you're coming back to: the pages before your place (from the app's copy) and your highlights so far. */
     fun aiCatchUp(document: String, done: (String?, String?) -> Unit) {
         val b = store.snapshot.books[document] ?: return
         val clips = io.github.prithirajn.trackersync.sync.Highlights.forBook(store.snapshot, document).map { it.clip }
         val days = b.timestamp.takeIf { it > 0 }?.let { ((System.currentTimeMillis() / 1000 - it) / 86_400).toInt() }
-        withModel("The model couldn't put that together", { m -> io.github.prithirajn.trackersync.ai.Assistant.catchUp(m, b, clips, days) }, done)
+        val app = getApplication<android.app.Application>()
+        withModel("The model couldn't put that together", { m ->
+            // The pages just before your place, from the app's copy of the book when it has one.
+            val before = runCatching { io.github.prithirajn.trackersync.source.BookCopies.textBefore(app, document, b.percentage, (m.readChars * 0.7).toInt()) }.getOrNull()
+            io.github.prithirajn.trackersync.ai.Assistant.catchUp(m, b, clips, days, before?.first, before?.second)
+        }, done)
     }
 
     /**
@@ -3436,7 +3462,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val clips = io.github.prithirajn.trackersync.sync.Highlights.forBook(st, document).map { it.clip }
             .filter { (it.percent ?: 0.0) <= b.percentage + 0.005 }
         viewModelScope.launch {
-            val passages = io { runCatching { SyncEngine(store).sentencesBefore(st, document, t, b.percentage) }.getOrDefault(emptyList()) }
+            val app = getApplication<android.app.Application>()
+            // From the app's copy of the book first, else KOReader's file on this phone.
+            val passages = io {
+                runCatching { io.github.prithirajn.trackersync.source.BookCopies.mentionsBefore(app, document, t, b.percentage) }.getOrDefault(emptyList())
+                    .ifEmpty { runCatching { SyncEngine(store).sentencesBefore(st, document, t, b.percentage) }.getOrDefault(emptyList()) }
+            }
             withModel("The model couldn't answer that", { m -> io.github.prithirajn.trackersync.ai.Assistant.whoIs(m, b, t, clips, passages) }, done)
         }
     }

@@ -59,6 +59,8 @@ import androidx.compose.ui.window.Dialog
 import io.github.prithirajn.trackersync.R
 import io.github.prithirajn.trackersync.data.Snapshot
 import io.github.prithirajn.trackersync.source.Opds
+import io.github.prithirajn.trackersync.source.WikipediaMirrorLookup
+import io.github.prithirajn.trackersync.source.SamArchive
 import io.github.prithirajn.trackersync.sync.Matcher
 import io.github.prithirajn.trackersync.ui.theme.Cp
 import io.github.prithirajn.trackersync.ui.theme.CpShapes
@@ -121,6 +123,11 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     var only by remember { mutableStateOf<String?>(null) }
     var pasting by remember { mutableStateOf(false) }
     var copiesOpen by remember { mutableStateOf(false) }
+    var wikiLookupOpen by remember { mutableStateOf(false) }
+    var wikiLookupRunning by remember { mutableStateOf(false) }
+    var wikiLookupError by remember { mutableStateOf<String?>(null) }
+    var wikiArticleUrl by rememberSaveable { mutableStateOf(WikipediaMirrorLookup.articleUrl(context)) }
+    val wikiResults = remember { mutableStateListOf<WikipediaMirrorLookup.Result>() }
     var serversOpen by remember { mutableStateOf(false) }
     // The newest books across every server: each asked at once, merged newest first, 50 shown.
     val latestFound = remember { mutableStateListOf<Triple<Opds.Server, Opds.Entry, Int>>() }
@@ -148,14 +155,14 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     LaunchedEffect(goTo) { goTo?.let { mode = it; CatalogsGo.mode.value = null } }
 
     // Every server at once, a moment after you stop typing; results come in as each answers.
-    LaunchedEffect(query, servers.map { it.id }) {
+    LaunchedEffect(query, servers.map { it.id }, wikiArticleUrl) {
         val q = query.trim()
-        if (q.length < 2 || servers.isEmpty()) { found.clear(); status.clear(); searched = ""; return@LaunchedEffect }
+        if (q.length < 2) { found.clear(); status.clear(); searched = ""; return@LaunchedEffect }
         delay(650)
         searched = q; only = null
         found.clear(); status.clear()
         servers.forEach { status[it.id] = SearchState() }
-        servers.map { s ->
+        val tasks = servers.map { s ->
             scope.async {
                 val r = withContext(Dispatchers.IO) { runCatching { Opds.search(context, s, q) } }
                 if (searched != q) return@async
@@ -165,7 +172,11 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
                     status[s.id] = SearchState(running = false, found = books.size)
                 }.onFailure { e -> status[s.id] = SearchState(running = false, error = e.message ?: "didn't answer") }
             }
-        }.awaitAll()
+        }
+        (tasks + scope.async {
+            val r = withContext(Dispatchers.IO) { runCatching { SamArchive.search(context, q) } }
+            if (searched == q) r.onSuccess { found.addAll(it) }
+        }).awaitAll()
     }
 
     val hits = remember(found.size, searched, only) {
@@ -197,16 +208,18 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
                         Eyebrow(if (servers.isEmpty()) "OPDS book servers" else "${servers.size} server${if (servers.size == 1) "" else "s"}, searched together")
                         PageTitle("Catalogs")
                     }
+                    IconCircleButton(R.drawable.lucide_globe, "Configure Wikipedia archive article and check links", { wikiLookupOpen = true; wikiLookupError = null }, tint = c.textMid)
+                    HSpace(8)
                     IconCircleButton(R.drawable.lucide_list_checks, "Paste a list of servers", { pasting = true }, tint = c.textMid)
                     HSpace(8)
                     IconCircleButton(R.drawable.lucide_plus, "Add a server", { addingNew = true }, tint = c.accentText)
                 }
                 VSpace(12)
                 Segmented(listOf("Search", "Posts", "Deals"), mode, { if (it == "Deals" && state.priceWatch.isNotEmpty()) "Deals · ${state.priceWatch.size}" else it }, { mode = it }, Modifier.fillMaxWidth())
-                if (servers.isNotEmpty() && mode == "Search") {
+                if (mode == "Search") {
                     VSpace(12)
                     val clear: (@Composable () -> Unit)? = if (query.isNotEmpty()) { { IconCircleButton(R.drawable.lucide_x, "Clear", { query = "" }) } } else null
-                    CpTextField(query, { query = it }, "Search every catalog", placeholder = "Title, author or series", trailing = clear)
+                    CpTextField(query, { query = it }, "Search catalogs and Sam’s Archives", placeholder = "Title, author or series", trailing = clear)
                 }
             }
         }
@@ -216,7 +229,7 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
         } else if (mode == "Posts") {
             // Books in a TikTok, Instagram or YouTube post.
             item(key = "posts") { PostBooksView(vm, state) }
-        } else if (servers.isEmpty()) {
+        } else if (servers.isEmpty() && searched.isEmpty()) {
             item(key = "empty") { NoServers(onAdd = { addingNew = true }, onPaste = { pasting = true }, onSuggest = { name, url -> adding = Opds.Server(java.util.UUID.randomUUID().toString(), name, url) }) }
         } else if (searched.isEmpty()) {
             // Your servers and the app's copies, one line each; the newest books across every server below.
@@ -299,7 +312,7 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
                 }
             }
             val still = status.values.any { it.running }
-            if (hits.isEmpty() && !still) item(key = "none") { Quiet("Nothing on any server for “$searched”.", Modifier.padding(16.dp)) }
+            if (hits.isEmpty() && !still) item(key = "none") { Quiet("Nothing on your catalogs or Sam's Archives for “$searched”.", Modifier.padding(16.dp)) }
             // Three to a row, covers first.
             items(hits.chunked(3), key = { row -> "hr-" + row.first().key }) { row ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -314,6 +327,24 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     if (addingNew) ServerSheet(null, onClose = { addingNew = false })
     if (pasting) PasteServersSheet { pasting = false }
     if (copiesOpen) CopiesSheet(vm, state) { copiesOpen = false }
+    if (wikiLookupOpen) WikipediaMirrorSheet(
+        running = wikiLookupRunning, results = wikiResults, error = wikiLookupError, articleUrl = wikiArticleUrl,
+        onArticleUrlChange = { wikiArticleUrl = it }, onSaveArticleUrl = { value ->
+            runCatching { WikipediaMirrorLookup.saveArticleUrl(context, value) }
+                .onFailure { wikiLookupError = it.message ?: "Invalid Wikipedia URL" }
+                .onSuccess { wikiArticleUrl = value.trim(); wikiLookupError = null; wikiResults.clear() }
+        },
+        onRefresh = {
+            if (!wikiLookupRunning) {
+                wikiLookupRunning = true; wikiLookupError = null; wikiResults.clear()
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) { runCatching { WikipediaMirrorLookup.discoverAndCheck(wikiArticleUrl) } }
+                    result.onSuccess { wikiResults.addAll(it) }.onFailure { wikiLookupError = it.message ?: "Couldn't read Wikipedia" }
+                    wikiLookupRunning = false
+                }
+            }
+        }, onClose = { wikiLookupOpen = false }
+    )
     if (serversOpen) PlainSheet("Your servers", { serversOpen = false }) {
         Quiet("Tap one to browse its shelves; Edit to change or remove it.")
         VSpace(8)
@@ -321,6 +352,52 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     }
     adding?.let { s -> ServerSheet(s, onClose = { adding = null }) }
     browsing?.let { s -> BrowseServer(vm, state, s) { browsing = null } }
+}
+
+@Composable
+private fun WikipediaMirrorSheet(
+    running: Boolean,
+    articleUrl: String,
+    onArticleUrlChange: (String) -> Unit,
+    onSaveArticleUrl: (String) -> Unit,
+    results: List<WikipediaMirrorLookup.Result>,
+    error: String?,
+    onRefresh: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val c = Cp.colors
+    LaunchedEffect(Unit) { onRefresh() }
+    PlainSheet("Wikipedia-listed website URLs", onClose) {
+        Quiet("Set the English Wikipedia article for Sam's Archives. Readync discovers the listed Sam archive domains and checks them. Once this points to a Sam's Archives article, its free/slow EPUB links can appear alongside your OPDS catalog search. Anna's Archive is only the temporary default for testing link discovery; it is never searched or downloaded from.")
+        VSpace(10)
+        CpTextField(articleUrl, onArticleUrlChange, "Wikipedia article URL", placeholder = WikipediaMirrorLookup.DEFAULT_ARTICLE_URL, keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
+        VSpace(8)
+        BigButton("Save article URL", { onSaveArticleUrl(articleUrl) }, enabled = !running, filled = false)
+        VSpace(12)
+        if (running) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), color = c.accent, strokeWidth = 2.dp)
+                HSpace(10)
+                Text("Checking listed URLs…", style = CpType.small, color = c.textMid)
+            }
+        }
+        error?.let { Text(it, style = CpType.small, color = c.errorText) }
+        for (result in results) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(8.dp).clip(CircleShape).background(if (result.reachable) c.good else c.errorText))
+                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                    Text(result.url, style = CpType.bodyStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Quiet(if (result.reachable) "Responding · ${result.detail}" else "Not reachable · ${result.detail}", maxLines = 2)
+                }
+            }
+            RowDivider()
+        }
+        if (!running && error == null && results.isEmpty()) Quiet("No external website links were found in the article.")
+        VSpace(12)
+        BigButton(if (running) "Checking…" else "Check again", onRefresh, enabled = !running, filled = false)
+        VSpace(6)
+        Quiet("Source: $articleUrl")
+    }
 }
 
 @Composable

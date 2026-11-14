@@ -1044,6 +1044,8 @@ private fun BookSheet(
             androidx.compose.animation.Crossfade(tab, animationSpec = androidx.compose.animation.core.tween(220), label = "bookTab") { t ->
             Column(Modifier.fillMaxWidth()) {
             if (t == 1) {
+                    // Whether this book's new highlights go to Threads, with its highlights.
+                    ThreadsHighlightsToggle(vm, state, book)
                     HighlightsSection(vm, state, book)
                     if (clipCount == 0) { VSpace(16); Quiet("No highlights yet. Snap page adds one from a photo of the page.", color = c.faint) }
                 
