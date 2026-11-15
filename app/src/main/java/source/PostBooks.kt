@@ -243,23 +243,50 @@ object PostBooks {
      * The books the on-device model sees in pictures (a cover with no readable title, a shelf), when
      * it can see pictures (Gemma 4): its "Title — Author" guesses, each still checked like the rest.
      */
-    suspend fun coverGuesses(context: Context, files: List<File>): List<Guess> {
+    suspend fun coverGuesses(context: Context, files: List<File>, caption: String? = null, author: String? = null, sellerList: Boolean = false): List<Guess> {
         val m = io.github.prithirajn.readync.ai.Ai.model() ?: return emptyList()
-        val prompt = """Is there a book in this picture (a cover, a book held up, a shelf)? For each book you can read or recognise, write its title and author as: Title — Author
-One book per line, at most five. Write nothing else. If there's no book you're sure of, write NONE."""
-        val out = ArrayList<Guess>()
+        // What the post says, to settle a half-read title or an author (it doesn't add books by itself).
+        val context0 = listOfNotNull(
+            caption?.takeIf { it.isNotBlank() }?.let { "The post's caption: \"${it.take(600)}\"" },
+            author?.let { "The post is about the author $it." },
+        ).joinToString("\n")
+        val prompt = """List the books this social media post is showing off: the cover facing the camera, books held up, a stack being shown${if (sellerList) ", every book laid out for sale" else ""}. Read the titles and authors on covers and on spines, upright or sideways.
+Rules:
+- A book only on a shelf in the background, not the one being shown, goes in with "featured": false.
+- Use what you know about a book only when you're sure (a distinctive cover and part of its title). If a title is too blurred or cut off to be sure, leave the book out. Never make up a title.
+- "From the author of X" on a cover: X is another book, not this one.
+${if (context0.isNotEmpty()) context0 + "\n" else ""}Answer with JSON only, no other words:
+{"books":[{"title":"…","author":"… or null","featured":true,"confidence":"high|medium|low","visible_text":"the words you can read on it"}]}
+At most six books. With none you're sure of: {"books":[]}"""
+        val out = ArrayList<Pair<Guess, Boolean>>()
         for (f in files.take(3)) {
-            val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { m.look(f.path, prompt) }.getOrNull() } ?: return out
-            if (reply.trim().startsWith("NONE", true)) continue
-            reply.lines().forEach { l ->
-                val t = l.replace(Regex("^[\\s\\d.)\\-–—•*]+"), "").trim().trim('*')
-                if (t.isEmpty() || t.equals("NONE", true)) return@forEach
-                val parts = t.split(Regex("\\s+[—–-]\\s+|\\s+by\\s+"), limit = 2)
-                val title = parts[0].trim('"', '“', '”', ' ')
-                if (title.length >= 2) out += Guess(title, parts.getOrNull(1)?.trim()?.ifBlank { null }, "cover")
+            val reply = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { m.look(f.path, prompt) }.getOrNull() } ?: return out.map { it.first }
+            val books = runCatching {
+                val json = reply.substring(reply.indexOf('{'), reply.lastIndexOf('}') + 1)
+                JSONObject(json).optJSONArray("books")
+            }.getOrNull()
+            if (books != null) {
+                for (i in 0 until books.length()) {
+                    val b = books.optJSONObject(i) ?: continue
+                    val title = b.optString("title").takeIf { it.isNotBlank() && it != "null" }?.trim('"', '“', '”', ' ') ?: continue
+                    if (b.optString("confidence").equals("low", true)) continue
+                    val by = b.optString("author").takeIf { it.isNotBlank() && it != "null" }?.trim()
+                    out += Guess(title, by, "cover") to (b.opt("featured") != false && b.optString("featured") != "false")
+                }
+            } else {
+                // Not JSON after all: read it as "Title — Author" lines.
+                reply.lines().forEach { l ->
+                    val t = l.replace(Regex("^[\\s\\d.)\\-–—•*]+"), "").trim().trim('*')
+                    if (t.isEmpty() || t.equals("NONE", true) || t.startsWith("{") || t.startsWith("}")) return@forEach
+                    val parts = t.split(Regex("\\s+[—–-]\\s+|\\s+by\\s+"), limit = 2)
+                    val title = parts[0].trim('"', '“', '”', ' ')
+                    if (title.length >= 2) out += Guess(title, parts.getOrNull(1)?.trim()?.ifBlank { null }, "cover") to true
+                }
             }
         }
-        return out.distinctBy { letters(it.query) }
+        // The books being shown, when the model told them apart from the shelf behind; else everything it named.
+        val shown = out.filter { it.second }.ifEmpty { out }
+        return shown.map { it.first }.distinctBy { letters(it.query) }
     }
 
     /** The post's pictures saved for the model to look at (the first few). */
@@ -298,7 +325,7 @@ One book per line, at most five. Write nothing else. If there's no book you're s
             Regex("""["“]?([A-Z0-9][^"“”\n]{2,80}?)["”]?\s+(?:by|-|–|—)\s+(@?[\p{L}0-9_][\p{L}0-9_.'\- ]{1,40}?)(?=$|[,.!?;:)(\n]|\s{2}|\s[#@])""").findAll(line).forEach { m ->
                 // "Behold the cover of Last Song of Ash by aptshadow": the title is the name-like end of the
                 // phrase, and an account's handle (one word, small letters or @) isn't the author.
-                val a = m.groupValues[2].trim()
+                val a = nameRun(m.groupValues[2].trim())
                 val handle = a.startsWith("@") || (!a.contains(' ') && (a.first().isLowerCase() || a.any { it == '_' || it.isDigit() }))
                 // An account credited as the author: the rest of its handle after the words ("@david.scott.hay.official").
                 val full = if (a.startsWith("@")) Regex("@[A-Za-z0-9_.]+").find(line, m.range.first + m.value.indexOf(a))?.value ?: a else a
@@ -338,9 +365,11 @@ One book per line, at most five. Write nothing else. If there's no book you're s
             if (part.any { onlyAuthor(it) }) continue
             if (joined.split(' ').size in 2..8 && Regex("^[A-Z0-9]").containsMatchIn(joined)) add(joined, null, "picture")
         }
-        // Hashtags that name a book or series (#fourthwing), after the rest.
+        // Hashtags that name a book or series (#fourthwing), after the rest; by the post's author when it names one.
+        val about = postAuthor(caption)
         Regex("#([A-Za-z][A-Za-z0-9]{4,40})").findAll(text).map { it.groupValues[1] }.forEach { h ->
-            if (h.lowercase() !in NOT_BOOKS && !h.lowercase().startsWith("book")) add(h.replace(Regex("([a-z])([A-Z])"), "$1 $2"), null, "hashtag")
+            if (about != null && letters(h) == letters(about)) return@forEach
+            if (h.lowercase() !in NOT_BOOKS && !h.lowercase().startsWith("book")) add(h.replace(Regex("([a-z])([A-Z])"), "$1 $2"), about, "hashtag")
         }
         return out.values.toList()
     }
@@ -403,7 +432,8 @@ One book per line, at most five. Write nothing else. If there's no book you're s
     /** The names the on-device AI reads out of the caption and picture text, as "Title — Author" lines. */
     fun aiGuesses(caption: String?, picture: List<String>): List<Guess> {
         val m = io.github.prithirajn.readync.ai.Ai.model() ?: return emptyList()
-        val prompt = """List every book named in this social media post. Use the caption and the words read from the post's picture.
+        val prompt = """List the books this social media post is about. Use the caption and the words read from the post's picture.
+Leave out books it only compares them to ("X meets Y", "for fans of X"), an author's other books ("from the author of X"), and anything you'd be guessing. Never make up a title.
 Write one book per line as: Title — Author (leave the author out if it isn't given). Write nothing else. If no book is named, write NONE.
 
 Caption:
@@ -417,7 +447,7 @@ ${picture.joinToString("\n").take(800)}"""
             val t = l.replace(Regex("^[\\s\\d.)\\-–—•*]+"), "").trim()
             if (t.isEmpty() || t.equals("NONE", true)) return@mapNotNull null
             val parts = t.split(Regex("\\s+[—–-]\\s+|\\s+by\\s+"), limit = 2)
-            Guess(parts[0].trim('"', '“', '”', ' '), parts.getOrNull(1)?.trim(), "caption")
+            Guess(parts[0].trim('"', '“', '”', ' '), parts.getOrNull(1)?.trim(), "ai")
         }.take(20)
     }
 
@@ -440,11 +470,44 @@ ${picture.joinToString("\n").take(800)}"""
      * Books a post only compares its book to ("X meets Y", "for fans of X", "perfect for readers of X"),
      * as letters: not the books the post is about.
      */
+    private val NAME_PARTICLES = setOf("van", "von", "de", "der", "den", "la", "le", "du", "di", "da", "del", "st.", "mc", "mac", "bin", "al")
+
+    /**
+     * The name at the start of [raw]: its capitalised words (initials and "van"s included), up to the
+     * first ordinary word ("Nat Cassidy yet" -> "Nat Cassidy"). A handle (@…, or one small word) as it is.
+     */
+    internal fun nameRun(raw: String): String {
+        if (raw.startsWith("@") || !raw.contains(' ')) return raw
+        val words = raw.split(Regex("\\s+"))
+        val kept = ArrayList<String>()
+        for (w in words) {
+            val ok = w.firstOrNull()?.isUpperCase() == true || (kept.isNotEmpty() && w.lowercase() in NAME_PARTICLES)
+            if (!ok) break
+            kept += w
+        }
+        return if (kept.isEmpty()) raw else kept.joinToString(" ")
+    }
+
+    /**
+     * The author a post is about, when it names one both in its words and as a hashtag
+     * ("…how I feel about Christopher Buehlman! #ChristopherBuehlman"): its hashtagged books are theirs.
+     */
+    fun postAuthor(caption: String?): String? {
+        val text = caption ?: return null
+        val plain = letters(text.replace(Regex("#[A-Za-z0-9_]+"), " "))
+        return Regex("#([A-Z][a-z]+(?:[A-Z][a-z]+){1,3})\\b").findAll(text).map { it.groupValues[1] }
+            .firstOrNull { h -> h.lowercase() !in NOT_BOOKS && letters(h).length >= 8 && plain.contains(letters(h)) }
+            ?.replace(Regex("([a-z])([A-Z])"), "$1 $2")
+    }
+
     fun comparisons(caption: String?): Set<String> {
         val text = caption ?: return emptySet()
         val out = HashSet<String>()
         Regex("""([A-Z0-9][^.!?\n—–:;]{2,70}?)\s+meets\s+([A-Z0-9][^.!?\n,—–:;]{2,60})""").findAll(text).forEach { m ->
             out += letters(titleTail(m.groupValues[1])); out += letters(m.groupValues[2].trim())
+        }
+        Regex("""(?i)\b(?:author|writer|creator)s?\s+of\s+([^.!?\n—–:;"“”]{3,60})""").findAll(text).forEach { m ->
+            out += letters(m.groupValues[1].trim().trim('"', '“', '”'))
         }
         Regex("""(?i)(?:fans of|readers of|if you (?:liked|loved|enjoyed)|perfect for|reminiscent of|in the vein of|comp(?:ed|s)? to)\s+([^.!?\n—–:;]{3,80})""").findAll(text).forEach { m ->
             m.groupValues[1].split(Regex(",\\s*|\\s+and\\s+|\\s+or\\s+|\\s*&\\s*")).forEach { out += letters(it.trim().trim('"', '“', '”')) }
@@ -583,6 +646,8 @@ ${picture.joinToString("\n").take(800)}"""
         fun note(lines: List<String>) = lines.map { it.trim() }.filter { it.length >= 3 }.distinct().forEach { counts[it] = (counts[it] ?: 0) + 1 }
         var videos = 0
         var pictures = 0
+        // A recording's sharpest frames (not ones blurred mid-pan), kept for the model to look at.
+        val sharpFrames = ArrayList<Pair<Double, File>>()
         for ((n, uri) in uris.withIndex()) {
             val type = context.contentResolver.getType(uri).orEmpty()
             if (type.startsWith("video/")) {
@@ -593,7 +658,13 @@ ${picture.joinToString("\n").take(800)}"""
                     progress("Reading frame ${i + 1} of ${frames.size}")
                     val read = runCatching { io.github.prithirajn.readync.ui.PageScanner.read(context, android.net.Uri.fromFile(f)) }.getOrDefault(emptyList())
                     note(listOfNotNull(biggestLettering(read)) + read.map { it.text })
-                    f.delete()
+                    // Frames with words on them are the ones worth showing the model; the three sharpest kept.
+                    val sharp = if (read.isNotEmpty()) sharpness(f) else 0.0
+                    if (sharp > 0 && (sharpFrames.size < 3 || sharp > sharpFrames.minOf { it.first })) {
+                        sharpFrames += sharp to f
+                        sharpFrames.sortByDescending { it.first }
+                        while (sharpFrames.size > 3) sharpFrames.removeAt(sharpFrames.lastIndex).second.delete()
+                    } else f.delete()
                 }
             } else {
                 pictures++
@@ -619,7 +690,7 @@ ${picture.joinToString("\n").take(800)}"""
             val files = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 uris.filter { !context.contentResolver.getType(it).orEmpty().startsWith("video/") }.take(3).mapIndexedNotNull { i, u ->
                     runCatching { context.contentResolver.openInputStream(u)?.use { inp -> File(context.cacheDir, "post-look-m$i.jpg").apply { outputStream().use { inp.copyTo(it) } } } }.getOrNull()
-                }
+                } + sharpFrames.map { it.second }
             }
             val seen = coverGuesses(context, files)
             files.forEach { it.delete() }
@@ -634,10 +705,34 @@ ${picture.joinToString("\n").take(800)}"""
             else -> "Recording and screenshots"
         }
         val now = System.currentTimeMillis() / 1000
+        sharpFrames.forEach { it.second.delete() }
         return Trap(Post("media:$now", label, null, null, null), foundAll, now, lines.take(40))
     }
 
     /** A frame about every second of a recording (up to 45), as pictures in the app's cache. */
+    /**
+     * How sharp a picture is: the spread of its edges (variance of the Laplacian) on a small grey copy.
+     * A frame blurred by a pan scores low.
+     */
+    private fun sharpness(f: File): Double {
+        val o = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+        val bmp = android.graphics.BitmapFactory.decodeFile(f.path, o) ?: return 0.0
+        val w = minOf(bmp.width, 320); val h = (bmp.height * w.toDouble() / bmp.width).toInt().coerceAtLeast(3)
+        val small = android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true)
+        val px = IntArray(w * h); small.getPixels(px, 0, w, 0, 0, w, h)
+        if (small !== bmp) small.recycle(); bmp.recycle()
+        val g = DoubleArray(px.size) { i -> val p = px[i]; 0.299 * ((p shr 16) and 0xFF) + 0.587 * ((p shr 8) and 0xFF) + 0.114 * (p and 0xFF) }
+        var sum = 0.0; var sq = 0.0; var n = 0
+        for (y in 1 until h - 1) for (x in 1 until w - 1) {
+            val i = y * w + x
+            val lap = g[i - 1] + g[i + 1] + g[i - w] + g[i + w] - 4 * g[i]
+            sum += lap; sq += lap * lap; n++
+        }
+        if (n == 0) return 0.0
+        val mean = sum / n
+        return sq / n - mean * mean
+    }
+
     private fun videoFrames(context: Context, uri: android.net.Uri): List<File> {
         val r = android.media.MediaMetadataRetriever()
         val out = ArrayList<File>()
@@ -673,7 +768,8 @@ ${picture.joinToString("\n").take(800)}"""
         val picture = pictureText(context, urls)
         // The way book posts are written first (quick); the on-device AI only when that finds nothing
         // (loading and asking it takes a while).
-        val comps = comparisons(post.caption)
+        val comps = comparisons(post.caption) + comparisons(picture.joinToString("\n"))
+        val about = postAuthor(post.caption)
         // A seller's list ("Vogt - 300 / Cj Cherryh - 300 / Ian Watson - 200 each") says how many books
         // to expect at least, and who wrote them.
         val priced = pricedNames(post.caption)
@@ -682,14 +778,28 @@ ${picture.joinToString("\n").take(800)}"""
         val ruled = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             guesses(post.caption, picture, priced).distinctBy { letters(it.query) }.filterNot { letters(it.query) in comps }.take(30)
         }
+        // Several names at once (six at a time), each given at most 25 seconds, in the order found:
+        // one by one, thirty names could take longer than Android lets a background job run.
         suspend fun check(gs: List<Guess>): List<Found> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val checked = gs.mapNotNull { g -> runCatching { verify(g) ?: g.author?.takeIf { g.from == "picture" }?.let { verify(g.copy(author = null)) } }.getOrNull() }
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(6)
+            val checked = try {
+                gs.map { g -> pool.submit(java.util.concurrent.Callable { runCatching { verify(g) ?: g.author?.takeIf { g.from == "picture" }?.let { verify(g.copy(author = null)) } }.getOrNull() }) }
+                    .mapNotNull { f -> runCatching { f.get(25, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull() }
+            } finally { pool.shutdownNow() }
                 .filterNot { letters(Matcher.baseTitle(it.title)) in comps || isAuthorName(it.title, priced) }
                 .distinctBy { letters(Matcher.baseTitle(it.title)) + "|" + letters(it.author ?: "") }
             checked + unlisted(gs, picture, checked, post.thumbnail, post.caption)
         }
-        progress("Checking ${ruled.size} names against Google Books")
-        val found = check(ruled).toMutableList()
+        // What the caption names first ("NESTLINGS by Nat Cassidy"): when that's the post's book (or
+        // books), the lines off its picture (a blurb, a quote, the publisher's name) needn't be checked.
+        val fromCaption = ruled.filter { it.from == "caption" || (it.from == "hashtag" && it.author != null) }
+        progress(if (fromCaption.isNotEmpty()) "Checking what the caption names" else "Checking ${ruled.size} names against Google Books")
+        val found = (if (fromCaption.isNotEmpty()) check(fromCaption) else emptyList()).toMutableList()
+        val rest = ruled.filter { it !in fromCaption }
+        if (rest.isNotEmpty() && (found.size < wanted || priced.isNotEmpty())) {
+            if (fromCaption.isNotEmpty()) progress("Checking ${rest.size} more names from the picture")
+            found += check(rest).filter { f -> found.none { letters(Matcher.baseTitle(it.title)) == letters(Matcher.baseTitle(f.title)) } }
+        }
         // Fewer books than the post shows: the AI reads the words again, then looks at the pictures.
         if (found.size < wanted && io.github.prithirajn.readync.ai.Ai.model() != null) {
             progress("Asking the on-device AI")
@@ -703,7 +813,7 @@ ${picture.joinToString("\n").take(800)}"""
         if (found.size < wanted && urls.isNotEmpty() && io.github.prithirajn.readync.ai.Ai.model() != null) {
             progress("Looking at the pictures")
             val files = pictureFiles(context, urls)
-            val seen = coverGuesses(context, files)
+            val seen = coverGuesses(context, files, post.caption, about, sellerList = priced.isNotEmpty())
             files.forEach { it.delete() }
             if (seen.isNotEmpty()) {
                 progress("Checking what it saw against Google Books")
@@ -713,6 +823,12 @@ ${picture.joinToString("\n").take(800)}"""
                 }
                 dedupe(found)
             }
+        }
+        // A post about one author: books of theirs were found, so others seen only in the picture
+        // (a shelf behind them) aren't what it's about.
+        if (about != null) {
+            val theirs: (Found) -> Boolean = { f -> f.author?.let { a -> letters(a).contains(letters(about).takeLast(6)) || letters(about).contains(letters(a).takeLast(6)) } == true }
+            if (found.any(theirs)) found.retainAll { f -> theirs(f) || f.from == "caption" }
         }
         return Trap(post, found, System.currentTimeMillis() / 1000, picture.take(40))
     }

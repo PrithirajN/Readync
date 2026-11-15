@@ -111,7 +111,9 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 - **Copies for quotes**: books you're reading kept privately inside the app, for the lines around your quotes.
 - **Price tracker** for Amazon.in, Bookswagon and Atlantic Books, plus any other bookshop's page you give it (Flipkart, Crossword…), with your own target price.
 - **SFF news** set like a magazine, with a Screen view for films and series, and a clean reader.
-- **Library checks, a rating rubric, a top-books image and a reading-log export** on the Activity tab: books whose dates or page counts would throw your numbers off, scores on what matters to you beside your stars (with a gut-vs-rubric chart), your year's top 10 or 20 as one ranked image, and every book as an Excel or CSV file.
+- **Library checks and a rating rubric** on the Activity tab: books whose dates or page counts would throw your numbers off, and scores on what matters to you beside your stars (with a gut-vs-rubric chart).
+- **Your year** on the Activity tab, all in one place: Wrapped, the year's set of pictures, your top 10 or 20 as one ranked image, and the shelf poster.
+- **Reading log** under Services › Your data: every book as an Excel or CSV file.
 - **Import your history** from Goodreads, StoryGraph, Hardcover, Seekquel or KOReader.
 - **Setting a book aside** (Did not finish): a short scene in its genre (embers for fantasy, stars for science fiction, petals for romance, rain for thrillers, loose pages for non-fiction, leaves for the rest), and your choice of taking it off your bookcases and counting it toward this year's books.
 - **Live Updates** (Android 16): a reading session's timer, a catalog download and a sync you started stay at the top of your notifications, with a chip by the clock.

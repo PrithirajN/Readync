@@ -204,6 +204,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
         Toaster(vm, Modifier.align(Alignment.BottomCenter))
         CrashReport()
         DnfSceneOverlay()
+        if (state.account != null) FinishCelebrationOverlay(vm, state)
     }
     }
     }

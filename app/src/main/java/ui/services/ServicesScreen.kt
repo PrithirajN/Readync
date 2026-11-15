@@ -119,6 +119,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     var removingAudible by remember { mutableStateOf(false) }
     var removingLibby by remember { mutableStateOf(false) }
     var page by remember { mutableStateOf<String?>(null) }
+    var readingLog by remember { mutableStateOf(false) }
     var appSettings by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf(false) }
     // Which kind the Add sheet is for: book trackers, or reading apps and servers.
@@ -329,7 +330,11 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     DeviceLabel("Your data", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
                     CpCard {
                         NavRow(R.drawable.lucide_download, "Backup & import", "Back up, move to a new phone, or bring in history from Goodreads, StoryGraph, Hardcover or KOReader") { page = "backup" }
+                        RowDivider()
+                        // Moved here from Activity › Your library, beside the app's other copies of your data.
+                        NavRow(R.drawable.lucide_list_checks, "Reading log", "Every book as a spreadsheet (Excel or CSV): dates, rating, review, pages, series, genres, highlights") { readingLog = true }
                     }
+                    if (readingLog) ExportSheet(state) { readingLog = false }
                 }
             }
             } }

@@ -252,7 +252,7 @@ object LocalModel {
                 if (!seesImages) return@synchronized null
                 val config = ConversationConfig(
                     samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.1),
-                    thinkingConfig = ThinkingConfig(enableThinking = false), maxOutputToken = 200,
+                    thinkingConfig = ThinkingConfig(enableThinking = false), maxOutputToken = 600,
                 )
                 eng.createConversation(config).use { conversation ->
                     conversation.sendMessage(Message.of(Content.ImageFile(imagePath), Content.Text(prompt))).toString()

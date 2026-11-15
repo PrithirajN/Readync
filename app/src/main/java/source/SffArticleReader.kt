@@ -1101,6 +1101,8 @@ object SffArticleReader {
                     th { background: $surfaceHex; font-weight: 700; }
                     pre { background: $surfaceHex; border-radius: 12px; padding: 12px; overflow-x: auto; font-size: 13px; }
                     .end { text-align: center; color: $accentHex; font-size: 14px; margin: 8px 0 26px 0; }
+                    .react { display: flex; gap: 10px; justify-content: center; align-items: center; margin: 0 0 24px 0; font-family: Inter, sans-serif; font-size: 14px; color: $textMidHex; }
+                    .react a { text-decoration: none; color: $textHex; background: $surfaceHex; border: 1px solid $borderHex; border-radius: 999px; padding: 6px 14px; }
                     .tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 14px 18px 0 18px; }
                     .tag { font-family: Inter, sans-serif; font-size: 13px; color: $accentHex; background: $accentTintHex; border-radius: 999px; padding: 4px 10px; text-decoration: none; }
                     .others { padding: 0 18px 8px 18px; }
@@ -1139,6 +1141,7 @@ object SffArticleReader {
                         ${withoutRepeatedTitle(article.bodyHtml, article.title, item.title)}
                     </div>
                     <div class="end">◆</div>
+                    <div class="react"><span>Want more like this?</span><a href="readync://more">👍 More</a><a href="readync://less">👎 Less</a></div>
                 </article>
                 ${if (others.isEmpty()) "" else "<section class=\"others\"><h2>Other perspectives on this story</h2>" + others.joinToString("") { o ->
                     "<a class=\"other\" href=\"readync://perspective/${o.index}\"><div class=\"o-src\">${escapeHtml(o.source)}</div><div class=\"o-title\">${escapeHtml(o.title)}</div>" +

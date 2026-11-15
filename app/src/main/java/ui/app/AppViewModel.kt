@@ -3084,6 +3084,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** What happens when a book is set aside: its scene, off your bookcases, counted toward the year. */
     fun setDnfScene(on: Boolean) = store.update { DnfPrefs.withScene(it, on) }
+    /** A finish celebrated: not shown again. */
+    fun markFinishCelebrated(document: String) = store.update { FinishCelebrations.mark(it, document) }
     fun setDnfOffShelves(on: Boolean) = store.update { DnfPrefs.withOffShelves(it, on) }
     fun setDnfCounts(on: Boolean) = store.update { DnfPrefs.withCounts(it, on) }
 

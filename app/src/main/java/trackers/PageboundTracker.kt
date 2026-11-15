@@ -253,13 +253,41 @@ object PageboundTracker : Tracker {
             ?: runCatching { request(session, "GET", "/api/v1/user_books/${Http.enc(ubKey)}") }.getOrNull()
                 ?.takeIf { it.ok }?.let { r -> runCatching { JSONObject(r.body) }.getOrNull() }
                 ?.let { o -> (o.obj("user_review") ?: o.obj("user_book")?.obj("user_review"))?.let { it.idString("id") ?: it.str("uuid") } }
+        // Where each try went and what came back, for the log when none is taken.
+        val tried = ArrayList<String>()
+        /** The first of [ways] Pagebound doesn't answer 404 ("no such address") to. */
+        fun firstAnswered(ways: List<Triple<String, String, JSONObject>>): HttpResponse {
+            var last: HttpResponse? = null
+            for ((method, path, payload) in ways) {
+                val r = request(session, method, path, payload)
+                tried += "$method ${path.substringBefore('?')} ${r.code}"
+                if (r.code != 404) return r
+                last = r
+            }
+            return last!!
+        }
         fun send(): HttpResponse {
             val body = JSONObject().put("review", review)
-            val id = existingId ?: return request(session, "POST", "/api/v1/reviews", body)
-            // As Pagebound's "Edit review": PUT /reviews/{id}, marked edited.
+            val id = existingId
+            if (id == null) {
+                // A new review: Pagebound's own form posts to /reviews; its newer app may post under the
+                // user book or the book instead, so those are tried when /reviews isn't there.
+                return firstAnswered(listOf(
+                    Triple("POST", "/api/v1/reviews", body),
+                    Triple("POST", "/api/v1/user_books/${Http.enc(ubKey)}/review", body),
+                    Triple("POST", "/api/v1/user_books/${Http.enc(ubKey)}/reviews", body),
+                    Triple("POST", "/api/v1/books/${Http.enc(bookId)}/reviews", body),
+                ))
+            }
+            // As Pagebound's "Edit review": PUT /reviews/{id}, marked edited (PATCH, or under the user book, when that isn't there).
             val edit = JSONObject(review.toString()).put("is_edited", true)
             listOf("book_id", "user_book_id", "is_dnf").forEach { edit.remove(it) }
-            return request(session, "PUT", "/api/v1/reviews/${Http.enc(id)}", JSONObject().put("review", edit))
+            val editBody = JSONObject().put("review", edit)
+            return firstAnswered(listOf(
+                Triple("PUT", "/api/v1/reviews/${Http.enc(id)}", editBody),
+                Triple("PATCH", "/api/v1/reviews/${Http.enc(id)}", editBody),
+                Triple("PUT", "/api/v1/user_books/${Http.enc(ubKey)}/review", editBody),
+            ))
         }
         var r = send()
         // 404 on an edit: the review id we had isn't one Pagebound knows (deleted there, or an id
@@ -282,7 +310,7 @@ object PageboundTracker : Tracker {
             review.put("overall_rating", Math.round(q.toDouble() * 2) / 2.0)
             r = send()
         }
-        if (!r.ok) throw ServiceException("Pagebound didn't take the review (HTTP ${r.code}" + (serverReason(r.body)?.let { ": $it" } ?: "") + ")")
+        if (!r.ok) throw ServiceException("Pagebound didn't take the review (HTTP ${r.code}" + (serverReason(r.body)?.let { ": $it" } ?: "") + "; tried " + tried.distinct().joinToString(", ") + ")")
     }
 
     /**

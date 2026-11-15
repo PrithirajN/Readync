@@ -85,7 +85,15 @@ class ShareWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
     private suspend fun post(app: ReadyncApp, key: String, url: String) {
         ShareJobs.progress(key, "Reading the post")
-        val r = runCatching { PostBooks.find(app, url) { ShareJobs.progress(key, it) } }
+        val r = try {
+            kotlin.Result.success(PostBooks.find(app, url) { ShareJobs.progress(key, it) })
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Stopped (by you, or by Android after too long): not an error with the post.
+            if (!isStopped) ShareJobs.postError.value = url to "It took too long; tap Find the books to try again"
+            throw e
+        } catch (e: Exception) {
+            kotlin.Result.failure(e)
+        }
         r.onSuccess { t ->
             synchronized(PostBooks) {
                 PostBooks.save(app, listOf(t) + PostBooks.saved(app).filter { PostBooks.keyOf(it.post.url) != PostBooks.keyOf(t.post.url) && PostBooks.keyOf(it.post.url) != PostBooks.keyOf(url) })

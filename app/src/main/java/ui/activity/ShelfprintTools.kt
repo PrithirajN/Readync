@@ -68,9 +68,6 @@ private fun ToolsCard(vm: AppViewModel, state: Snapshot) {
     val issues = remember(state.books, state.facts) { LibraryChecks.run(state) }
     var checks by remember { mutableStateOf(false) }
     var rubric by remember { mutableStateOf(false) }
-    var top by remember { mutableStateOf(false) }
-    var export by remember { mutableStateOf(false) }
-    var yearSet by remember { mutableStateOf(false) }
     var collection by remember { mutableStateOf(false) }
     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp)) {
         Text("Your library", style = CpType.bodyStrong, color = c.text)
@@ -91,20 +88,11 @@ private fun ToolsCard(vm: AppViewModel, state: Snapshot) {
                     io.github.prithirajn.readync.R.drawable.lucide_star, "Rating rubric",
                     if (state.rubric.isEmpty()) "Score books on what matters to you, beside your stars" else state.rubric.joinToString(" · "),
                 ) { rubric = true }
-                RowDivider()
-                NavRow(io.github.prithirajn.readync.R.drawable.lucide_image, "Top books image", "Your year's top 10 or 20, ranked, to share") { top = true }
-                RowDivider()
-                NavRow(io.github.prithirajn.readync.R.drawable.lucide_sparkles, "Year in books", "A set of images: numbers, top reads, months, genre shelves, what you read, gut vs rubric, your shelf") { yearSet = true }
-                RowDivider()
-                NavRow(io.github.prithirajn.readync.R.drawable.lucide_download, "Export reading log", "Every book as a spreadsheet (Excel or CSV)") { export = true }
             }
         }
     }
     if (checks) ChecksSheet(issues) { checks = false }
     if (rubric) RubricSheet(vm, state) { rubric = false }
-    if (top) TopBooksSheet(vm, state) { top = false }
-    if (export) ExportSheet(state) { export = false }
-    if (yearSet) YearSetSheet(state) { yearSet = false }
     if (collection) CollectionSheet(vm, state) { collection = false }
 }
 
@@ -281,7 +269,7 @@ internal fun topBooks(s: Snapshot, year: Int, n: Int): List<Book> {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TopBooksSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
+internal fun TopBooksSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -537,7 +525,7 @@ internal fun ellipsize(text: String, p: Paint, width: Float): String {
 // ---- Export ----
 
 @Composable
-private fun ExportSheet(state: Snapshot, onClose: () -> Unit) {
+internal fun ExportSheet(state: Snapshot, onClose: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()

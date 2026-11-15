@@ -142,23 +142,20 @@ internal fun TodayPanel(state: Snapshot) {
     }
 }
 
-/** Three keys into the things made from your reading: Wrapped, today's review, the shelf poster. */
+/** Two keys into the things made from your reading: your year (Wrapped and the pictures) and today's review. */
 @Composable
 internal fun ReadingToolsRow(vm: AppViewModel, state: Snapshot) {
     val c = Cp.colors
     val context = LocalContext.current
-    var wrapped by remember { mutableStateOf(false) }
+    var year by remember { mutableStateOf(false) }
     var review by remember { mutableStateOf(false) }
-    var poster by remember { mutableStateOf(false) }
     val left = remember(state.cpClips, state.koClips, state.paperClips, review) { runCatching { DailyReview.left(context, state) }.getOrDefault(0) }
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        ToolTile("✨", "Wrapped", Shelves.monthName().substringBefore(' '), Modifier.weight(1f), signal = false) { wrapped = true }
+        ToolTile("✨", "Your year", "Wrapped & pictures", Modifier.weight(1f), signal = false) { year = true }
         ToolTile("🔁", "Review", if (left > 0) "$left today" else "Done today", Modifier.weight(1f), signal = left > 0) { review = true }
-        ToolTile("📚", "Shelf", "Poster", Modifier.weight(1f), signal = false) { poster = true }
     }
-    if (wrapped) WrappedSheet(state) { wrapped = false }
+    if (year) YourYearSheet(vm, state) { year = false }
     if (review) DailyReviewSheet(vm, state) { review = false }
-    if (poster) ShelfPosterSheet(state) { poster = false }
 }
 
 @Composable
@@ -309,5 +306,36 @@ internal fun FinishingSoonCard(state: Snapshot) {
                 }
             }
         }
+    }
+}
+
+
+/**
+ * Everything made from your year in one place (before: Wrapped and the shelf poster here, the top
+ * books image and the year's image set under Your library): pick one to make.
+ */
+@Composable
+internal fun YourYearSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
+    var open by remember { mutableStateOf<String?>(null) }
+    when (open) {
+        "wrapped" -> { WrappedSheet(state) { open = null }; return }
+        "set" -> { YearSetSheet(state) { open = null }; return }
+        "top" -> { TopBooksSheet(vm, state) { open = null }; return }
+        "poster" -> { ShelfPosterSheet(state) { open = null }; return }
+    }
+    PlainSheet("Your year", onClose) {
+        VSpace(6)
+        CpCard {
+            Column {
+                NavRow(io.github.prithirajn.readync.R.drawable.lucide_sparkles, "Wrapped", "Your month or year as story slides, down to your reader type") { open = "wrapped" }
+                RowDivider()
+                NavRow(io.github.prithirajn.readync.R.drawable.lucide_image, "Year in books", "A set of pictures: numbers, top reads, months, genre shelves, gut vs rubric") { open = "set" }
+                RowDivider()
+                NavRow(io.github.prithirajn.readync.R.drawable.lucide_star, "Top books", "Your year's top 10 or 20, ranked, as one picture") { open = "top" }
+                RowDivider()
+                NavRow(io.github.prithirajn.readync.R.drawable.lucide_library_big, "Shelf poster", "The year's books as spines on a shelf, or a wall of covers") { open = "poster" }
+            }
+        }
+        VSpace(12)
     }
 }

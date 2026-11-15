@@ -236,23 +236,10 @@ internal fun SffArticleReaderSheet(
                         if (idx == perspectiveIndex) null else SffArticleReader.Others(idx, p.source, p.title, p.summary)
                     },
                 )
-                ArtifactReaderWebView(
-                    html = doc,
-                    baseUrl = readerArticle.originalUrl ?: currentItem.url,
-                    background = c.page,
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    onOpenLink = { link ->
-                        when {
-                            link.startsWith("readync://perspective/") -> link.substringAfterLast('/').toIntOrNull()?.let { perspectiveIndex = it; liveWebViewMode = false }
-                            link.startsWith("readync://tag/") -> onSelectTag(java.net.URLDecoder.decode(link.substringAfter("readync://tag/"), "UTF-8"))
-                            else -> { pageUrl = link; liveWebViewMode = true }
-                        }
-                    },
-                )
-                // Bottom action bar.
+                // The action bar, under the top bar where it always shows (at the bottom of this full-screen
+                // window it could end up just off the screen): save, 👍 👎, the AI, your shelf, share.
                 val context = androidx.compose.ui.platform.LocalContext.current
                 Column(Modifier.fillMaxWidth().background(c.surface)) {
-                    RowDivider()
                     if (summarizing || rewritingTitle || runningExtraAi) {
                         Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)) {
                             AiThinking(
@@ -339,7 +326,23 @@ internal fun SffArticleReaderSheet(
                             }
                         }
                     }
+                    RowDivider()
                 }
+                ArtifactReaderWebView(
+                    html = doc,
+                    baseUrl = readerArticle.originalUrl ?: currentItem.url,
+                    background = c.page,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    onOpenLink = { link ->
+                        when {
+                            link.startsWith("readync://perspective/") -> link.substringAfterLast('/').toIntOrNull()?.let { perspectiveIndex = it; liveWebViewMode = false }
+                            link.startsWith("readync://tag/") -> onSelectTag(java.net.URLDecoder.decode(link.substringAfter("readync://tag/"), "UTF-8"))
+                            link == "readync://more" -> vm.sffFeedback(cluster, true)
+                            link == "readync://less" -> { vm.sffFeedback(cluster, false); finishAndClose() }
+                            else -> { pageUrl = link; liveWebViewMode = true }
+                        }
+                    },
+                )
             } else {
                 Column(
                     Modifier
