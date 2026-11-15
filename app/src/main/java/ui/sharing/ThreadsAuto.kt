@@ -167,7 +167,7 @@ object ThreadsAuto {
             val bmp = try { picture(context, s, i, book, style, noteOnCard) } catch (t: Throwable) { last = t; continue }
             val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
             bmp.recycle()
-            return ThreadsClient.upload(png) to style
+            return upload(png) to style
         }
         throw Exception("Couldn't draw the picture" + (last?.message?.let { ": $it" } ?: ""))
     }
@@ -409,6 +409,60 @@ object ThreadsAuto {
     }
 
     /** Posts the book's rating and review to Threads: the words with your stars, the review as slides. Returns null when done, else why not. */
+    // ---- "Built with Readync" (the full edition only) ----
+
+    private const val CREDIT_KEY = "threads.credit"
+    const val REPO_URL = "https://github.com/PrithirajN/Readync"
+    private val CREDIT_LINES = listOf(
+        "Built with Readync: $REPO_URL",
+        "Shared from Readync 📚 $REPO_URL",
+        "Made with Readync → $REPO_URL",
+        "Synced & shared with Readync: $REPO_URL",
+        "Posted with Readync, the reading tracker: $REPO_URL",
+    )
+
+    /** Whether posts end with a line linking to Readync's public repo (off until turned on; never in the shared edition). */
+    fun credit(s: Snapshot) = io.github.prithirajn.readync.Edition.full && s.extras[CREDIT_KEY] == "on"
+    fun withCredit(s: Snapshot, on: Boolean) = s.copy(extras = s.extras + (CREDIT_KEY to if (on) "on" else "off"))
+
+    /**
+     * [words] with the Readync line under them when it's on: one of a few wordings (the same post
+     * always gets the same one), the words cut short to keep the post within Threads' 500 characters.
+     */
+    fun credited(s: Snapshot, words: String): String {
+        if (!credit(s)) return words
+        val line = CREDIT_LINES[Math.floorMod(words.hashCode(), CREDIT_LINES.size)]
+        val room = 500 - line.length - 2
+        val body = if (words.length <= room) words else words.take(room - 1).trimEnd() + "…"
+        return "$body\n\n$line"
+    }
+
+    // ---- the same post on Bluesky and Mastodon (and waiting for X) ----
+
+    /** The pictures put up for the post being made (on this thread), in order. */
+    private val captured = ThreadLocal<MutableList<ByteArray>?>()
+
+    private fun upload(png: ByteArray): String {
+        captured.get()?.add(png)
+        return ThreadsClient.upload(png)
+    }
+
+    private fun startCapture() = captured.set(ArrayList())
+    private fun takeCaptured(): List<ByteArray> = captured.get().orEmpty().also { captured.set(null) }
+
+    /** What just went up on Threads, posted the same on your other networks (their failures only noted). */
+    private fun mirror(
+        context: Context, store: Store, text: String, alts: List<String?>, spoiler: Boolean, topic: String?, label: String,
+        kind: String = "", book: Book? = null, highlights: List<Highlights.Item> = emptyList(),
+    ) {
+        val pngs = takeCaptured()
+        val post = io.github.prithirajn.readync.sync.Socials.Post(
+            text, pngs.mapIndexed { i, p -> p to alts.getOrNull(i) }, spoiler, listOfNotNull(topic?.takeIf { it.isNotBlank() }), label,
+            kind = kind, book = book, highlights = highlights,
+        )
+        runCatching { io.github.prithirajn.readync.sync.Socials.mirror(context, store, post) }
+    }
+
     fun postReview(context: Context, store: Store, document: String, theme: Int, wording: Int = 0): String? {
         val s = store.snapshot
         val book = s.books[document] ?: return "That book isn't here any more."
@@ -416,16 +470,19 @@ object ThreadsAuto {
         val user = s.threadsUserId ?: return "Connect Threads first (Services \u203A Threads)."
         if (book.rating == null && book.review.isNullOrBlank()) return "Rate it or write a review first."
         return try {
+            startCapture()
             val slides = reviewSlides(context, book, theme)
             val alt = "Review of " + book.displayTitle + (book.rating?.let { ", ${it} out of 5 stars" } ?: "") + ". "
             // Uploaded one after another, so the slides keep their order (the book first, then the review in sequence).
             val images = slides.mapIndexed { i, bmp ->
                 val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
                 bmp.recycle()
-                ThreadsClient.upload(png) to (if (i == 0) alt.trim() else alt + QuoteCard.cleanReview(book.review.orEmpty()).take(900))
+                upload(png) to (if (i == 0) alt.trim() else alt + QuoteCard.cleanReview(book.review.orEmpty()).take(900))
             }
             val spoiler = !book.review.isNullOrBlank() && spoils(s, book, listOf(QuoteCard.cleanReview(book.review.orEmpty())))
-            ThreadsClient.postCarousel(user, token, reviewText(book, wording), images, topic(store, book), spoiler)
+            val words = credited(store.snapshot, reviewText(book, wording))
+            ThreadsClient.postCarousel(user, token, words, images, topic(store, book), spoiler)
+            mirror(context, store, words, images.map { it.second }, spoiler, topic(store, book), "your review of \u201C${book.displayTitle}\u201D", kind = "review", book = book)
             store.update { it.copy(threadsReviewed = it.threadsReviewed + (document to System.currentTimeMillis() / 1000), threadsError = null) }
             store.log(null, "Posted your review of \u201C${book.displayTitle}\u201D to Threads")
             io.github.prithirajn.readync.sync.Notices.posted("Threads", "Your review of \u201C${book.displayTitle}\u201D", document)
@@ -447,13 +504,16 @@ object ThreadsAuto {
         val user = s.threadsUserId ?: return "Connect Threads first (Services \u203A Threads)."
         if (slides.size < 2) return "Not enough to post yet."
         return try {
+            startCapture()
             val alt = "Reading recap of " + book.displayTitle + ". "
             val images = slides.take(20).mapIndexed { i, bmp ->
                 val png = java.io.ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-                ThreadsClient.upload(png) to (alt + "Picture ${i + 1} of ${slides.size}.")
+                upload(png) to (alt + "Picture ${i + 1} of ${slides.size}.")
             }
             val spoiler = spoils(s, book, listOfNotNull(passage, book.review?.let { QuoteCard.cleanReview(it) }).filter { it.isNotBlank() })
-            ThreadsClient.postCarousel(user, token, text.take(480), images, topic(store, book), spoiler)
+            val words = credited(store.snapshot, text.take(480))
+            ThreadsClient.postCarousel(user, token, words, images, topic(store, book), spoiler)
+            mirror(context, store, words, images.map { it.second }, spoiler, topic(store, book), "your recap of \u201C${book.displayTitle}\u201D", kind = "recap", book = book)
             store.update { it.copy(threadsError = null) }
             store.log(null, "Posted your recap of \u201C${book.displayTitle}\u201D to Threads")
             io.github.prithirajn.readync.sync.Notices.posted("Threads", "Your recap of \u201C${book.displayTitle}\u201D", document)
@@ -475,6 +535,7 @@ object ThreadsAuto {
         val styles = stylesFor(st, x.book)
         return try {
             val user = st.threadsUserId ?: return "Connect Threads first."
+            startCapture()
             val usedKey: String
             if (x.items.size == 1) {
                 val item = x.items[0]
@@ -485,7 +546,10 @@ object ThreadsAuto {
                 val words = if (item.clip.note.isNullOrBlank() && !isNote(item.clip.id))
                     aiCaption(context, st, x.book, listOf(item.clip))?.let { it + "\n\n" + bookLine(x.book) } ?: postText(item, x.book, st.threadsWithNote, picture = true)
                     else postText(item, x.book, st.threadsWithNote, picture = true)
-                ThreadsClient.post(user, token, words, imageUrl, altText(item, x.book), topic(store, x.book), io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, x.book, listOf(item.clip.text)))
+                val spoiler = io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, x.book, listOf(item.clip.text))
+                val text = credited(store.snapshot, words)
+                ThreadsClient.post(user, token, text, imageUrl, altText(item, x.book), topic(store, x.book), spoiler)
+                mirror(context, store, text, listOf(altText(item, x.book)), spoiler, topic(store, x.book), "a highlight from \u201C${x.book.displayTitle}\u201D", kind = "highlight", book = x.book, highlights = listOf(item))
                 usedKey = look.key
             } else {
                 // One style for every card in the post (a different one from the last post's).
@@ -497,7 +561,10 @@ object ThreadsAuto {
                 }
                 val passages = x.items.map { it.clip.text }
                 val words = aiCaption(context, st, x.book, x.items.map { it.clip })?.let { it + "\n\n" + bookLine(x.book) } ?: sessionText(x)
-                ThreadsClient.postCarousel(user, token, words, images, topic(store, x.book), x.items.any { io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, it.clip.id) } || spoils(st, x.book, passages))
+                val spoiler = x.items.any { io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, it.clip.id) } || spoils(st, x.book, passages)
+                val text = credited(store.snapshot, words)
+                ThreadsClient.postCarousel(user, token, text, images, topic(store, x.book), spoiler)
+                mirror(context, store, text, images.map { it.second }, spoiler, topic(store, x.book), "${x.items.size} highlights from \u201C${x.book.displayTitle}\u201D", kind = "highlight", book = x.book, highlights = x.items)
                 usedKey = order.last().key
             }
             val at = System.currentTimeMillis() / 1000
@@ -526,6 +593,8 @@ object ThreadsAuto {
     fun run(context: Context, store: Store, only: String? = null): String? {
         val r = runOnce(context, store, only)
         runCatching { scheduleNext(context, store.snapshot, System.currentTimeMillis() / 1000) }
+        // The full edition's own posting on its schedule (nothing in the shared edition); it doesn't need Threads.
+        if (only == null) runCatching { ProPosts.tick(context, store) }
         return r
     }
 
@@ -580,10 +649,14 @@ object ThreadsAuto {
                 val styles = stylesFor(st, book)
                 var look = (styles.filter { it.key != st.threadsLastLook }.ifEmpty { styles }).random()
                 try {
+                    startCapture()
                     // Always with its picture (never the words alone).
                     val (imageUrl, drawn) = pictureUrl(context, st, item, book, look, styles)
                     look = drawn
-                    ThreadsClient.post(st.threadsUserId!!, token, postText(item, book, st.threadsWithNote, picture = true), imageUrl, altText(item, book), topic(store, book), io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, book, listOf(item.clip.text)))
+                    val spoiler = io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, book, listOf(item.clip.text))
+                    val text = credited(st, postText(item, book, st.threadsWithNote, picture = true))
+                    ThreadsClient.post(st.threadsUserId!!, token, text, imageUrl, altText(item, book), topic(store, book), spoiler)
+                    mirror(context, store, text, listOf(altText(item, book)), spoiler, topic(store, book), "a highlight from \u201C${book.displayTitle}\u201D", kind = "highlight", book = book, highlights = listOf(item))
                     posted++
                     store.update { x ->
                         x.copy(

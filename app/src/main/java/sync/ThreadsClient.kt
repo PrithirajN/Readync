@@ -52,19 +52,19 @@ object ThreadsClient {
             .optString("access_token").takeIf { it.isNotBlank() } ?: throw ThreadsException("Threads didn't renew the token")
 
     /** A short-lived public file host: its name, and how to put a PNG up there (returns its address, or throws). */
-    private class Host(val name: String, val put: (ByteArray) -> String)
+    private class Host(val name: String, val put: (ByteArray, String, String) -> String)
 
-    private fun multipart(url: String, fields: Map<String, String>, fileField: String, png: ByteArray): io.github.prithirajn.readync.net.HttpResponse {
+    private fun multipart(url: String, fields: Map<String, String>, fileField: String, png: ByteArray, fileName: String = "quote.png", type: String = "image/png"): io.github.prithirajn.readync.net.HttpResponse {
         val boundary = "----readync" + System.nanoTime()
         val out = java.io.ByteArrayOutputStream()
         for ((k, v) in fields) out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$k\"\r\n\r\n$v\r\n".toByteArray())
-        out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$fileField\"; filename=\"quote.png\"\r\nContent-Type: image/png\r\n\r\n".toByteArray())
+        out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$fileField\"; filename=\"$fileName\"\r\nContent-Type: $type\r\n\r\n".toByteArray())
         out.write(png)
         out.write("\r\n--$boundary--\r\n".toByteArray())
         return Http.request(
             "POST", url,
             mapOf("Content-Type" to "multipart/form-data; boundary=$boundary", "User-Agent" to "Readync/1.0 (Android)", "Accept" to "*/*"),
-            raw = out.toByteArray(), timeoutMs = 90_000,
+            raw = out.toByteArray(), timeoutMs = if (png.size > 4_000_000) 240_000 else 90_000,
         )
     }
 
@@ -77,17 +77,17 @@ object ThreadsClient {
      * networks or regions get refused by one (an HTTP 403), so the next is tried.
      */
     private val hosts = listOf(
-        Host("Litterbox") { png ->
-            val r = multipart(imageHost, mapOf("reqtype" to "fileupload", "time" to "24h"), "fileToUpload", png)
+        Host("Litterbox") { png, name, type ->
+            val r = multipart(imageHost, mapOf("reqtype" to "fileupload", "time" to "24h"), "fileToUpload", png, name, type)
             r.body.trim().takeIf { r.ok && it.startsWith("https://") } ?: failed("Litterbox", r)
         },
-        Host("Uguu") { png ->
-            val r = multipart("https://uguu.se/upload", emptyMap(), "files[]", png)
+        Host("Uguu") { png, name, type ->
+            val r = multipart("https://uguu.se/upload", emptyMap(), "files[]", png, name, type)
             val url = runCatching { JSONObject(r.body).optJSONArray("files")?.optJSONObject(0)?.optString("url") }.getOrNull()
             url?.takeIf { r.ok && it.startsWith("https://") } ?: failed("Uguu", r)
         },
-        Host("tmpfiles.org") { png ->
-            val r = multipart("https://tmpfiles.org/api/v1/upload", emptyMap(), "file", png)
+        Host("tmpfiles.org") { png, name, type ->
+            val r = multipart("https://tmpfiles.org/api/v1/upload", emptyMap(), "file", png, name, type)
             val url = runCatching { JSONObject(r.body).optJSONObject("data")?.optString("url") }.getOrNull()
             // Its page address; the file itself is under /dl/.
             url?.takeIf { r.ok && it.contains("tmpfiles.org/") }?.replace("http://", "https://")?.replaceFirst("tmpfiles.org/", "tmpfiles.org/dl/") ?: failed("tmpfiles.org", r)
@@ -98,11 +98,14 @@ object ThreadsClient {
     @Volatile private var lastGood = 0
 
     /** Puts [png] up at a public address for a while, for Threads to copy. Returns that address. */
-    fun upload(png: ByteArray): String {
+    fun upload(png: ByteArray): String = upload(png, "quote.png", "image/png")
+
+    /** Any file (a JPEG, a video) put up the same way, under [fileName] as [type]. */
+    fun upload(bytes: ByteArray, fileName: String, type: String): String {
         val errors = ArrayList<String>()
         for (i in hosts.indices.sortedBy { if (it == lastGood) -1 else it }) {
             try {
-                return hosts[i].put(png).also { lastGood = i }
+                return hosts[i].put(bytes, fileName, type).also { lastGood = i }
             } catch (e: Exception) {
                 errors += e.message ?: hosts[i].name
             }

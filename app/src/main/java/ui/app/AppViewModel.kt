@@ -3084,6 +3084,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** What happens when a book is set aside: its scene, off your bookcases, counted toward the year. */
     fun setDnfScene(on: Boolean) = store.update { DnfPrefs.withScene(it, on) }
+    // ---- Bluesky, Mastodon, X ----
+
+    fun updateSocials(change: (io.github.prithirajn.readync.sync.Socials.Config) -> io.github.prithirajn.readync.sync.Socials.Config) =
+        store.update { s -> io.github.prithirajn.readync.sync.Socials.withConfig(s, change(io.github.prithirajn.readync.sync.Socials.config(s))) }
+
+    /** Signs in to Bluesky to check the handle and app password, then keeps them (posting switched on). */
+    fun connectBluesky(handle: String, appPassword: String, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val b = io.github.prithirajn.readync.sync.Socials.Bluesky(on = true, handle = handle.removePrefix("@"), appPassword = appPassword)
+            val r = io { runCatching { io.github.prithirajn.readync.sync.BlueskyClient.session(b) } }
+            r.onSuccess { (_, did) -> updateSocials { it.copy(bluesky = b.copy(did = did)) } }
+            done(r.exceptionOrNull()?.let { it.message ?: "Couldn't sign in to Bluesky" })
+        }
+    }
+
+    /** Checks the Mastodon token on its server, then keeps it (posting switched on). */
+    fun connectMastodon(server: String, token: String, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            val m = io.github.prithirajn.readync.sync.Socials.Mastodon(on = true, server = server.removePrefix("https://").removePrefix("http://").trimEnd('/'), token = token)
+            val r = io { runCatching { io.github.prithirajn.readync.sync.MastodonClient.whoAmI(m) } }
+            r.onSuccess { acct -> updateSocials { it.copy(mastodon = m.copy(account = acct)) } }
+            done(r.exceptionOrNull()?.let { it.message ?: "Couldn't check that token" })
+        }
+    }
+
+    /** Any change to the app's data (for settings kept outside the usual fields). */
+    fun updateSnapshot(change: (Snapshot) -> Snapshot) = store.update(change)
+
+    /** [work] off the main thread with the app and its data, then [done] with what it gave back. */
+    fun <T> background(work: (android.content.Context, io.github.prithirajn.readync.data.Store) -> T, done: (T) -> Unit) {
+        viewModelScope.launch { done(io { work(getApplication(), store) }) }
+    }
+
+    /** The daily "Ready to post on X" notification: on or off, and its time. */
+    fun setXDaily(on: Boolean, hour: Int, minute: Int) {
+        updateSocials { it.copy(x = io.github.prithirajn.readync.sync.Socials.XDaily(on, hour, minute)) }
+        io.github.prithirajn.readync.sync.XDailyWorker.schedule(getApplication(), on, hour, minute)
+    }
+
+    /** Threads posts end with a link to Readync's public repo, or don't (the full edition only). */
+    fun setThreadsCredit(on: Boolean) = store.update { ThreadsAuto.withCredit(it, on) }
     /** A finish celebrated: not shown again. */
     fun markFinishCelebrated(document: String) = store.update { FinishCelebrations.mark(it, document) }
     fun setDnfOffShelves(on: Boolean) = store.update { DnfPrefs.withOffShelves(it, on) }

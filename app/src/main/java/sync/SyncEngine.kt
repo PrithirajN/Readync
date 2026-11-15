@@ -722,6 +722,9 @@ class SyncEngine(private val store: Store) {
         importRatings(t, items)
     }
 
+    /** Where the books Seekquel last sent without a rating are kept (see importRatings). */
+    private val SQ_NO_RATING = "seekquel.noRating"
+
     /**
      * Seekquel is the source of your ratings and reading dates. Its rating replaces the one here,
      * except one you just set here that's on its way to Seekquel (Seekquel's sync on and the
@@ -731,6 +734,7 @@ class SyncEngine(private val store: Store) {
     internal fun importRatings(source: Tracker, items: List<LibraryBook>) {
         val rated = ArrayList<String>()
         val dated = ArrayList<String>()
+        var clearedRatings: List<String>? = null
         val now = System.currentTimeMillis()
         store.update { s ->
             val books = HashMap(s.books)
@@ -743,6 +747,12 @@ class SyncEngine(private val store: Store) {
             val matched = HashSet<String>()
             val svc = s.service(source.id)
             val sending = svc.linked && svc.enabled && !svc.needsReauth
+            // Books Seekquel sent without their rating last time: cleared only when it happens twice running,
+            // since one answer from Seekquel can come without ratings (the rating then vanished from the
+            // book page while Seekquel still had it, and came back the sync after).
+            val noRatingBefore = s.extras[SQ_NO_RATING].orEmpty().split('\n').filter { it.isNotBlank() }.toSet()
+            val noRatingNow = HashSet<String>()
+            val cleared = ArrayList<String>()
             for (item in items) {
                 val doc = ratedDocument(s, source, item) ?: continue
                 var b = books[doc] ?: continue
@@ -760,9 +770,12 @@ class SyncEngine(private val store: Store) {
                             rated += b.displayTitle
                         }
                     } else if (last != null) {
-                        // Cleared on Seekquel: cleared here too, if you hadn't changed it here.
-                        seen.remove(doc)
-                        if (b.rating == last) b = b.copy(rating = null)
+                        // Cleared on Seekquel: cleared here too, if you hadn't changed it here, once it's
+                        // been missing two syncs running.
+                        if (doc in noRatingBefore) {
+                            seen.remove(doc)
+                            if (b.rating == last) { b = b.copy(rating = null); cleared += b.displayTitle }
+                        } else noRatingNow += doc
                     }
                     // Seekquel already has it: nothing to send back.
                     if (ownLink != null && b.rating == r) links[ownLink.key] = ownLink.copy(reviewSent = reviewPrint(b))
@@ -803,10 +816,12 @@ class SyncEngine(private val store: Store) {
             s.copy(
                 books = books, links = links, pending = pending, seekquelRatings = seen, seekquelDates = seenDates,
                 progressAsks = asks, progressDenied = denied,
-            )
+                extras = s.extras + (SQ_NO_RATING to noRatingNow.joinToString("\n")),
+            ).also { if (cleared.isNotEmpty()) clearedRatings = cleared }
         }
         fun names(l: List<String>) = l.take(3).joinToString(", ") + if (l.size > 3) " and ${l.size - 3} more" else ""
         if (rated.isNotEmpty()) store.log(source.id, "Rating from ${source.name}: ${names(rated)}")
+        clearedRatings?.let { store.log(source.id, "Rating removed on ${source.name}, so removed here: ${names(it)}") }
         if (dated.isNotEmpty()) store.log(source.id, "Reading dates from ${source.name}: ${names(dated)}")
     }
 
@@ -3337,7 +3352,8 @@ class SyncEngine(private val store: Store) {
                     if (link.externalId == null || link.source == LinkSource.NONE || !link.confirmed) continue
                     val fp = reviewPrint(b)
                     // A refused one is tried again once a day (and right away when the review changes).
-                    val failedToday = "x:$fp:${Shelves.day()}"
+                    // ...and right away after an app update too, which may have fixed what was refused.
+                    val failedToday = "x:$fp:${Shelves.day()}:${io.github.prithirajn.readync.BuildConfig.VERSION_CODE}"
                     if (link.reviewSent == fp || link.reviewSent == failedToday) continue
                     // The rating came from Seekquel: it already has it.
                     if (t.id == SeekquelTracker.id && b.rating != null && store.snapshot.seekquelRatings[b.document] == b.rating) {

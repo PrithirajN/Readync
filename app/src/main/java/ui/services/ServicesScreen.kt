@@ -311,6 +311,12 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                             else -> "@${state.threadsUser ?: "you"} · posting off"
                         },
                     ) { page = "threads" }
+                    RowDivider()
+                    // The same posts on Bluesky and Mastodon (and the full edition's own), and a daily one-tap for X.
+                    val sc = io.github.prithirajn.readync.sync.Socials.config(state)
+                    val on = listOfNotNull("Bluesky".takeIf { sc.bluesky.on && sc.bluesky.did != null }, "Mastodon".takeIf { sc.mastodon.on && sc.mastodon.account != null }) +
+                        ProPosts.on(state) + listOfNotNull("X".takeIf { sc.x.on })
+                    NavRow(R.drawable.lucide_globe, "Post elsewhere", if (on.isEmpty()) (listOf("Bluesky", "Mastodon") + ProPosts.offered).joinToString(", ") + ", and X in one tap" else on.joinToString(" · ")) { page = "socials" }
                     }
                     // Each place your highlights can go as text, with its own page of options.
                     VSpace(14)
@@ -396,7 +402,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
         SettingsSheet(
             when (p) {
                 "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"; "kohl" -> "KOReader highlights"
-                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "exports" -> "Export highlights"; "readwise" -> "Readwise"; "notion" -> "Notion"; "obsidian" -> "Obsidian"; "storage" -> "Storage"; else -> "App update"
+                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "socials" -> "Post elsewhere"; "exports" -> "Export highlights"; "readwise" -> "Readwise"; "notion" -> "Notion"; "obsidian" -> "Obsidian"; "storage" -> "Storage"; else -> "App update"
             },
             onClose = { page = null },
         ) {
@@ -431,6 +437,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 }
                 "kohl" -> KoHlCard(vm, state, onAdd = { addingKoHl = true }, onRemove = { page = null; removingKoHl = true })
                 "threads" -> ThreadsCard(vm, state)
+                "socials" -> SocialsCard(vm, state)
                 "exports" -> ExportsCard(vm, state)
                 "readwise", "notion", "obsidian" -> ExportPage(vm, state, p)
                 "moon" -> MoonCard(vm, state, onAdd = { addingMoon = true }, onGuide = { moonGuide = true }, onRemove = { page = null; removingMoon = true })
@@ -3615,6 +3622,10 @@ private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
                 )
                 ThreadsSwitch("Show my note", "With its passage, on the card or as the post's words", state.threadsWithNote) { vm.setThreadsOptions(withNote = it) }
                 ThreadsSwitch("Post notes without a passage", "A note on a bookmark goes up as a handwritten card", state.threadsNotes) { vm.setThreadsOptions(notes = it) }
+                // Your edition only: a line under each post pointing people to Readync's public repo.
+                if (io.github.prithirajn.readync.Edition.full) {
+                    ThreadsSwitch("Add \u201CBuilt with Readync\u201D", "A line with the link to Readync on GitHub under each post, worded a few ways", ThreadsAuto.credit(state)) { vm.setThreadsCredit(it) }
+                }
 
                 VSpace(6)
                 RowDivider()

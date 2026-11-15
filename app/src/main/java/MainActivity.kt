@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
             ACTION_RELEASES -> AppAction.Releases
             ACTION_POSTS -> AppAction.Posts
             ACTION_DEALS -> AppAction.Deals
+            ACTION_X_POST -> { said(io.github.prithirajn.readync.sync.XQueue.open(this)); null }
             ACTION_SFF -> AppAction.Sff(intent.getStringExtra(EXTRA_STORY))
             // Screenshots or a screen recording of a book post: its books found on Catalogs › Posts.
             Intent.ACTION_SEND_MULTIPLE -> media(intent)?.let { io.github.prithirajn.readync.ui.PostShare.media.value = it; said("Looking for books in those pictures…"); AppAction.Posts }
@@ -123,6 +124,8 @@ class MainActivity : ComponentActivity() {
         const val ACTION_RELEASES = "io.github.prithirajn.trackersync.RELEASES"
         const val ACTION_POSTS = "io.github.prithirajn.trackersync.POSTS"
         const val ACTION_DEALS = "io.github.prithirajn.trackersync.DEALS"
+        /** The daily "Ready to post on X" notification: X opens with the oldest waiting post. */
+        const val ACTION_X_POST = "io.github.prithirajn.trackersync.X_POST"
         const val EXTRA_DOCUMENT = "document"
         const val ACTION_SFF = "io.github.prithirajn.trackersync.SFF"
         const val EXTRA_STORY = "story"

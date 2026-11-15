@@ -93,7 +93,8 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 - **Wrapped**: your month or year in reading as story slides, down to your reader type.
 - **Shelf poster**: a year's books as spines on a shelf or a wall of covers.
 - **Post to Threads** in a tap, or let a book's new highlights go up after a sync (off until you turn it on).
-- **Post to X**: the X app opens with the picture and words filled in.
+- **Post to X**: the X app opens with the picture and words filled in; or let each Threads post wait for X, with a notification at your chosen time each day that opens X filled in, for one tap.
+- **Bluesky and Mastodon**: what goes up on Threads goes up on each of them too, with the same words and pictures (an app password for Bluesky, any Mastodon server's token).
 - **Daily review**, a **reading timer** for paper books, and **Who's this?** for characters (on-device AI, no spoilers).
 
 <details>
