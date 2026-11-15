@@ -33,8 +33,23 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- Shares from other apps land here, unseen, in the app you shared from: a book post or a
+             shop's page is handled in the background (so Back takes you straight back), anything
+             else is passed on to the one Readync window. -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <!-- Share a book link (Goodreads, Hardcover, StoryGraph, Amazon…) to add it as a paper book. -->
             <intent-filter android:label="@string/share_add_book">
                 <action android:name="android.intent.action.SEND" />
@@ -49,9 +64,6 @@
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
             </intent-filter>
-            <meta-data
-                android:name="android.app.shortcuts"
-                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- The app's icon on the home screen, one entry per colour; only one is ever on. With

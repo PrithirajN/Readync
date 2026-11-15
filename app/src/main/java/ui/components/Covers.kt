@@ -109,17 +109,20 @@ object CoverCache {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
-    fun cached(url: String): Bitmap? = memory.get(url)
+    /** The cover in memory, unless something has recycled it (then it's dropped, to be read again). */
+    private fun live(url: String): Bitmap? = memory.get(url)?.let { if (it.isRecycled) { memory.remove(url); null } else it }
+
+    fun cached(url: String): Bitmap? = live(url)
 
     /** The cover in memory, when it's big enough for [heightPx] (a small thumbnail doesn't stand in for a big cover). */
-    fun cached(url: String, heightPx: Int): Bitmap? = memory.get(url)?.takeIf { it.height >= heightPx * 0.7f }
+    fun cached(url: String, heightPx: Int): Bitmap? = live(url)?.takeIf { it.height >= heightPx * 0.7f }
 
     private fun key(url: String): String =
         MessageDigest.getInstance("MD5").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
 
     /** A cover already on the phone (memory or disk), or null; never downloads. For the widget. */
     fun loadCached(context: Context, url: String, maxHeightPx: Int): Bitmap? {
-        memory.get(url)?.let { return it }
+        live(url)?.let { return it }
         val file = File(File(context.cacheDir, "covers"), key(url))
         if (!file.exists()) return null
         return load(context, url, maxHeightPx)
