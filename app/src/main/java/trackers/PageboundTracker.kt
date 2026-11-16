@@ -255,12 +255,23 @@ object PageboundTracker : Tracker {
                 ?.let { o -> (o.obj("user_review") ?: o.obj("user_book")?.obj("user_review"))?.let { it.idString("id") ?: it.str("uuid") } }
         // Where each try went and what came back, for the log when none is taken.
         val tried = ArrayList<String>()
+        /** The review's other ids seen (its uuid beside its number, or the reverse). */
+        val altIds = LinkedHashSet<String>()
+        fun noteIds(o: JSONObject?) {
+            o ?: return
+            for (k in listOf("user_review", "review", "my_review", "current_user_review")) o.obj(k)?.let { r -> listOfNotNull(r.idString("id"), r.str("uuid")).forEach { altIds += it } }
+            o.obj("user_book")?.let { noteIds(it) }
+        }
+        noteIds(ub)
+        /** What Pagebound said when it refused (its reason, or the start of its answer). */
+        var said: String? = null
         /** The first of [ways] Pagebound doesn't answer 404 ("no such address") to. */
         fun firstAnswered(ways: List<Triple<String, String, JSONObject>>): HttpResponse {
             var last: HttpResponse? = null
             for ((method, path, payload) in ways) {
                 val r = request(session, method, path, payload)
                 tried += "$method ${path.substringBefore('?')} ${r.code}"
+                if (r.code in 400..499 && r.code != 404) said = serverReason(r.body) ?: r.body.trim().take(160).takeIf { it.isNotEmpty() && !it.startsWith("<") }
                 if (r.code != 404) return r
                 last = r
             }
@@ -274,6 +285,7 @@ object PageboundTracker : Tracker {
                 // user book or the book instead, so those are tried when /reviews isn't there.
                 return firstAnswered(listOf(
                     Triple("POST", "/api/v1/reviews", body),
+                    Triple("POST", "/api/v1/user_reviews", JSONObject().put("user_review", review)),
                     Triple("POST", "/api/v1/user_books/${Http.enc(ubKey)}/review", body),
                     Triple("POST", "/api/v1/user_books/${Http.enc(ubKey)}/reviews", body),
                     Triple("POST", "/api/v1/books/${Http.enc(bookId)}/reviews", body),
@@ -283,10 +295,20 @@ object PageboundTracker : Tracker {
             val edit = JSONObject(review.toString()).put("is_edited", true)
             listOf("book_id", "user_book_id", "is_dnf").forEach { edit.remove(it) }
             val editBody = JSONObject().put("review", edit)
-            return firstAnswered(listOf(
-                Triple("PUT", "/api/v1/reviews/${Http.enc(id)}", editBody),
-                Triple("PATCH", "/api/v1/reviews/${Http.enc(id)}", editBody),
+            // Its other name (a review can be known by a number and a uuid; the address may want either),
+            // and "user_reviews" too: Pagebound calls a book's own review its "user_review".
+            val ids = listOf(id) + altIds.filter { it != id }
+            val userReviewBody = JSONObject().put("user_review", edit)
+            return firstAnswered(ids.flatMap { x ->
+                listOf(
+                    Triple("PUT", "/api/v1/reviews/${Http.enc(x)}", editBody),
+                    Triple("PATCH", "/api/v1/reviews/${Http.enc(x)}", editBody),
+                    Triple("PUT", "/api/v1/user_reviews/${Http.enc(x)}", userReviewBody),
+                    Triple("PATCH", "/api/v1/user_reviews/${Http.enc(x)}", userReviewBody),
+                )
+            } + listOf(
                 Triple("PUT", "/api/v1/user_books/${Http.enc(ubKey)}/review", editBody),
+                Triple("PATCH", "/api/v1/user_books/${Http.enc(ubKey)}/user_review", userReviewBody),
             ))
         }
         var r = send()
@@ -300,6 +322,7 @@ object PageboundTracker : Tracker {
         }
         // 422 ("User book has already been taken"): a review is there already. Find it and update it.
         if (r.code == 422 && existingId == null) {
+            runCatching { JSONObject(r.body) }.getOrNull()?.let { noteIds(it) }
             existingId = runCatching { JSONObject(r.body) }.getOrNull()?.let { reviewIdIn(it, userBookId) }
                 ?: findReview(session, link, ubKey, userBookId)
             if (existingId != null) r = send()
@@ -310,7 +333,7 @@ object PageboundTracker : Tracker {
             review.put("overall_rating", Math.round(q.toDouble() * 2) / 2.0)
             r = send()
         }
-        if (!r.ok) throw ServiceException("Pagebound didn't take the review (HTTP ${r.code}" + (serverReason(r.body)?.let { ": $it" } ?: "") + "; tried " + tried.distinct().joinToString(", ") + ")")
+        if (!r.ok) throw ServiceException("Pagebound didn't take the review (HTTP ${r.code}" + ((serverReason(r.body) ?: said)?.let { ": $it" } ?: "") + "; tried " + tried.distinct().joinToString(", ") + ")")
     }
 
     /**

@@ -87,7 +87,10 @@ object HardcoverTracker : Tracker {
             }
             throw ServiceException("Hardcover: $msg")
         }
-        return o.obj("data") ?: throw ServiceException("Hardcover sent no data (HTTP ${r.code})")
+        // No data: what Hardcover said instead (an "error" or "message"), so the log says why.
+        val why = (o.str("error") ?: o.str("message") ?: o.obj("error")?.str("message"))?.take(200)
+        if (r.code == 403 && why?.lowercase()?.let { "token" in it || "expired" in it || "jwt" in it } == true) throw AuthException("Hardcover rejected the API token; paste a new one")
+        return o.obj("data") ?: throw ServiceException("Hardcover sent no data (HTTP ${r.code}" + (why?.let { ": $it" } ?: "") + ")")
     }
 
     private fun me(data: JSONObject): JSONObject? = data.arr("me")?.optJSONObject(0) ?: data.obj("me")

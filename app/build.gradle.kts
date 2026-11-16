@@ -15,8 +15,8 @@ android {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 394
-        versionName = "3.9.12"
+        versionCode = 397
+        versionName = "3.9.15"
         // Only the processors phones and e-readers use (64-bit and older 32-bit ARM). The on-device
         // AI, text recognition and barcode libraries are native code, one copy per processor type, so
         // leaving out x86 (emulators, a few old tablets) takes away about half the APK.
