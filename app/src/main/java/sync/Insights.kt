@@ -31,7 +31,7 @@ object Insights {
 
     fun week(s: Snapshot, today: LocalDate, todayPages: Int? = null): Week {
         fun pages(d: LocalDate): Int =
-            if (d == today) (todayPages ?: s.pagesByDay[d.toString()] ?: 0) else (s.pagesByDay[d.toString()] ?: 0)
+            if (d == today) (todayPages ?: s.pagesByDay[d.toString()] ?: 0) else (Shelves.allDays(s)[d.toString()] ?: 0)
         val days = (6 downTo 0).map { today.minusDays(it.toLong()) }.map { it to pages(it) }
         val prev = (13 downTo 7).sumOf { pages(today.minusDays(it.toLong())) }
         val best = days.filter { it.second > 0 }.maxByOrNull { it.second }

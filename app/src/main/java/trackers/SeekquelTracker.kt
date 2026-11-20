@@ -88,8 +88,9 @@ object SeekquelTracker : Tracker {
             Http.request(method, server(session) + path, json + ("Authorization" to "Bearer $key"), body?.toString())
         }
         if (r.code == 401) throw AuthException("Seekquel disconnected this app; link it again")
-        if (r.code == 429) throw ServiceException("Seekquel is rate-limiting; will retry")
-        if (r.code == 503 && r.body.contains("feature_disabled")) throw ServiceException("Seekquel has reading apps switched off for now; will retry")
+        if (r.code == 429) throw io.github.prithirajn.readync.net.BusyException("Seekquel is rate-limiting; will retry", io.github.prithirajn.readync.net.BusyException.retryAfter(r))
+        // Switched off on Seekquel's side for a while: kept, and asked again in a few hours.
+        if (r.code == 503 && r.body.contains("feature_disabled")) throw io.github.prithirajn.readync.net.BusyException("Seekquel has reading apps switched off for now; will retry", io.github.prithirajn.readync.net.BusyException.retryAfter(r) ?: 3 * 3600L)
         return r
     }
 
@@ -593,6 +594,122 @@ object SeekquelTracker : Tracker {
             cursor = next?.takeIf { it.isNotBlank() && it != cursor }
             pages++
         } while (cursor != null && pages < 30)
+        return out
+    }
+
+    /**
+     * Your whole Seekquel history, through your Seekquel account (the same calls its own app makes):
+     * every book with its status, dates, rating and page count; your reviews; every highlight and
+     * note in your notebook; and day by day, the pages and minutes of each reading log. Without the
+     * account signed in, only what the Reading API shares ([library]).
+     */
+    fun history(session: Session, progress: (String) -> Unit = {}): List<LibraryBook> {
+        if (session.data.str("accountToken") == null) return library(session)
+        fun pages(path: String, max: Int = 200): List<JSONObject> {
+            val out = ArrayList<JSONObject>()
+            var cursor: String? = null
+            var n = 0
+            do {
+                val sep = if (path.contains('?')) "&" else "?"
+                val r = account(session, "GET", path + (cursor?.let { "${sep}cursor=${Http.enc(it)}" } ?: ""))
+                if (!r.ok) throw ServiceException("Seekquel didn't send $path (${accountError(r) ?: "HTTP ${r.code}"})")
+                val root = JSONObject(r.body)
+                out += root.arr("data")?.objects() ?: emptyList()
+                val next = root.obj("meta")?.str("next_cursor")?.takeIf { root.obj("meta")?.optBoolean("has_more", true) != false }
+                cursor = next?.takeIf { it.isNotBlank() && it != cursor }
+                n++
+            } while (cursor != null && n < max)
+            return out
+        }
+        fun day(v: String?): Long? = v?.takeIf { it.isNotBlank() }?.let { parseTime(it) }
+
+        progress("your library")
+        val books = pages("/user-books")
+        progress("your reviews")
+        val reviews = runCatching { pages("/reviews/mine") }.getOrDefault(emptyList())
+            .filter { !it.optBoolean("is_draft", false) }
+            .associateBy { it.str("user_book_id") ?: "" }
+        progress("your notebook")
+        val notes = runCatching { pages("/me/notes", max = 500) }.getOrDefault(emptyList())
+            .groupBy { it.str("user_book_id") ?: it.obj("user_book")?.str("id") ?: "" }
+
+        val out = ArrayList<LibraryBook>()
+        val read = books.filter { it.str("status") != "want_to_read" }
+        var done = 0
+        for (b in books) {
+            val ubId = b.str("id") ?: continue
+            val work = b.obj("work") ?: continue
+            val title = work.str("display_title") ?: work.str("title") ?: continue
+            val authors = work.optJSONArray("authors")?.let { a ->
+                (0 until a.length()).mapNotNull { i -> (a.opt(i) as? JSONObject)?.str("name") ?: (a.opt(i) as? String) }.joinToString(", ")
+            }?.ifBlank { null }
+            val status = when (b.str("status")) {
+                "want_to_read" -> ReadStatus.TO_READ; "reading" -> ReadStatus.READING; "paused", "on_hold" -> ReadStatus.PAUSED
+                "read", "finished" -> ReadStatus.FINISHED; "did_not_finish", "dnf" -> ReadStatus.DNF; else -> null
+            }
+            // Day by day: each read's logs (pages and minutes on each day), for books you've opened.
+            val days = HashMap<String, io.github.prithirajn.readync.data.ReadDay>()
+            if (status != ReadStatus.TO_READ && status != null) {
+                done++
+                if (done % 10 == 0) progress("your reading days ($done of ${read.size})")
+                runCatching {
+                    val sr = account(session, "GET", "/user-books/${Http.enc(ubId)}/sessions")
+                    val sessions = if (sr.ok) JSONObject(sr.body).arr("data")?.objects() ?: emptyList() else emptyList()
+                    for (sess in sessions) {
+                        val sid = sess.str("id") ?: continue
+                        var page = 1
+                        while (page in 1..40) {
+                            val tr = account(session, "GET", "/user-books/${Http.enc(ubId)}/sessions/${Http.enc(sid)}/timeline" + if (page > 1) "?page=$page" else "")
+                            if (!tr.ok) break
+                            val root = JSONObject(tr.body)
+                            for (e in root.arr("data")?.objects() ?: emptyList()) {
+                                val log = e.obj("log") ?: continue
+                                val d = (log.str("date") ?: e.str("date"))?.take(10) ?: continue
+                                val p = log.num("pages_read")?.toInt()?.takeIf { it > 0 }
+                                val m = log.num("minutes_read")?.toInt()?.takeIf { it > 0 }
+                                if (p == null && m == null) continue
+                                val had = days[d]
+                                days[d] = io.github.prithirajn.readync.data.ReadDay(
+                                    pages = listOfNotNull(had?.pages, p).sum().takeIf { it > 0 },
+                                    minutes = listOfNotNull(had?.minutes, m).sum().takeIf { it > 0 },
+                                    source = "seekquel",
+                                )
+                            }
+                            page = root.obj("meta")?.num("next_page")?.toInt()?.takeIf { it > page } ?: 0
+                        }
+                    }
+                }
+            }
+            val rv = reviews[ubId]
+            val review = rv?.let { r -> listOfNotNull(r.str("one_liner"), r.str("body")).filter { it.isNotBlank() }.joinToString("\n\n") }?.ifBlank { null }
+            val quotes = notes[ubId].orEmpty().mapNotNull { n ->
+                val text = n.str("body")?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val isNote = n.str("type") == "note"
+                io.github.prithirajn.readync.data.ImportedQuote(
+                    text = text, note = null,
+                    createdAt = n.str("created_at")?.let { parseTime(it) },
+                    page = n.num("page_number")?.toInt(),
+                ).takeIf { !isNote }
+            }
+            out += LibraryBook(
+                id = work.str("id") ?: ubId,
+                title = title,
+                author = authors,
+                coverUrl = b.str("cover_url") ?: work.str("display_cover_url"),
+                status = status,
+                fraction = b.num("progress_percent")?.let { (it / 100.0).coerceIn(0.0, 1.0) } ?: if (status == ReadStatus.FINISHED) 1.0 else null,
+                updatedAt = b.str("updated_at")?.let { parseTime(it) } ?: 0L,
+                keys = setOfNotNull(work.str("id")?.let { "work:$it" }, "userbook:$ubId", b.obj("edition")?.str("isbn_13")?.let { "isbn:$it" }),
+                finishedAt = day(b.str("finished_at")) ?: rv?.str("reader_finished_at")?.let { parseTime(it) },
+                startedAt = day(b.str("started_at")),
+                rating = b.num("rating")?.takeIf { it > 0 } ?: rv?.num("overall_rating")?.takeIf { it > 0 },
+                pageCount = b.num("page_count")?.toInt()?.takeIf { it > 0 } ?: work.num("page_count")?.toInt()?.takeIf { it > 0 },
+                mediaKind = b.str("media_kind"),
+                review = review,
+                days = days,
+                quotes = quotes,
+            )
+        }
         return out
     }
 

@@ -75,7 +75,8 @@ object HardcoverTracker : Tracker {
             )
         }
         if (r.code == 401) throw AuthException("Hardcover rejected the API token; paste a new one")
-        if (r.code == 429) throw ServiceException("Hardcover is rate-limiting; will retry")
+        if (r.code == 429) throw io.github.prithirajn.readync.net.BusyException("Hardcover is rate-limiting; will retry", io.github.prithirajn.readync.net.BusyException.retryAfter(r))
+        if (r.code in 500..599) throw io.github.prithirajn.readync.net.BusyException("Hardcover is having trouble (HTTP ${r.code}); will retry")
         val o = runCatching { JSONObject(r.body) }.getOrNull()
             ?: throw ServiceException("Hardcover answered HTTP ${r.code}")
         val errors = o.arr("errors")?.objects() ?: emptyList()
@@ -782,7 +783,7 @@ object HardcoverTracker : Tracker {
         val res = data.obj("update_user_book_read") ?: data.obj("insert_user_book_read")
         res?.str("error")?.let { throw ServiceException("Hardcover: $it") }
         // Hardcover sometimes throttles with an empty 200: only a returned read counts as written.
-        if (res?.obj("user_book_read")?.long("id") == null) throw ServiceException("Hardcover didn't confirm the progress; will retry")
+        if (res?.obj("user_book_read")?.long("id") == null) throw io.github.prithirajn.readync.net.BusyException("Hardcover didn't confirm the progress (it throttles with an empty answer); will retry")
     }
 
     // ---- finish flow: rating, review, dates ----
@@ -864,7 +865,7 @@ object HardcoverTracker : Tracker {
             )
             val res = data.obj("insert_user_book_read")
             res?.str("error")?.let { throw ServiceException("Hardcover: $it") }
-            if (res?.obj("user_book_read")?.long("id") == null) throw ServiceException("Hardcover didn't confirm the dates; will retry")
+            if (res?.obj("user_book_read")?.long("id") == null) throw io.github.prithirajn.readync.net.BusyException("Hardcover didn't confirm the dates (it throttles with an empty answer); will retry")
             return
         }
         val r = read
@@ -888,7 +889,7 @@ object HardcoverTracker : Tracker {
         val res = data.obj("update_user_book_read")
         res?.str("error")?.let { throw ServiceException("Hardcover: $it") }
         // Hardcover sometimes throttles with an empty 200: only a returned read counts as written.
-        if (res?.obj("user_book_read")?.long("id") == null) throw ServiceException("Hardcover didn't confirm the dates; will retry")
+        if (res?.obj("user_book_read")?.long("id") == null) throw io.github.prithirajn.readync.net.BusyException("Hardcover didn't confirm the dates (it throttles with an empty answer); will retry")
     }
 
     override fun findByIsbn(session: Session, isbn: String): List<RemoteBook> {

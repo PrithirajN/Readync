@@ -169,19 +169,17 @@ fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
     val listState = rememberLazyListState()
     val open: (SffFeed.Story, Int) -> Unit = { s, i -> reading = s.cluster to i }
 
-    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp)) {
+    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp + TabBarSpace)) {
         item(key = "head") {
-            Column(PagePadding) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        val today = LocalDate.now()
-                        Eyebrow(today.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault()) + ", " + today.dayOfMonth + " " + today.month.getDisplayName(TextStyle.FULL, Locale.getDefault()))
-                        PageTitle("SFF")
-                    }
+            Column {
+                val today = LocalDate.now()
+                TabHeader("news · " + today.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault()) + ", " + today.dayOfMonth + " " + today.month.getDisplayName(TextStyle.FULL, Locale.getDefault()), "SFF") {
                     IconCircleButton(R.drawable.lucide_refresh_cw, "Refresh the news", { vm.refreshSff(force = true) }, busy = state.sffLoading, tint = c.accentText)
                 }
+                Column(Modifier.padding(horizontal = 16.dp)) {
                 VSpace(12)
                 Segmented(SffView.entries, view, { it.label }, { view = it; openSector = null; openTopic = null }, Modifier.fillMaxWidth())
+            }
             }
         }
 

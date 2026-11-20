@@ -34,7 +34,7 @@ server), from physical books and from web novels. Then it updates **Hardcover**,
 
 You read, and your trackers keep up. You don't have to update page numbers by hand on six sites.
 
-It's drawn like a small reading gadget: each book sits on a dark screen with a pixel percentage that rolls like an odometer, the buttons are keys that sink with a click you can feel, switches glow orange when on, and services each have their own status light.
+It's printed like a risograph zine: bold spot inks on grained paper (dark plum by night, warm white by day), set in Bodoni Moda and Literata. Each tab has its own ink, and the thumb cuts along the bottom edge rise when chosen. One small colour comes from the cover of the book you're reading: its ribbon, progress bar and spine. The ribbon bookmark hangs from the top of the page: tilt the phone and it swings, flick it sideways, or pull it down to open the book. Titles slide into register, highlights sweep across, buttons stamp and splash under your finger, and every motion rests when the phone's animations are off.
 
 ## Features
 
@@ -46,6 +46,7 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 - **Never sent backwards**: trackers keep the furthest place you've reached. A big jump back (a reset device, the wrong copy opened) asks before it's used, and a finished book opened again asks "Reading it again?" once.
 - **One post per passage**: the same highlight arriving from two readers goes to each tracker once, and an edited one replaces its old entry where the tracker allows.
 - **The same book twice?** Two copies that look alike ask to be joined or kept apart; nothing is joined by itself.
+- **Nothing lost when a site struggles**: a tracker that's busy, rate-limiting or down keeps your updates queued (without counting them as failed) and is left alone for a while before it's asked again. Goodreads' and StoryGraph's bot checks are cleared the way a browser would, instead of asking you to sign in again, and only a real sign-out does. Reading dates a tracker didn't take are tried again on the next syncs.
 
 ### ✍️ Highlights, ratings and reviews
 - **Highlights and notes** go to every tracker that takes them (some are opt-in).
@@ -95,6 +96,7 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 - **Post to Threads** in a tap, or let a book's new highlights go up after a sync (off until you turn it on).
 - **Post to X**: the X app opens with the picture and words filled in; or let each Threads post wait for X, with a notification at your chosen time each day that opens X filled in, for one tap.
 - **Bluesky and Mastodon**: what goes up on Threads goes up on each of them too, with the same words and pictures (an app password for Bluesky, any Mastodon server's token).
+- **One phone sends**: with Readync on two phones, only one sends progress, highlights, reviews and posts, so nothing goes out twice (the other still shows everything). With one phone there's nothing to set; restoring a backup asks whether Readync stays on your other phone too.
 - **Daily review**, a **reading timer** for paper books, and **Who's this?** for characters (on-device AI, no spoilers).
 
 <details>
@@ -113,6 +115,7 @@ It's drawn like a small reading gadget: each book sits on a dark screen with a p
 - **Price tracker** for Amazon.in, Bookswagon and Atlantic Books, plus any other bookshop's page you give it (Flipkart, Crossword…), with your own target price.
 - **SFF news** set like a magazine, with a Screen view for films and series, and a clean reader.
 - **Library checks and a rating rubric** on the Activity tab: books whose dates or page counts would throw your numbers off, and scores on what matters to you beside your stars (with a gut-vs-rubric chart).
+- **Your rhythm** on the Activity tab: the weekdays you read most (with your big day named), your best day and longest run ever, and what an ordinary reading day holds in pages and minutes.
 - **Your year** on the Activity tab, all in one place: Wrapped, the year's set of pictures, your top 10 or 20 as one ranked image, and the shelf poster.
 - **Reading log** under Services › Your data: every book as an Excel or CSV file.
 - **Import your history** from Goodreads, StoryGraph, Hardcover, Seekquel or KOReader.
@@ -226,8 +229,10 @@ Either way, you stay signed in to all your trackers.
 | Goodreads export | Books, dates, ratings, reviews |
 | StoryGraph export | Books, dates, ratings, reviews |
 | Hardcover (export or direct) | Books, dates, ratings, reviews, quotes as highlights, progress updates by day |
-| Seekquel (direct) | Books, dates, ratings, reviews |
+| Seekquel (direct) | Books, dates, ratings; with your Seekquel account signed in, also reviews, your notebook's highlights and pages and minutes for each day from your reading logs |
 | KOReader statistics | Pages and minutes for each day |
+
+CrossPoint books also get their reading days from crosspoint-sync's own history (pages and reading time for each day, as far back as the server has them), by themselves every few hours. Days brought in count toward your streak, the reading-days grid, the week and Wrapped, and every day is kept.
 
 ### Catalogs (OPDS)
 

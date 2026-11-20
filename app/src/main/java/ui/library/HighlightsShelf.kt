@@ -39,10 +39,32 @@ import io.github.prithirajn.readync.ui.theme.CpType
 
 /** Every highlight and note in the library, kept fresh as they change. */
 @Composable
-fun rememberAllHighlights(state: Snapshot): List<Highlights.Item> =
-    remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.clipHidden, state.sentClippings, state.resend, state.books) {
-        Highlights.all(state)
+fun rememberAllHighlights(state: Snapshot): List<Highlights.Item> {
+    // Gathered off the screen's thread (every highlight from every source, tidied: slow with many),
+    // so the Library shows up at once; the last ones gathered stand in for the moment until then.
+    val key = listOf<Any?>(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.clipHidden, state.sentClippings, state.resend, state.books)
+    val ready = AllHighlightsCache.get(key)
+    return androidx.compose.runtime.produceState(ready ?: AllHighlightsCache.last, *key.toTypedArray()) {
+        if (ready != null) { value = ready; return@produceState }
+        val all = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { runCatching { Highlights.all(state) }.getOrNull() } ?: return@produceState
+        AllHighlightsCache.put(key, all)
+        value = all
+    }.value
+}
+
+/** The highlights last gathered, with what they were gathered from (compared by identity, not contents). */
+private object AllHighlightsCache {
+    @Volatile private var key: List<Any?>? = null
+    @Volatile var last: List<Highlights.Item> = emptyList()
+        private set
+
+    fun get(k: List<Any?>): List<Highlights.Item>? {
+        val have = key ?: return null
+        return if (have.size == k.size && have.indices.all { have[it] === k[it] }) last else null
     }
+
+    fun put(k: List<Any?>, v: List<Highlights.Item>) { key = k; last = v }
+}
 
 /** Books with highlights, the one highlighted in most recently first, with how many each. */
 fun highlightBooks(all: List<Highlights.Item>): List<Pair<String, Int>> =

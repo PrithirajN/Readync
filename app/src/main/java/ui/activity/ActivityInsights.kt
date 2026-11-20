@@ -25,12 +25,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -52,25 +56,25 @@ import java.util.Locale
 private fun openBook(document: String) { AppActions.pending.value = AppAction.OpenBook(document) }
 
 /** The reading half of the Activity page, as list items. */
-fun LazyListScope.activityInsights(vm: AppViewModel, state: Snapshot) {
+internal fun LazyListScope.activityInsights(vm: AppViewModel, state: Snapshot, data: ActivityData?, onReviewClosed: () -> Unit) {
+    // Worked out in the background (a moment, the first time only): until then just the header.
+    if (data == null) return
     // Today, this week and your streak on the device's screen, first.
-    item(key = "today") { Box(Modifier.riseIn(0)) { TodayPanel(state) } }
-    item(key = "needs") { NeedsCard(state) }
+    item(key = "today", contentType = "today") { DebugTimed("today") { Box(Modifier.riseIn(0)) { TodayPanel(data) } } }
+    item(key = "needs", contentType = "needs") { DebugTimed("needs") { NeedsCard(state, data.needs) } }
     // The things made from your reading: Wrapped, today's review, the shelf poster.
-    item(key = "tools") { Box(Modifier.riseIn(1)) { ReadingToolsRow(vm, state) } }
-    item(key = "soon") { FinishingSoonCard(state) }
-    item(key = "heat") { HeatmapCard(state) }
-    item(key = "year") { YearCard(vm, state) }
+    item(key = "tools", contentType = "tools") { DebugTimed("tools") { Box(Modifier.riseIn(1)) { ReadingToolsRow(vm, state, data.reviewLeft, onReviewClosed) } } }
+    // How you read (the Library already lists what you're reading).
+    data.rhythm?.let { r -> item(key = "rhythm", contentType = "rhythm") { DebugTimed("rhythm") { RhythmCard(r) } } }
+    item(key = "heat", contentType = "heat") { DebugTimed("heat") { HeatmapCard(state, data) } }
+    item(key = "year", contentType = "year") { DebugTimed("year") { YearCard(vm, state, data.year) } }
 }
 
 // ---- What needs you ----
 
 @Composable
-private fun NeedsCard(state: Snapshot) {
+private fun NeedsCard(state: Snapshot, needs: List<Insights.Need>) {
     val c = Cp.colors
-    val needs = remember(state.services, state.links, state.progressAsks, state.books, state.kindleError, state.libbyError, state.kosyncError) {
-        Insights.needs(state)
-    }
     if (needs.isEmpty()) {
         Row(
             Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp).fillMaxWidth()
@@ -145,97 +149,11 @@ private fun NeedsCard(state: Snapshot) {
 
 private data class Quad(val icon: Int, val title: String, val detail: String, val warn: Boolean)
 
-// ---- This week ----
-
-@Composable
-private fun WeekCard(state: Snapshot) {
-    val c = Cp.colors
-    val all = state.books.values
-    // Today's pages, live, the same way the Library counts them.
-    val todayPages = remember(state.books, state.pagesDay, state.pagesStartF, state.pagesCleared) { Shelves.todayPages(state) }
-    val today = remember { LocalDate.now() }
-    val w = remember(state.pagesByDay, todayPages) { Insights.week(state, today, todayPages) }
-    if (w.total == 0 && w.previousTotal == 0 && state.pagesByDay.isEmpty()) return
-    val streak = remember(state.pagesByDay, todayPages) { Shelves.streak(state, todayPages) }
-    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp)) {
-        Text("This week", style = CpType.bodyStrong, color = c.text)
-        VSpace(8)
-        CpCard {
-            Column(Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(String.format(Locale.getDefault(), "%,d", w.total), style = CpType.pageTitle, color = c.text)
-                    HSpace(6)
-                    Text("pages", style = CpType.body, color = c.quiet, modifier = Modifier.padding(bottom = 6.dp))
-                    Box(Modifier.weight(1f))
-                    w.changePercent?.let { ch ->
-                        val up = ch >= 0
-                        Text(
-                            (if (up) "▲ " else "▼ ") + "${kotlin.math.abs(ch)}% on last week",
-                            style = CpType.small,
-                            color = if (up) c.accentText else c.quiet,
-                            modifier = Modifier.padding(bottom = 8.dp),
-                        )
-                    }
-                }
-                VSpace(12)
-                WeekBars(w)
-                VSpace(12)
-                Text(
-                    listOfNotNull(
-                        "${w.readingDays} of 7 days",
-                        if (w.total > 0) "about ${Math.round(w.total / 7.0)} a day" else null,
-                        w.best?.let { (d, p) -> "best: ${d.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault())}, $p" },
-                        if (streak >= 2) "🔥 $streak-day streak" else null,
-                    ).joinToString(" · "),
-                    style = CpType.small, color = c.quiet,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun WeekBars(w: Insights.Week) {
-    val c = Cp.colors
-    val max = (w.days.maxOfOrNull { it.second } ?: 0).coerceAtLeast(1)
-    val spoken = w.days.joinToString(", ") { (d, p) -> "${d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault())} $p pages" }
-    Row(
-        Modifier.fillMaxWidth().height(112.dp).semantics { contentDescription = spoken },
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        w.days.forEachIndexed { i, (d, p) ->
-            val isToday = i == w.days.lastIndex
-            val target = p.toFloat() / max
-            val h by animateFloatAsState(target, Motion.bouncy(), label = "bar")
-            Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
-                if (p > 0) Text(if (p >= 1000) "${p / 1000}k" else p.toString(), style = CpType.chip, color = if (isToday) c.accentText else c.faint, maxLines = 1)
-                VSpace(2)
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height((70 * h).coerceAtLeast(if (p > 0) 4f else 2f).dp)
-                        .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp, bottomStart = 2.dp, bottomEnd = 2.dp))
-                        .background(if (p == 0) c.divider else if (isToday) c.accent else c.accent.copy(alpha = 0.55f)),
-                )
-                VSpace(6)
-                Text(
-                    d.dayOfWeek.getDisplayName(TextStyle.NARROW, Locale.getDefault()),
-                    style = CpType.small,
-                    color = if (isToday) c.accentText else c.quiet,
-                )
-            }
-        }
-    }
-}
-
 // ---- The year ----
 
 @Composable
-private fun YearCard(vm: AppViewModel, state: Snapshot) {
+private fun YearCard(vm: AppViewModel, state: Snapshot, y: Insights.Year) {
     val c = Cp.colors
-    val today = remember { LocalDate.now() }
-    val y = remember(state.books, state.settings.yearGoal, state.extras) { Insights.year(state, today) }
     if (y.finished.isEmpty() && y.goal == 0 && state.books.isEmpty()) return
     var editing by remember { mutableStateOf(false) }
     val tick = rememberTick()
@@ -297,17 +215,76 @@ private fun YearCard(vm: AppViewModel, state: Snapshot) {
                 }
                 if (y.finished.isNotEmpty()) {
                     VSpace(14)
-                    Row(
-                        Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        for (b in y.finished) {
-                            Box(Modifier.bouncyClickable(CpShapes.control, pressedScale = 0.94f, role = Role.Button, onClickLabel = b.displayTitle) { openBook(b.document) }) {
-                                BookCover(b.coverUrl, b.displayTitle, 44.dp, 66.dp)
-                            }
-                        }
+                    // The year's covers as one drawn strip: one thing to make and lay out as the card
+                    // scrolls in, however many books (a row of cover views each was the stutter here).
+                    CoverStrip(y.finished) { openBook(it.document) }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Covers in a row that scrolls sideways, drawn in one go (no view per cover): those already on
+ * the phone at once, the rest as they arrive. Tap one to open its book.
+ */
+@Composable
+private fun CoverStrip(books: List<io.github.prithirajn.readync.data.Book>, onOpen: (io.github.prithirajn.readync.data.Book) -> Unit) {
+    val c = Cp.colors
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val w = 44.dp; val h = 66.dp; val gap = 8.dp
+    val hPx = with(density) { h.roundToPx() }
+    val urls = remember(books) { books.map { it.coverUrl } }
+    val covers by androidx.compose.runtime.produceState(
+        urls.map { u -> u?.let { CoverCache.cached(it, hPx)?.asImageBitmap() } }, urls, hPx,
+    ) {
+        if (value.indices.none { value[it] == null && urls[it] != null }) return@produceState
+        val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            urls.mapIndexed { i, u -> value[i] ?: u?.let { runCatching { CoverCache.load(context, it, hPx) }.getOrNull()?.asImageBitmap() } }
+        }
+        value = loaded
+    }
+    val spoken = remember(books) { "Finished: " + books.joinToString(", ") { it.displayTitle } }
+    Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Canvas(
+            Modifier
+                .width((w + gap) * books.size - gap)
+                .height(h)
+                .semantics { contentDescription = spoken }
+                .pointerInput(books) {
+                    detectTapGestures { p ->
+                        val cell = (w + gap).toPx()
+                        val i = (p.x / cell).toInt()
+                        if (i in books.indices && p.x - i * cell <= w.toPx()) onOpen(books[i])
+                    }
+                },
+        ) {
+            val cw = w.toPx(); val ch = h.toPx(); val step = (w + gap).toPx()
+            val r = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx())
+            for (i in books.indices) {
+                val x = i * step
+                val img = covers.getOrNull(i)
+                val shape = androidx.compose.ui.graphics.Path().apply {
+                    addRoundRect(androidx.compose.ui.geometry.RoundRect(x, 0f, x + cw, ch, r))
+                }
+                clipPath(shape) {
+                    drawRect(c.cover, Offset(x, 0f), Size(cw, ch))
+                    if (img != null) {
+                        // Cropped to fill, like the covers elsewhere.
+                        val scale = maxOf(cw / img.width, ch / img.height)
+                        val sw = (cw / scale).toInt().coerceAtMost(img.width)
+                        val sh = (ch / scale).toInt().coerceAtMost(img.height)
+                        drawImage(
+                            img,
+                            srcOffset = androidx.compose.ui.unit.IntOffset((img.width - sw) / 2, (img.height - sh) / 2),
+                            srcSize = androidx.compose.ui.unit.IntSize(sw, sh),
+                            dstOffset = androidx.compose.ui.unit.IntOffset(x.toInt(), 0),
+                            dstSize = androidx.compose.ui.unit.IntSize(cw.toInt(), ch.toInt()),
+                        )
                     }
                 }
+                drawRoundRect(c.hairline, Offset(x, 0f), Size(cw, ch), r, style = Stroke(1.dp.toPx()))
             }
         }
     }

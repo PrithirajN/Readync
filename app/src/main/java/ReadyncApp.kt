@@ -17,8 +17,17 @@ import java.io.File
 import io.github.prithirajn.readync.ui.BookShot as BS
 
 class ReadyncApp : Application(), androidx.work.Configuration.Provider {
-    lateinit var store: Store
-        private set
+    /**
+     * Your library, read from its file on its own thread as soon as the app starts, so the reading
+     * happens while Android is still making the screen; whatever needs it first waits for it there.
+     */
+    private lateinit var storeLoad: java.util.concurrent.FutureTask<Store>
+    val store: Store get() {
+        if (storeLoad.isDone || Looper.myLooper() != Looper.getMainLooper()) return storeLoad.get()
+        // The screen waiting for it: how long, for the start's timings.
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        return storeLoad.get().also { Startup.note("store wait", android.os.SystemClock.elapsedRealtime() - t0) }
+    }
 
     /**
      * Background work saved before the code moved to the readync package still names the old
@@ -47,17 +56,32 @@ class ReadyncApp : Application(), androidx.work.Configuration.Provider {
     }
 
     override fun onCreate() {
+        val appStart = android.os.SystemClock.elapsedRealtime()
+        Startup.note("before app", Startup.sinceStart())
         super.onCreate()
+        // Started first thing (not earlier, in attachBaseContext: the keystore that opens your sign-ins
+        // must be ready, or they'd read as missing).
+        storeLoad = java.util.concurrent.FutureTask {
+            Startup.time("store") { Store(File(filesDir, "tracker-sync.json"), KeystoreSecrets()) }
+                .also { Startup.note("keystore", KeystoreSecrets.spentNanos.get() / 1_000_000) }
+        }
+        Thread(storeLoad, "store-load").apply { priority = Thread.MAX_PRIORITY }.start()
         // What went wrong, written down if the app ever closes on its own (offered to share next time).
         CrashLog.install(this)
-        // Look like the system WebView, which is what signed in to StoryGraph and Goodreads.
-        Http.defaultUserAgent = runCatching { WebSettings.getDefaultUserAgent(this) }.getOrDefault(Http.defaultUserAgent)
-        store = Store(File(filesDir, "tracker-sync.json"), KeystoreSecrets())
-        // Last time's crash, in the sync log too (once).
-        CrashLog.pending(this)?.let { r ->
-            val line = "Readync closed unexpectedly: " + CrashLog.headline(r)
-            if (store.snapshot.log.none { it.message == line }) store.log(null, line, error = true)
+        // Look like the system WebView, which is what signed in to StoryGraph and Goodreads. Asking for
+        // it starts the whole WebView (slow, on every start), so the one saved last time is used, and
+        // it's asked again in the background for next time (it changes when the WebView updates).
+        val uaPrefs = getSharedPreferences("startup", MODE_PRIVATE)
+        uaPrefs.getString("userAgent", null)?.let { Http.defaultUserAgent = it } ?: Startup.time("ua") {
+            Http.defaultUserAgent = runCatching { WebSettings.getDefaultUserAgent(this) }.getOrDefault(Http.defaultUserAgent)
         }
+        Thread({
+            Thread.sleep(8_000)
+            runCatching { WebSettings.getDefaultUserAgent(this) }.getOrNull()?.let { ua ->
+                if (ua != uaPrefs.getString("userAgent", null)) uaPrefs.edit().putString("userAgent", ua).apply()
+            }
+        }, "user-agent").apply { priority = Thread.MIN_PRIORITY; isDaemon = true }.start()
+        // What needs your library goes on once it's read, off the screen's thread (see the end).
         // The on-device model, when one is set up (Services → On-device AI); loaded on first use.
         io.github.prithirajn.readync.ai.Ai.provider = { io.github.prithirajn.readync.ai.LocalModel.get(this) }
         // Web novel sites behind a bot check are read through an unseen browser instead.
@@ -97,12 +121,22 @@ class ReadyncApp : Application(), androidx.work.Configuration.Provider {
         io.github.prithirajn.readync.ui.MihonFolder.install(this)
         io.github.prithirajn.readync.ui.KoSidecarFolder.install(this)
         io.github.prithirajn.readync.ui.ExportFolder.install(this)
-        fixLinksFromV010()
-        resendFromV011()
-        highlightsFromV012()
-        // The worker checks whether there's anything to sync; schedule it with the saved settings.
-        SyncWorker.schedule(this, store.snapshot.settings)
-        watchForWidget()
+        Thread({
+            // Which phone sends (with one phone, this one, without a word).
+            runCatching { io.github.prithirajn.readync.sync.PostingDevice.start(this, store) }
+            // Last time's crash, in the sync log too (once).
+            CrashLog.pending(this)?.let { r ->
+                val line = "Readync closed unexpectedly: " + CrashLog.headline(r)
+                if (store.snapshot.log.none { it.message == line }) store.log(null, line, error = true)
+            }
+            runCatching { fixLinksFromV010() }
+            runCatching { resendFromV011() }
+            runCatching { highlightsFromV012() }
+            // The worker checks whether there's anything to sync; schedule it with the saved settings.
+            runCatching { SyncWorker.schedule(this, store.snapshot.settings) }
+            watchForWidget()
+        }, "app-start").start()
+        Startup.note("app", android.os.SystemClock.elapsedRealtime() - appStart)
     }
 
     /**

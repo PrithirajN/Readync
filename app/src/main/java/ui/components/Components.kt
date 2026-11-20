@@ -4,6 +4,7 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
@@ -68,18 +69,16 @@ import io.github.prithirajn.readync.ui.theme.CpType
 
 // Compose versions of the companion app's ui.jsx / Settings.jsx building blocks.
 
-/** A panel of the device: solid, softly lifted off the body by a warm shadow, with a light top edge. */
+/** A slip of paper laid on the page: flat, its corners cut unevenly, the page's grain faintly through it. */
 @Composable
 fun CpCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     val c = Cp.colors
     Column(
         modifier
             .fillMaxWidth()
-            .shadow(if (c.isDark) 2.dp else 5.dp, CpShapes.card, ambientColor = c.shade, spotColor = c.shade)
             .clip(CpShapes.card)
-            .background(c.surface)
+            .background(c.surface.copy(alpha = if (c.isDark) 0.86f else 0.9f))
             .border(1.dp, c.hairline, CpShapes.card)
-            .drawBehind { drawRect(Color.White.copy(alpha = if (c.isDark) 0.04f else 0.9f), size = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx())) }
             // Rows appearing or disappearing inside a card resize it smoothly.
             .animateContentSize(Motion.medium()),
         content = content,
@@ -90,15 +89,89 @@ fun CpCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() ->
 @Composable
 fun RowDivider() = HorizontalDivider(thickness = 1.dp, color = Cp.colors.divider)
 
-/** Handwritten margin-note eyebrow: Caveat, brand-600, rotated -1 degree. */
+/** A small-caps label above a block, printed in the section's ink. */
 @Composable
 fun Eyebrow(text: String, modifier: Modifier = Modifier) {
-    Text(text, style = CpType.eyebrow, color = Cp.colors.accentText, modifier = modifier.rotate(-1f))
+    Text(text, style = CpType.eyebrow, color = Cp.colors.accentText, modifier = modifier)
+}
+
+/**
+ * A page's title, printed in three passes: two inks slide in from either side and settle just off
+ * register behind the text, like a riso print. Once, when the page first appears.
+ */
+@Composable
+fun PageTitle(text: String, modifier: Modifier = Modifier) {
+    RegisteredText(text, CpType.pageTitle, modifier)
 }
 
 @Composable
-fun PageTitle(text: String, modifier: Modifier = Modifier) {
-    Text(text, style = CpType.pageTitle, color = Cp.colors.text, modifier = modifier)
+fun RegisteredText(text: String, style: androidx.compose.ui.text.TextStyle, modifier: Modifier = Modifier, color: Color = Cp.colors.text, replay: Any? = Unit) {
+    val c = Cp.colors
+    val on = LocalAnimationsOn.current
+    // Prints itself in again whenever [replay] changes (each time its tab comes back on screen), but
+    // not when its row was only scrolled away and back (what it last printed for is saved).
+    val replayKey = replay.toString()
+    var printedFor by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    val t = remember { androidx.compose.animation.core.Animatable(if (on && printedFor != replayKey) 0f else 1f) }
+    LaunchedEffect(replay) {
+        if (printedFor == replayKey) { t.snapTo(1f); return@LaunchedEffect }
+        printedFor = replayKey
+        if (on && t.value >= 1f) t.snapTo(0f)
+        t.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = 0.7f, stiffness = 140f))
+    }
+    Box(modifier) {
+        Text(text, style = style, color = c.accent, modifier = Modifier.graphicsLayer {
+            val k = 1f - t.value
+            translationX = -(1.5f + 10f * k) * density; translationY = -(1f + 6f * k) * density
+            alpha = (if (c.isDark) 0.75f else 0.55f) * t.value.coerceIn(0f, 1f)
+        })
+        Text(text, style = style, color = c.signalLedge, modifier = Modifier.graphicsLayer {
+            val k = 1f - t.value
+            translationX = (1.5f + 11f * k) * density; translationY = (1f + 7f * k) * density
+            alpha = (if (c.isDark) 0.7f else 0.5f) * t.value.coerceIn(0f, 1f)
+        })
+        Text(text, style = style, color = color)
+    }
+}
+
+/**
+ * The top of every tab, the same everywhere: a small-caps line in the tab's ink, the tab's title
+ * set big in Bodoni and printed into register, and its keys together on a little tray to the right.
+ * Each time the tab comes back on screen the line slides in, the title prints itself again and the
+ * keys pop up one after another.
+ */
+@Composable
+fun TabHeader(eyebrow: String, title: String, modifier: Modifier = Modifier, actions: (@Composable RowScope.() -> Unit)? = null) {
+    val c = Cp.colors
+    val visible = LocalTabVisible.current
+    val on = LocalAnimationsOn.current
+    val slide = remember { androidx.compose.animation.core.Animatable(if (on) 0f else 1f) }
+    LaunchedEffect(visible) {
+        if (!visible) return@LaunchedEffect
+        if (on) slide.snapTo(0f)
+        slide.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = 0.75f, stiffness = 220f))
+    }
+    Row(modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 24.dp), verticalAlignment = Alignment.Bottom) {
+        Column(Modifier.weight(1f)) {
+            Text(eyebrow, style = CpType.eyebrow, color = c.accentText, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.graphicsLayer { translationX = (1f - slide.value) * -24.dp.toPx(); alpha = slide.value.coerceIn(0f, 1f) })
+            RegisteredText(title, CpType.pageTitle, Modifier.padding(top = 2.dp), replay = visible)
+        }
+        if (actions != null) {
+            Row(
+                Modifier
+                    .padding(bottom = 4.dp)
+                    .graphicsLayer { val k = slide.value.coerceIn(0f, 1.1f); scaleX = 0.7f + 0.3f * k; scaleY = 0.7f + 0.3f * k; alpha = slide.value.coerceIn(0f, 1f) }
+                    .clip(CpShapes.pill)
+                    .background(c.surface.copy(alpha = if (c.isDark) 0.55f else 0.7f))
+                    .border(1.dp, c.hairline, CpShapes.pill)
+                    .padding(horizontal = 5.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                content = actions,
+            )
+        }
+    }
 }
 
 @Composable
@@ -111,10 +184,10 @@ fun LucideIcon(res: Int, modifier: Modifier = Modifier.size(16.dp), tint: Color 
     Icon(painterResource(res), contentDescription = null, modifier = modifier, tint = tint)
 }
 
-/** Progress as the device shows it: a row of segments lighting up to the place, the last one partly. */
+/** A book's progress: a bar of ink growing to the place, in the colour of its cover when [coverUrl] is given. */
 @Composable
-fun ProgressBar(fraction: Float, modifier: Modifier = Modifier, fillIn: Boolean = false) {
-    SegmentBar(fraction, modifier, segments = 12, height = 6.dp)
+fun ProgressBar(fraction: Float, modifier: Modifier = Modifier, fillIn: Boolean = false, coverUrl: String? = null) {
+    SegmentBar(fraction, modifier, height = 6.dp, on = if (coverUrl != null) rememberBookInk(coverUrl) else Cp.colors.wall)
 }
 
 /**
@@ -129,35 +202,46 @@ fun CpToggle(checked: Boolean, onChange: (Boolean) -> Unit, label: String, enabl
     val pressed by source.collectIsPressedAsState()
     // Held down, the knob stretches toward where it's about to go, like a drop of something.
     val stretch by animateDpAsState(if (pressed && enabled) 6.dp else 0.dp, androidx.compose.animation.core.spring(dampingRatio = 0.6f, stiffness = 800f), label = "knobStretch")
-    val knob by animateDpAsState(if (checked) 22.dp else 3.dp, Motion.bouncy(), label = "toggle")
-    val track by animateColorAsState(if (checked) c.ink else c.toggleOff, Motion.medium(), label = "track")
-    val knobColor by animateColorAsState(if (checked) c.accent else if (c.isDark) Color(0xFFBDB8AE) else Color.White, Motion.medium(), label = "knob")
-    // The flare: bright for a moment when switched on, settling to a steady glow.
+    // Off: an empty outline with a small hollow-looking knob at rest on the left. On: the track
+    // inks in the section's colour over its second ink, and the knob grows dark and solid.
+    val on by animateFloatAsState(if (checked) 1f else 0f, Motion.bouncy(), label = "toggle")
+    val track by animateColorAsState(if (checked) c.accent else c.accent.copy(alpha = 0f), Motion.medium(), label = "track")
+    val knobColor by animateColorAsState(if (checked) c.onAccent else c.quiet, Motion.medium(), label = "knob")
+    // Switched on, a ring of ink pops out from the knob and fades.
     val flare = remember { androidx.compose.animation.core.Animatable(if (checked) 1f else 0f) }
     LaunchedEffect(checked) {
         if (checked) { flare.snapTo(2.2f); flare.animateTo(1f, tween(650)) } else flare.animateTo(0f, tween(200))
     }
     Box(
         Modifier
-            .size(width = 48.dp, height = 28.dp)
+            .size(width = 50.dp, height = 30.dp)
             .graphicsLayer { alpha = if (enabled) 1f else 0.45f }
+            .drawBehind {
+                val r = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)
+                if (on > 0.01f) drawRoundRect(c.signalLedge.copy(alpha = on.coerceIn(0f, 1f)), topLeft = androidx.compose.ui.geometry.Offset(2.dp.toPx(), 2.5.dp.toPx()), size = size, cornerRadius = r)
+            }
             .clip(CpShapes.pill)
             .clickable(source, indication = null, enabled = enabled, role = Role.Switch, onClickLabel = label) {
                 Haptics.toggle(view, !checked)
                 onChange(!checked)
             }
             .background(track)
-            // Recessed: a shade along the top inside edge.
-            .drawBehind { drawRect(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.22f), Color.Transparent), endY = 6.dp.toPx())) }
+            .drawBehind {
+                val a = (1f - on).coerceIn(0f, 1f)
+                if (a > 0.01f) drawRoundRect(c.textMid.copy(alpha = 0.5f * a), cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+            },
+        contentAlignment = Alignment.CenterStart,
     ) {
+        val knobSize = 14.dp + 8.dp * on.coerceIn(0f, 1.1f)
         Box(
             Modifier
-                .offset(x = if (checked) knob - stretch else knob, y = 3.dp)
-                .size(width = 22.dp + stretch, height = 22.dp)
+                .offset(x = 5.dp + (50.dp - 10.dp - 22.dp) * on + (if (checked) -stretch else 0.dp) + (22.dp - knobSize) / 2)
+                .size(width = knobSize + stretch, height = knobSize)
                 .drawBehind {
-                    if (flare.value > 0f) drawCircle(c.accent.copy(alpha = (0.28f * flare.value).coerceAtMost(0.6f)), radius = size.minDimension * (0.62f + 0.22f * flare.value))
+                    val f = flare.value
+                    if (f > 1.01f) drawCircle(c.accent.copy(alpha = ((f - 1f) / 1.2f).coerceIn(0f, 1f)), radius = size.minDimension * (0.5f + 0.5f * (2.2f - f)), style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
                 }
-                .shadow(2.dp, CpShapes.pill)
                 .clip(CpShapes.pill)
                 .background(knobColor)
         )
@@ -385,20 +469,43 @@ fun serviceColor(name: String): Color = when (name.lowercase().substringBefore('
     }
 }
 
-/** A service's badge: its letter on a moulded square in its own colour, with a light top edge. */
+/**
+ * A service's badge, printed like a stamp: a block of its own colour with lopsided corners and its
+ * initial in black Bodoni.
+ */
 @Composable
-fun ServiceTile(name: String, size: Dp = 36.dp) {
-    val col = serviceColor(name)
+fun ServiceTile(name: String, size: Dp = 36.dp, muted: Boolean = false) {
+    val c = Cp.colors
+    // A paused service's stamp is printed faded into the paper (solid, so nothing shows through).
+    val col by animateColorAsState(if (muted) androidx.compose.ui.graphics.lerp(serviceColor(name), c.track, 0.7f) else serviceColor(name), Motion.medium(), label = "tile")
+    val ink by animateColorAsState(if (muted) c.quiet else Color.White, Motion.medium(), label = "tileInk")
+    val shape = RoundedCornerShape(topStart = size * 0.36f, topEnd = size * 0.14f, bottomEnd = size * 0.36f, bottomStart = size * 0.14f)
     Box(
         Modifier
             .size(size)
-            .shadow(3.dp, CpShapes.field, ambientColor = col, spotColor = col)
-            .clip(RoundedCornerShape(size * 0.3f))
-            .background(Brush.verticalGradient(listOf(lerpColor(col, Color.White, 0.18f), col)))
-            .drawBehind { drawRect(Color.White.copy(alpha = 0.28f), size = androidx.compose.ui.geometry.Size(this.size.width, 1.dp.toPx())) },
+            .clip(shape)
+            .background(col),
         contentAlignment = Alignment.Center,
     ) {
-        Text(name.take(1).uppercase(), style = CpType.section.copy(fontSize = (size.value * 0.45f).sp, lineHeight = (size.value * 0.5f).sp), color = Color.White)
+        Text(
+            name.take(1).uppercase(),
+            fontFamily = io.github.prithirajn.readync.ui.theme.Display, fontWeight = androidx.compose.ui.text.font.FontWeight.Black,
+            fontSize = (size.value * 0.58f).sp, lineHeight = (size.value * 0.6f).sp, color = ink,
+        )
+    }
+}
+
+/**
+ * A list printed on the page instead of boxed in a card: a firm rule above, fine rules between
+ * its rows (the rows' own dividers) and a light rule to close it.
+ */
+@Composable
+fun RisoList(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    val c = Cp.colors
+    Column(modifier.fillMaxWidth().animateContentSize(Motion.medium())) {
+        Box(Modifier.fillMaxWidth().height(1.5.dp).background(c.text.copy(alpha = 0.55f)))
+        content()
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.text.copy(alpha = 0.18f)))
     }
 }
 

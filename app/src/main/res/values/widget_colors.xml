@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- CrossPoint tokens for the widget: white card, stone text, forest-green accent. -->
-    <color name="widget_surface">#FFFFFFFF</color>
+    <!-- Riso tokens for the widget: warm paper, dark ink, red spot ink. -->
+    <color name="widget_surface">#FFFAF9F0</color>
     <color name="widget_ring">#140C0A09</color>
-    <color name="widget_text">#FF1C1917</color>
-    <color name="widget_quiet">#FF78716C</color>
-    <color name="widget_track">#FFE7E5E4</color>
-    <color name="widget_accent">#FF4A7A62</color>
-    <color name="widget_accent_text">#FF3D6652</color>
-    <color name="widget_accent_tint">#FFF0F5F3</color>
-    <color name="widget_cover">#FFF5F4EF</color>
+    <color name="widget_text">#FF1E1A16</color>
+    <color name="widget_quiet">#FF6E665C</color>
+    <color name="widget_track">#FFE0DDCF</color>
+    <color name="widget_accent">#FFE8323F</color>
+    <color name="widget_accent_text">#FFB81E2B</color>
+    <color name="widget_accent_tint">#FFFADADB</color>
+    <color name="widget_cover">#FFE6E3D6</color>
     <color name="widget_error">#FFB91C1C</color>
 </resources>

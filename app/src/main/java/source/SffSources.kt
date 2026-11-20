@@ -281,7 +281,7 @@ object SffSources {
             val descRaw = (tagValue(chunk, "description") ?: tagValue(chunk, "summary"))?.let { unescaped(it) } ?: fullRaw
             val cover = (fullRaw ?: descRaw)?.let { Regex("<img[^>]+src=[\"'](https?://[^\"']+)[\"']", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1) }
                 ?: Regex("<media:(?:content|thumbnail)[^>]+url=[\"'](https?://[^\"']+)[\"']", RegexOption.IGNORE_CASE).find(chunk)?.groupValues?.get(1)
-            val summary = descRaw?.let { Html.text(it).replace(Regex("\\s+"), " ").trim() }?.takeIf { it.length > 12 }?.take(320)
+            val summary = descRaw?.let { Html.text(it).replace(Regex("\\s+"), " ").replace(Regex("\\s*The post .{1,240}? appeared first on [^.]{1,80}\\.?\\s*$"), "").trim() }?.takeIf { it.length > 12 }?.take(320)
             val fullMarkdown = fullRaw?.let { SffArticleReader.htmlToMarkdown(it, summary) }?.takeIf { it.length > 120 }
             val author = (tagValue(chunk, "dc:creator") ?: tagValue(chunk, "author") ?: tagValue(chunk, "name"))
                 ?.let { Html.text(it).trim() }?.takeIf { it.isNotEmpty() && it.length < 60 }

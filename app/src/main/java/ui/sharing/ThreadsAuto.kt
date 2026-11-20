@@ -63,12 +63,25 @@ object ThreadsAuto {
      * Turns posting on for one book (off to start with): its highlights so far count as seen, so
      * only what comes in from now is posted.
      */
+    /**
+     * Whether a book posts to Threads: by its id, or one it had before (a new copy of the file, or
+     * a merge, gives the book a new id and keeps the old as an alias).
+     */
+    fun posting(s: Snapshot, document: String): Boolean {
+        if (document in s.threadsBooks) return true
+        val b = s.books[document] ?: return false
+        return b.document in s.threadsBooks || b.aliases.any { it in s.threadsBooks }
+    }
+
+    /** How many of your books post to Threads (ids that no longer name a book left out). */
+    fun postingCount(s: Snapshot): Int = s.books.values.count { b -> b.document in s.threadsBooks || b.aliases.any { it in s.threadsBooks } }
+
     fun setBook(store: Store, document: String, on: Boolean) = store.update { s ->
         if (on) s.copy(
             threadsBooks = s.threadsBooks + document,
             threadsSeen = s.threadsSeen + Highlights.forBook(s, document).map { it.clip.id },
             threadsError = null,
-        ) else s.copy(threadsBooks = s.threadsBooks - document)
+        ) else s.copy(threadsBooks = s.threadsBooks - document - (s.books[document]?.aliases ?: emptyList()).toSet())
     }
 
     /** What's waiting to be posted (oldest first). */
@@ -81,7 +94,7 @@ object ThreadsAuto {
         return all
             .filter { (i, _) ->
                 val id = i.clip.id
-                i.clip.document in s.threadsBooks &&
+                posting(s, i.clip.document) &&
                     id !in s.threadsSeen && id !in s.threadsPosted && (s.threadsFails[id] ?: 0) < MAX_TRIES &&
                     (s.threadsNotes || !isNote(id)) && i.clip.text.isNotBlank()
             }
@@ -233,6 +246,38 @@ object ThreadsAuto {
         val next = list.minOf { readyAt(s, it, now) }
         return if (next <= now) "Going up with the next check (within a few minutes)"
         else "Next goes up around ${at(next)}, once the reading session is over"
+    }
+
+    /**
+     * When the waiting sessions should go up, in order: each once it's over (see [readyAt]), a
+     * book's later session after its earlier one, no more than your daily number in any 24 hours,
+     * and never in your quiet hours (moved to when they end). Times are as near as the checks allow.
+     */
+    internal fun plan(s: Snapshot, now: Long = System.currentTimeMillis() / 1000): List<Pair<Long, Session>> {
+        if (s.threadsToken == null || s.threadsUserId == null) return emptyList()
+        val list = runCatching { sessions(s) }.getOrDefault(emptyList())
+        val posted = s.threadsPostLog.filter { it > now - DAY }.sorted().toMutableList()
+        val bookFree = HashMap<String, Long>()
+        val out = ArrayList<Pair<Long, Session>>()
+        var last = now
+        for (x in list) {
+            var t = maxOf(readyAt(s, x, now), now, last, bookFree[x.book.document] ?: 0L)
+            // The day's limit: wait until the oldest of the last day's posts is a day old.
+            while (posted.count { it > t - DAY } >= s.threadsPerDay.coerceAtLeast(1)) t = posted.filter { it > t - DAY }.min() + DAY
+            t = afterQuiet(s, t)
+            posted += t; last = t; bookFree[x.book.document] = t + 60
+            out += t to x
+        }
+        return out
+    }
+
+    /** [t], or when your quiet hours end if it falls in them. */
+    internal fun afterQuiet(s: Snapshot, t: Long): Long {
+        val zone = java.time.ZoneId.systemDefault()
+        var z = java.time.Instant.ofEpochSecond(t).atZone(zone)
+        var guard = 0
+        while (s.settings.isQuiet(z.hour) && guard++ < 24) z = z.plusHours(1).withMinute(0).withSecond(0)
+        return z.toEpochSecond()
     }
 
     /**
@@ -579,8 +624,14 @@ object ThreadsAuto {
             null
         } catch (e: Exception) {
             val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
-            val problem = if (signIn) "Threads needs a new token: paste one under Services \u203A Threads." else (e.message ?: "Couldn't post to Threads")
-            store.update { s -> s.copy(threadsFails = s.threadsFails + ids.associateWith { (s.threadsFails[it] ?: 0) + 1 }, threadsError = problem) }
+            val offline = io.github.prithirajn.readync.net.Http.isOffline(e)
+            val problem = when {
+                signIn -> "Threads needs a new token: paste one under Services \u203A Threads."
+                offline -> "Couldn't reach Threads (no connection); trying again on the next check"
+                else -> e.message ?: "Couldn't post to Threads"
+            }
+            // No connection isn't Threads saying no: the highlights wait, never counted as a failed try.
+            store.update { s -> s.copy(threadsFails = if (offline) s.threadsFails else s.threadsFails + ids.associateWith { (s.threadsFails[it] ?: 0) + 1 }, threadsError = problem) }
             store.log(null, "Threads: ${e.message}", error = true)
             problem
         }
@@ -591,6 +642,9 @@ object ThreadsAuto {
      * happened in a line, or null when there was nothing to do. Blocking; network.
      */
     fun run(context: Context, store: Store, only: String? = null): String? {
+        // Only the phone chosen to post does it by itself (two phones would post everything twice);
+        // a post asked for by hand ([only]) goes up from any phone.
+        if (only == null && !io.github.prithirajn.readync.sync.PostingDevice.isThis(context, store.snapshot)) return null
         val r = runOnce(context, store, only)
         runCatching { scheduleNext(context, store.snapshot, System.currentTimeMillis() / 1000) }
         // The full edition's own posting on its schedule (nothing in the shared edition); it doesn't need Threads.
@@ -613,6 +667,8 @@ object ThreadsAuto {
                     store.update { it.copy(threadsToken = t, threadsTokenAt = now) }
                 }
             }
+            // Highlights given up on before a dropped connection stopped counting as a failed try: back in the queue, once.
+            if (s0.extras["threads.failsReset"] == null) store.update { it.copy(threadsFails = emptyMap(), extras = it.extras + ("threads.failsReset" to "1")) }
             // When each waiting highlight first came in (to tell when its session is over); posted ones forgotten.
             store.update { x ->
                 val w = waiting(x).map { it.first.clip.id }.toSet()
@@ -669,8 +725,13 @@ object ThreadsAuto {
                     io.github.prithirajn.readync.sync.Notices.posted("Threads", "A highlight from “${book.displayTitle}” (${look.label} card)", book.document)
                 } catch (e: Exception) {
                     val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
-                    problem = if (signIn) "Threads needs a new token: paste one under Services › Threads." else (e.message ?: "Couldn't post to Threads")
-                    store.update { x -> x.copy(threadsFails = x.threadsFails + (id to ((x.threadsFails[id] ?: 0) + 1)), threadsError = problem) }
+                    val offline = io.github.prithirajn.readync.net.Http.isOffline(e)
+                    problem = when {
+                        signIn -> "Threads needs a new token: paste one under Services › Threads."
+                        offline -> "Couldn't reach Threads (no connection); try again in a moment"
+                        else -> e.message ?: "Couldn't post to Threads"
+                    }
+                    store.update { x -> x.copy(threadsFails = if (offline) x.threadsFails else x.threadsFails + (id to ((x.threadsFails[id] ?: 0) + 1)), threadsError = problem) }
                     store.log(null, "Threads: ${e.message}", error = true)
                     // The rest wait, so highlights still go up in the order they were made.
                     break

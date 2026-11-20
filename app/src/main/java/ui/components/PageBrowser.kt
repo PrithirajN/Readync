@@ -25,6 +25,67 @@ object PageBrowser {
         io.github.prithirajn.readync.source.SffSources.browser = { url -> fetch(app, url, timeoutMs = 18_000) }
         io.github.prithirajn.readync.source.BookPrices.browser = { url -> fetch(app, url, timeoutMs = 20_000) }
         io.github.prithirajn.readync.source.BookPrices.browserUntil = { url, ready -> fetch(app, url, timeoutMs = 25_000, ready = ready) }
+        io.github.prithirajn.readync.net.BotCheck.solver = { url, cookies, ua -> clearCheck(app, url, cookies, ua) }
+    }
+
+    /**
+     * Clears a site's bot check (Goodreads' Amazon WAF, StoryGraph's Cloudflare) as a browser would: loads [url] unseen with
+     * the saved [cookieHeader] and [userAgent], lets the check's script run, and once the real page
+     * shows, hands back the cookies the site then has (the check's own among them). Null if it
+     * didn't clear in time. Called off the main thread.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    fun clearCheck(context: Context, url: String, cookieHeader: String, userAgent: String?, timeoutMs: Long = 25_000): String? {
+        if (Looper.myLooper() == Looper.getMainLooper()) return null
+        val main = Handler(Looper.getMainLooper())
+        val latch = CountDownLatch(1)
+        var out: String? = null
+        var view: WebView? = null
+        val host = runCatching { java.net.URL(url).host }.getOrNull() ?: return null
+        val domain = "." + host.removePrefix("www.")
+        main.post {
+            val cm = android.webkit.CookieManager.getInstance()
+            cm.setAcceptCookie(true)
+            // The saved session goes in first, so the page loads signed in, as it did when you signed in.
+            for (part in cookieHeader.split(';')) {
+                val kv = part.trim()
+                if (kv.indexOf('=') <= 0) continue
+                cm.setCookie(url, "$kv; Domain=$domain; Path=/; Secure")
+            }
+            val w = runCatching { WebView(context.applicationContext) }.getOrNull() ?: run { latch.countDown(); return@post }
+            view = w
+            w.settings.javaScriptEnabled = true
+            w.settings.domStorageEnabled = true
+            if (!userAgent.isNullOrBlank()) w.settings.userAgentString = userAgent
+            var tries = 0
+            var waiting = false
+            fun check() {
+                if (latch.count == 0L) return
+                w.evaluateJavascript("(function(){return document.title+'\\u0001'+document.documentElement.outerHTML.length+'\\u0001'+(function(h){return h.indexOf('awsWaf')>=0||h.indexOf('challenge.js')>=0||h.indexOf('challenge-platform')>=0||h.indexOf('cf-chl')>=0})(document.documentElement.outerHTML)})()") { raw ->
+                    waiting = false
+                    val s2 = runCatching { JSONTokener(raw).nextValue() as? String }.getOrNull().orEmpty()
+                    val parts = s2.split('\u0001')
+                    val title = parts.getOrNull(0).orEmpty()
+                    val length = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                    val challenged = parts.getOrNull(2) == "true" || title.contains("human verification", true) || title.contains("just a moment", true) || title.contains("attention required", true) || length < 3000
+                    if (!challenged) {
+                        cm.flush()
+                        out = cm.getCookie(url)
+                        latch.countDown()
+                    } else if (++tries < (timeoutMs / 1200).toInt()) { waiting = true; main.postDelayed({ check() }, 1200) }
+                    else latch.countDown()
+                }
+            }
+            w.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(v: WebView?, u: String?) {
+                    if (!waiting) { waiting = true; main.postDelayed({ check() }, 800) }
+                }
+            }
+            w.loadUrl(url)
+        }
+        latch.await(timeoutMs + 2_000, TimeUnit.MILLISECONDS)
+        main.post { view?.run { stopLoading(); destroy() } }
+        return out
     }
 
     @SuppressLint("SetJavaScriptEnabled")

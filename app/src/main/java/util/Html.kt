@@ -26,7 +26,13 @@ object Html {
     }
 
     /** Visible text of an HTML fragment: tags removed, entities decoded, spaces collapsed. */
-    fun text(fragment: String): String = space.replace(decode(tag.replace(fragment, " ")), " ").trim()
+    fun text(fragment: String): String {
+        val once = decode(tag.replace(fragment, " "))
+        // Escaped twice (some feeds do): the tags only show up after decoding, so take them out again.
+        val twice = if (realTag.containsMatchIn(once)) decode(realTag.replace(once, " ")) else once
+        return space.replace(twice, " ").trim()
+    }
+    private val realTag = Regex("</?[a-zA-Z][a-zA-Z0-9]*(\\s[^<>]{0,300})?/?>")
 
     /** The Rails CSRF token from a page's meta tag or hidden form field. */
     fun csrf(html: String): String? {

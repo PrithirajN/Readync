@@ -461,13 +461,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun restoreBackup(uri: android.net.Uri, password: String, done: (String?) -> Unit) {
+    fun restoreBackup(uri: android.net.Uri, password: String, keepOtherPhone: Boolean = false, done: (String?) -> Unit) {
         viewModelScope.launch {
             val error = try {
                 io {
                     val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalStateException("Couldn't read the file")
-                    store.replace(Backup.restore(bytes, password))
+                    val restored = Backup.restore(bytes, password)
+                    // Moving phones: this one sends from now on. Readync staying on the other one too: that one keeps sending.
+                    store.replace(if (keepOtherPhone) io.github.prithirajn.readync.sync.PostingDevice.keep(restored) else io.github.prithirajn.readync.sync.PostingDevice.claim(getApplication(), restored))
                 }
                 SyncWorker.schedule(getApplication(), store.snapshot.settings, changed = true)
                 null
@@ -698,6 +700,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val session = io.github.prithirajn.readync.trackers.Session(svc.credential)
                     val items = when (tracker) {
                         io.github.prithirajn.readync.trackers.HardcoverTracker -> io.github.prithirajn.readync.trackers.HardcoverTracker.history(session)
+                        // With your Seekquel account signed in: reviews, your notebook and every reading day too.
+                        io.github.prithirajn.readync.trackers.SeekquelTracker -> io.github.prithirajn.readync.trackers.SeekquelTracker.history(session)
                         else -> tracker.library(session)
                     }
                     if (items.isEmpty()) throw IllegalStateException("No books on your ${tracker.name} shelves")

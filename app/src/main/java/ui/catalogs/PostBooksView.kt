@@ -273,7 +273,7 @@ private fun TrapCard(vm: AppViewModel, state: Snapshot, t: PostBooks.Trap, isNew
                         if (inLibrary(f)) Box(
                             Modifier.align(Alignment.TopEnd).padding(4.dp).size(18.dp).clip(CircleShape).background(c.accent),
                             contentAlignment = Alignment.Center,
-                        ) { Text("✓", style = CpType.small.copy(fontSize = 10.sp), color = androidx.compose.ui.graphics.Color.White) }
+                        ) { Text("✓", style = CpType.small.copy(fontSize = 10.sp), color = c.onAccent) }
                     }
                 }
             }

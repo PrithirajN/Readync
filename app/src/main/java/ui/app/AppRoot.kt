@@ -37,6 +37,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -57,6 +61,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalView
@@ -72,12 +77,13 @@ import io.github.prithirajn.readync.ui.theme.CpShapes
 import io.github.prithirajn.readync.ui.theme.CpType
 import kotlinx.coroutines.delay
 
-enum class Tab(val label: String, val icon: Int) {
-    LIBRARY("Library", R.drawable.lucide_library_big),
-    SFF("SFF", R.drawable.lucide_sparkles),
-    CATALOGS("Catalogs", R.drawable.lucide_globe),
-    SERVICES("Services", R.drawable.lucide_link),
-    ACTIVITY("Activity", R.drawable.lucide_list_checks),
+/** The tabs, each printed in its own spot ink (an index into the theme's five inks). */
+enum class Tab(val label: String, val icon: Int, val ink: Int) {
+    LIBRARY("Library", R.drawable.lucide_library_big, 0),
+    SFF("SFF", R.drawable.lucide_sparkles, 3),
+    CATALOGS("Catalogs", R.drawable.lucide_globe, 1),
+    SERVICES("Services", R.drawable.lucide_link, 4),
+    ACTIVITY("Activity", R.drawable.lucide_list_checks, 2),
 }
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -118,13 +124,12 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             .fillMaxSize()
             .background(Cp.colors.page)
     ) {
-        // The wallpaper behind the device: blooms in the colour of the book you're reading, drifting.
-        Wallpaper(Modifier.align(Alignment.TopCenter), height = 380.dp)
         Crossfade(state.account == null, animationSpec = Motion.medium(), label = "signedIn") { signedOut ->
             if (signedOut) {
                 SignInScreen(vm)
             } else {
-                Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
+                // The thumb cuts run down to the bottom edge, under the gesture bar; the rest keeps clear of the bars.
+                Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(androidx.compose.foundation.layout.WindowInsetsSides.Top + androidx.compose.foundation.layout.WindowInsetsSides.Horizontal))) {
                     // All three tabs stay built, side by side, so switching only slides them:
                     // nothing is rebuilt mid-animation. Swiping between tabs works too.
                     val pager = rememberPagerState(initialPage = tab.ordinal) { Tab.entries.size }
@@ -157,10 +162,31 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                             }
                         }
                     }
+                    // The tab you open on is made first, alone, so the app shows up quickly; the others
+                    // are made one at a time just after (a moment apart, nearest first), and then all stay
+                    // built so switching only slides them. (All five made before the first frame was most
+                    // of a slow start.)
+                    var built by remember { androidx.compose.runtime.mutableStateOf(setOf(tab.ordinal)) }
+                    LaunchedEffect(Unit) {
+                        // Past the first frames, so the open tab is on screen and its own entrance has run.
+                        androidx.compose.runtime.withFrameNanos { }
+                        kotlinx.coroutines.delay(450)
+                        val order = Tab.entries.indices.sortedBy { kotlin.math.abs(it - pager.currentPage) }
+                        for (i in order) {
+                            if (i in built) continue
+                            built = built + i
+                            // A frame to draw it, then a pause, before the next.
+                            androidx.compose.runtime.withFrameNanos { }
+                            kotlinx.coroutines.delay(160)
+                        }
+                    }
+                    // A tab gone to before its turn is made at once.
+                    LaunchedEffect(pager.targetPage) { if (pager.targetPage !in built) built = built + pager.targetPage }
+                    Box(Modifier.weight(1f)) {
                     HorizontalPager(
                         state = pager,
                         beyondViewportPageCount = Tab.entries.size - 1,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxSize(),
                         key = { Tab.entries[it].name },
                     ) { page ->
                         Box(
@@ -182,21 +208,41 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                             val held = remember { androidx.compose.runtime.mutableStateOf(state) }
                             androidx.compose.runtime.SideEffect { if (near && held.value !== state) held.value = state }
                             val pageState = if (near) state else held.value
-                            when (Tab.entries[page]) {
-                                Tab.LIBRARY -> LibraryScreen(vm, pageState, home = libraryHome)
-                                Tab.SFF -> SffScreen(vm, pageState, active = pager.settledPage == page)
-                                Tab.CATALOGS -> CatalogsScreen(vm, pageState)
-                                Tab.SERVICES -> ServicesScreen(vm, pageState)
-                                Tab.ACTIVITY -> ActivityScreen(vm, pageState)
+                            // Each tab printed in its own ink, on paper grained with it.
+                            io.github.prithirajn.readync.ui.theme.SectionInk(Tab.entries[page].ink) {
+                            CompositionLocalProvider(LocalTabVisible provides (page == pager.settledPage)) {
+                                RisoPaper(Modifier.fillMaxSize())
+                                if (page in built) when (Tab.entries[page]) {
+                                    Tab.LIBRARY -> LibraryScreen(vm, pageState, home = libraryHome)
+                                    Tab.SFF -> SffScreen(vm, pageState, active = pager.settledPage == page)
+                                    Tab.CATALOGS -> CatalogsScreen(vm, pageState)
+                                    Tab.SERVICES -> ServicesScreen(vm, pageState)
+                                    Tab.ACTIVITY -> ActivityScreen(vm, pageState)
+                                }
+                            }
                             }
                         }
                     }
-                    TabBar(Tab.entries[pager.targetPage]) { t ->
+                    // The thumb cuts float over the page, which runs on under them and fades into the
+                    // paper there, instead of stopping at a hard edge above them.
+                    // Debug builds only: how smoothly frames are drawing, small, at the top.
+                    if (io.github.prithirajn.readync.FrameWatch.showBadge.value) {
+                        val fps by io.github.prithirajn.readync.FrameWatch.line
+                        if (fps.isNotEmpty()) Text(
+                            fps, fontSize = 9.sp, color = Color.White, maxLines = 2,
+                            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 2.dp)
+                                .background(Color.Black.copy(alpha = 0.7f))
+                                .clickable { io.github.prithirajn.readync.FrameWatch.bench.intValue++ }
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                        )
+                    }
+                    TabBar(Tab.entries[pager.targetPage], Modifier.align(Alignment.BottomCenter)) { t ->
                         if (t == Tab.LIBRARY) libraryHome++
                         scope.launch {
                             // Firm and smooth: no overshoot when the whole page moves.
                             pager.animateScrollToPage(t.ordinal, animationSpec = spring(dampingRatio = 1f, stiffness = 300f))
                         }
+                    }
                     }
                 }
             }
@@ -211,59 +257,63 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
 }
 
 /**
- * The dock: a dark bar floating over the bottom of the screen. The chosen tab's label lights up
- * white and an orange light slides under it to the next one, with a click.
+ * The thumb index: five cuts along the bottom edge, each in its tab's ink, like the tabs cut into
+ * a book's pages. The chosen one rises with a spring and gets a dot; a press pushes a cut down.
  */
 @Composable
-private fun TabBar(current: Tab, onSelect: (Tab) -> Unit) {
+private fun TabBar(current: Tab, modifier: Modifier = Modifier, onSelect: (Tab) -> Unit) {
     val c = Cp.colors
     val view = androidx.compose.ui.platform.LocalView.current
-    val index = Tab.entries.indexOf(current)
-    // The light travels between tabs on a spring.
-    val pos by animateFloatAsState(index.toFloat(), spring(dampingRatio = 0.62f, stiffness = 380f), label = "dockLight")
-    Box(
-        Modifier
+    val nav = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    Row(
+        modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 10.dp)
-            .shadow(14.dp, RoundedCornerShape(24.dp), ambientColor = c.shade, spotColor = c.shade)
-            .clip(RoundedCornerShape(24.dp))
-            .background(if (c.isDark) Color(0xFF232220) else c.ink)
-            .height(62.dp),
+            // A soft wash of paper rising behind the cuts: what scrolls under them fades away.
+            .drawBehind {
+                drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(
+                    0f to c.page.copy(alpha = 0f), 0.45f to c.page.copy(alpha = 0.82f), 1f to c.page,
+                ))
+            }
+            .padding(start = 8.dp, end = 8.dp, top = 30.dp)
+            .height(62.dp + nav),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.Bottom,
     ) {
-        // The sliding light, under the chosen tab.
-        androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
-            val slot = maxWidth / Tab.entries.size
-            Box(
+        for (t in Tab.entries) {
+            val on = t == current
+            val ink = c.inks[t.ink].ink
+            val lift by animateFloatAsState(if (on) 1f else 0f, spring(dampingRatio = 0.5f, stiffness = 420f), label = "cutLift")
+            val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            val pressed by source.collectIsPressedAsState()
+            val push by animateFloatAsState(if (pressed) 1f else 0f, spring(dampingRatio = 0.6f, stiffness = 900f), label = "cutPush")
+            Column(
                 Modifier
-                    .offset(x = slot * pos + slot / 2 - 14.dp, y = 50.dp)
-                    .size(width = 28.dp, height = 4.dp)
-                    .drawBehind {
-                        drawRoundRect(c.accent.copy(alpha = 0.35f), topLeft = androidx.compose.ui.geometry.Offset(-6.dp.toPx(), -3.dp.toPx()),
-                            size = androidx.compose.ui.geometry.Size(size.width + 12.dp.toPx(), size.height + 6.dp.toPx()), cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx()))
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .graphicsLayer {
+                        // Unchosen cuts sit lower (their foot runs off the screen); a press pushes one down.
+                        translationY = (1f - lift) * 14.dp.toPx() + push * 4.dp.toPx()
+                        scaleX = 1f + push * 0.04f
                     }
-                    .clip(CpShapes.pill)
-                    .background(c.accent),
-            )
-        }
-        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            for (t in Tab.entries) {
-                val on = t == current
-                val tint by animateColorAsState(if (on) Color.White else Color.White.copy(alpha = 0.5f), Motion.medium(), label = "tint")
-                val lift by animateFloatAsState(if (on) 1f else 0f, Motion.bouncy(), label = "lift")
-                Column(
+                    .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                    .background(ink)
+                    .clickable(interactionSource = source, indication = null, role = androidx.compose.ui.semantics.Role.Tab, onClickLabel = t.label) {
+                        if (!on) Haptics.tick(view)
+                        onSelect(t)
+                    }
+                    .padding(top = 9.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                LucideIcon(t.icon, Modifier.size(17.dp).graphicsLayer { rotationZ = -8f * push }, c.onAccent)
+                Text(t.label, style = CpType.mono.copy(fontSize = CpType.small.fontSize), color = c.onAccent, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+                Box(
                     Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) {
-                            if (!on) Haptics.tick(view)
-                            onSelect(t)
-                        },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    LucideIcon(t.icon, Modifier.size(19.dp).graphicsLayer { translationY = -3.dp.toPx() * lift; scaleX = 1f + 0.1f * lift; scaleY = 1f + 0.1f * lift }, tint)
-                    Text(t.label, style = CpType.chip.copy(fontSize = CpType.small.fontSize), color = tint, modifier = Modifier.padding(top = 3.dp).graphicsLayer { translationY = -2.dp.toPx() * lift })
-                }
+                        .padding(top = 3.dp)
+                        .size(5.dp)
+                        .graphicsLayer { scaleX = lift; scaleY = lift }
+                        .clip(CpShapes.pill)
+                        .background(c.onAccent),
+                )
             }
         }
     }
@@ -343,15 +393,17 @@ internal fun Toaster(vm: AppViewModel, modifier: Modifier, bottom: androidx.comp
     ) {
         val t = toast ?: return@AnimatedVisibility
         val c = Cp.colors
+        // A slip of paper with a stripe of ink down its edge (red for a problem), offset over a second ink.
+        val stripe = if (t.error) c.error else c.accent
         Column(
             Modifier
                 .fillMaxWidth()
-                .shadow(8.dp, CpShapes.card)
+                .drawBehind { drawRoundRect(c.signalLedge, topLeft = androidx.compose.ui.geometry.Offset(3.dp.toPx(), 4.dp.toPx()), size = size, cornerRadius = androidx.compose.ui.geometry.CornerRadius(14.dp.toPx())) }
                 .clip(CpShapes.card)
-                .background(c.surface)
-                .border(1.dp, c.hairline, CpShapes.card)
+                .background(c.raised)
+                .drawBehind { drawRect(stripe, size = androidx.compose.ui.geometry.Size(6.dp.toPx(), size.height)) }
                 .clickable { vm.toast.value = null }
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -365,6 +417,13 @@ internal fun Toaster(vm: AppViewModel, modifier: Modifier, bottom: androidx.comp
         }
     }
 }
+
+/** Room the thumb cuts take over the bottom of every page, added under each page's last item. */
+val TabBarSpace: androidx.compose.ui.unit.Dp
+    @Composable get() = 66.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+/** Whether this tab is the one on the screen: endless little motions (a swaying ribbon) rest while it isn't. */
+val LocalTabVisible = androidx.compose.runtime.compositionLocalOf { true }
 
 /** Page padding used by every tab: px-4, pt-6. */
 val PagePadding = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp)

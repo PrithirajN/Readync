@@ -18,13 +18,17 @@ class MainActivity : ComponentActivity() {
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val activityStart = android.os.SystemClock.elapsedRealtime()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         // For: a tracker needing you to sign in again, a failed sync, a book you finished.
         if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         if (savedInstanceState == null) handle(intent)
-        // The on-device model loaded ahead (only with the app open, on phones with the memory for it).
-        if (savedInstanceState == null) io.github.prithirajn.readync.ai.LocalModel.warm(applicationContext)
+        // The on-device model loaded ahead (only with the app open, on phones with the memory for it),
+        // once the app is up: loading gigabytes while it starts made the start slower.
+        if (savedInstanceState == null) window.decorView.postDelayed({ io.github.prithirajn.readync.ai.LocalModel.warm(applicationContext) }, 6_000)
+        // Debug builds: log how smoothly frames draw (tag FrameWatch).
+        FrameWatch.start(this)
         setContent {
             TrackerSyncTheme {
                 io.github.prithirajn.readync.ui.ProvideAppInsets {
@@ -32,6 +36,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        Startup.note("activity", android.os.SystemClock.elapsedRealtime() - activityStart)
+        // The first frame on screen, for how long the start took.
+        window.decorView.viewTreeObserver.addOnDrawListener(object : android.view.ViewTreeObserver.OnDrawListener {
+            var done = false
+            override fun onDraw() {
+                if (done) return
+                done = true
+                Startup.firstFrameDrawn()
+                window.decorView.post { runCatching { window.decorView.viewTreeObserver.removeOnDrawListener(this) } }
+            }
+        })
     }
 
     override fun onResume() {

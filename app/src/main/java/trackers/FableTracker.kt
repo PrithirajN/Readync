@@ -119,7 +119,10 @@ object FableTracker : Tracker {
             session.put("expiresAt", 0L)
             ensureToken(session)
             r = send()
-            if (r.code == 401 || r.code == 403) throw AuthException("Fable rejected the saved login")
+            // Refused even with a token just renewed: a 401 is the login itself; a 403 is this one
+            // request not being allowed (a book or post you can't change), not a reason to sign out.
+            if (r.code == 401) throw AuthException("Fable rejected the saved login")
+            if (r.code == 403) throw io.github.prithirajn.readync.net.ServiceException("Fable didn't allow that (HTTP 403)")
         }
         return r
     }
@@ -492,7 +495,10 @@ object FableTracker : Tracker {
             session.put("expiresAt", 0L)
             ensureToken(session)
             r = send()
-            if (r.code == 401 || r.code == 403) throw AuthException("Fable rejected the saved login")
+            // Refused even with a token just renewed: a 401 is the login itself; a 403 is this one
+            // request not being allowed (a book or post you can't change), not a reason to sign out.
+            if (r.code == 401) throw AuthException("Fable rejected the saved login")
+            if (r.code == 403) throw io.github.prithirajn.readync.net.ServiceException("Fable didn't allow that (HTTP 403)")
         }
         return r
     }

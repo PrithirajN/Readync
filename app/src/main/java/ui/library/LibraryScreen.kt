@@ -27,6 +27,7 @@ import io.github.prithirajn.readync.sync.ManualBooks
 import io.github.prithirajn.readync.sync.SyncEngine
 import io.github.prithirajn.readync.sync.Shelves
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -120,14 +121,17 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
     var asking by remember { mutableStateOf(false) }
     // The Highlights shelf, beside the reading shelves: every passage, searchable and shareable.
     var clipsShelf by rememberSaveable { mutableStateOf(false) }
+    // The index as a printed list or a wall of covers.
+    var grid by rememberSaveable { mutableStateOf(false) }
     var clipBook by rememberSaveable { mutableStateOf<String?>(null) }
     var editingClip by remember { mutableStateOf<io.github.prithirajn.readync.sync.Highlights.Item?>(null) }
     var sharingClip by remember { mutableStateOf<io.github.prithirajn.readync.sync.Highlights.Item?>(null) }
     var photoFrom by remember { mutableStateOf<String?>(null) }
     val allClips = rememberAllHighlights(state)
-    val clipBooks = remember(allClips) { highlightBooks(allClips) }
-    val shownClips = remember(allClips, clipBook, query) {
-        io.github.prithirajn.readync.sync.Highlights.search(state, allClips.filter { clipBook == null || it.clip.document == clipBook }, query)
+    // Only while the Highlights shelf is open (they were worked out on every start before).
+    val clipBooks = remember(allClips, clipsShelf) { if (clipsShelf) highlightBooks(allClips) else emptyList() }
+    val shownClips = remember(allClips, clipBook, query, clipsShelf) {
+        if (!clipsShelf) emptyList() else io.github.prithirajn.readync.sync.Highlights.search(state, allClips.filter { clipBook == null || it.clip.document == clipBook }, query)
     }
     val listContext = androidx.compose.ui.platform.LocalContext.current
     // Checked when the Library opens and after a model is added (state changes redraw this).
@@ -202,32 +206,23 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
         tab = ReadStatus.READING
         listState.animateScrollToItem(0)
     }
-    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
+    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp + TabBarSpace)) {
         item {
-            Column(PagePadding.fillMaxWidth()) {
-                // The greeting with the page's keys beside it, so the title has the full width below.
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) { Eyebrow(greeting()) }
-                    // The keys sit together on a little tray, spaced so each reads as its own key.
-                    Row(
-                        Modifier.clip(CpShapes.pill).background(c.surface.copy(alpha = if (c.isDark) 0.55f else 0.7f))
-                            .border(1.dp, c.hairline, CpShapes.pill).padding(horizontal = 5.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // With an on-device model: ask about your reading.
-                        if (aiReady) IconCircleButton(R.drawable.lucide_sparkles, "Ask about your reading", { asking = true }, tint = c.textMid)
-                        IconCircleButton(R.drawable.lucide_search, "Search", { searching = !searching; if (!searching) query = "" }, tint = if (searching) c.accentText else c.textMid)
-                        // a physical book: added from Hardcover or Seekquel, updated by photo or page.
-                        IconCircleButton(R.drawable.lucide_plus, "Add a book", { addQuery = ""; adding = true }, tint = c.textMid)
-                        IconCircleButton(R.drawable.ic_ribbon_sync, if (state.running) "Syncing" else "Sync now", { vm.syncNow() }, busy = state.running)
-                    }
+            TabHeader("your library", greeting()) {
+                // With an on-device model: ask about your reading.
+                if (aiReady) IconCircleButton(R.drawable.lucide_sparkles, "Ask about your reading", { asking = true }, tint = c.textMid)
+                IconCircleButton(R.drawable.lucide_search, "Search", { searching = !searching; if (!searching) query = "" }, tint = if (searching) c.accentText else c.textMid)
+                // a physical book: added from Hardcover or Seekquel, updated by photo or page.
+                IconCircleButton(R.drawable.lucide_plus, "Add a book", { addQuery = ""; adding = true }, tint = c.textMid)
+                IconCircleButton(R.drawable.ic_ribbon_sync, if (state.running) "Syncing" else "Sync now", { vm.syncNow() }, busy = state.running)
+            }
+        }
+        // Today's front page: the book you're reading now, printed big.
+        if (!searching && !clipsShelf && tab == ReadStatus.READING) {
+            currentBook(state)?.let { now ->
+                item(key = "today") {
+                    TodayEdition(state, now, Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp))
                 }
-                PageTitle("Your library")
-                AnimatedQuiet(
-                    if (state.running) state.syncStep?.let { "Syncing \u00B7 $it…" } ?: "Syncing…"
-                    else "${all.size} book${if (all.size == 1) "" else "s"} · synced ${ago(state.lastRun)}"
-                )
             }
         }
         if (searching) {
@@ -359,7 +354,7 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
         if (all.isNotEmpty()) {
             item {
                 // This month only: pages read and books finished since the 1st (reading is what's open now).
-                StatsCard(
+                Ledger(
                     reading = counts[ReadStatus.READING] ?: 0,
                     pages = pages?.let { Shelves.pagesThisMonth(state, today) },
                     today = today,
@@ -367,6 +362,7 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
                     month = Shelves.monthName(),
                     streak = Shelves.streak(state, today),
                     readToday = (today ?: 0) > 0,
+                    modifier = Modifier.padding(top = 24.dp),
                 )
             }
             if (allClips.isNotEmpty() && !clipsShelf && !searching) {
@@ -428,7 +424,12 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
         } else {
             item {
                 // Highlights are opened from the Highlight of the day card ("All N"), not a shelf tab.
-                StatusTabs(tab, counts, highlightsOn = clipsShelf) { tab = it; clipsShelf = false }
+                IndexHeading(
+                    if (state.running) state.syncStep?.let { "Syncing \u00B7 $it…" } ?: "Syncing…"
+                    else "${all.size} book${if (all.size == 1) "" else "s"} · synced ${ago(state.lastRun)}",
+                    grid = grid, onGrid = { grid = it },
+                )
+                ShelfStamps(tab, counts, highlightsOn = clipsShelf) { tab = it; clipsShelf = false }
             }
             if (clipsShelf) {
                 item(key = "clip-title") {
@@ -503,10 +504,26 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
                     }
                 }
             }
-            items(shown, key = { it.document }) { book ->
-                // New books fade in, and rows glide when a sync reorders them.
-                BookRow(book, state, linked, Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = Motion.springy(), fadeOutSpec = Motion.fast())) {
-                    open = book.document
+            if (grid) {
+                items(shown.chunked(3), key = { row -> "row-" + row.first().document }) { row ->
+                    CoverRow(row, Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = Motion.springy(), fadeOutSpec = Motion.fast())) { open = it }
+                }
+            } else {
+                items(shown, key = { it.document }) { book ->
+                    // New books fade in, and rows glide when a sync reorders them.
+                    val originName = book.origin?.let { originLabel(it) }
+                    val where = when {
+                        ManualBooks.isManual(book) -> "physical book"
+                        originName != null -> "from $originName"
+                        else -> null
+                    }
+                    IndexRow(
+                        book,
+                        meta = "${book.percent}% · ${book.status?.label ?: "Reading"} · ${ago(book.timestamp * 1000)}" + (where?.let { " · $it" } ?: ""),
+                        held = book.held,
+                        place = book.place?.takeIf { book.status != ReadStatus.FINISHED },
+                        modifier = Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = Motion.springy(), fadeOutSpec = Motion.fast()),
+                    ) { open = book.document }
                 }
             }
             }
@@ -546,10 +563,7 @@ private fun StatsCard(reading: Int, pages: Int?, finished: Int, today: Int? = nu
     Column(
         Modifier
             .padding(start = 16.dp, end = 16.dp, top = 16.dp)
-            .shadow(14.dp, androidx.compose.foundation.shape.RoundedCornerShape(26.dp), ambientColor = c.shade, spotColor = c.shade)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(26.dp))
-            .background(c.surface)
-            .padding(10.dp),
+            .padding(end = 3.dp, bottom = 4.dp),
     ) {
         Screen {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
@@ -569,25 +583,23 @@ private fun StatsCard(reading: Int, pages: Int?, finished: Int, today: Int? = nu
                         style = CpType.bodyStrong, color = c.screenText,
                     )
                     Fill()
-                    val blink = androidx.compose.animation.core.rememberInfiniteTransition(label = "streak")
-                    val b by blink.animateFloat(0.25f, 1f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(700), androidx.compose.animation.core.RepeatMode.Reverse), label = "blink")
+                    // Today's dot blinks only while the Library is on screen (elsewhere it would keep the phone redrawing).
+                    val blinking = !readToday && LocalTabVisible.current && LocalAnimationsOn.current
+                    val b = if (blinking) {
+                        val blink = androidx.compose.animation.core.rememberInfiniteTransition(label = "streak")
+                        blink.animateFloat(0.25f, 1f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(700), androidx.compose.animation.core.RepeatMode.Reverse), label = "blink")
+                    } else null
                     // Read today: the streak's days lit (up to a week). Not yet: the days before, and today blinking.
                     val litCount = if (readToday) streak.coerceAtMost(7) else streak.coerceAtMost(6)
                     for (i in 0 until 7) {
                         val lit = i < litCount
                         val isToday = !readToday && i == litCount
                         Box(
-                            Modifier.padding(start = 4.dp).size(width = 12.dp, height = 8.dp).clip(CpShapes.pill)
-                                // Today's blink read while drawing, so only this dot redraws, not the panel.
-                                .drawBehind {
-                                    drawRect(
-                                        when {
-                                            lit -> c.accent
-                                            isToday -> c.accent.copy(alpha = 0.25f + 0.5f * b)
-                                            else -> c.screenOff
-                                        },
-                                    )
-                                },
+                            Modifier.padding(start = 4.dp).size(width = 12.dp, height = 8.dp)
+                                // Today's blink is only the dot's own layer fading: nothing is redrawn for it.
+                                .graphicsLayer { alpha = if (isToday) 0.25f + 0.5f * (b?.value ?: 1f) else 1f }
+                                .clip(CpShapes.pill)
+                                .background(if (lit || isToday) c.accent else c.screenOff),
                         )
                     }
                 }
@@ -606,7 +618,7 @@ private fun Stat(value: Int, label: String, modifier: Modifier, extra: String? =
     Column(modifier) {
         RollingNumber(value, CpType.screenSmall.copy(fontSize = 30.sp, lineHeight = 32.sp), c.screenText)
         VSpace(2)
-        DeviceLabel(label, color = c.screenDim)
+        Text(label, style = CpType.mono, color = c.screenDim, maxLines = 2)
         extra?.let {
             VSpace(4)
             AnimatedContent(
@@ -744,6 +756,10 @@ private fun BookRow(book: Book, state: Snapshot, linked: List<Tracker>, modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
+        // The spine: a strip of the cover's own colour.
+        val spine = rememberBookInk(book.coverUrl)
+        Box(Modifier.padding(top = 4.dp).width(4.dp).height(64.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(2.dp)).background(spine))
+        HSpace(10)
         BookCover(book.coverUrl, book.displayTitle, 48.dp, 72.dp)
         HSpace(14)
         Column(Modifier.weight(1f)) {
@@ -752,7 +768,7 @@ private fun BookRow(book: Book, state: Snapshot, linked: List<Tracker>, modifier
             // A manga or comic volume: where you are in it.
             book.place?.takeIf { book.status != ReadStatus.FINISHED }?.let { Quiet(it, maxLines = 1, color = c.accentText) }
             VSpace(10)
-            ProgressBar(book.percentage.toFloat())
+            ProgressBar(book.percentage.toFloat(), coverUrl = book.coverUrl)
             VSpace(6)
             val originName = book.origin?.let { originLabel(it) }
             // Where it came from, in the same quiet line: "33% · Reading · 11h ago · from Kindle".
@@ -898,13 +914,14 @@ private fun BookSheet(
         shape = CpShapes.sheet,
         containerColor = c.page,
     ) {
+        val bookScroll = rememberScrollState()
         Box(Modifier.fillMaxSize()) {
         // Always the full height of the screen, so switching pages or loading never resizes the sheet.
         Column(
             Modifier
                 .fillMaxWidth()
                 .fillMaxHeight()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(bookScroll)
                 .padding(bottom = 32.dp)
         ) {
             val facts = state.facts[book.document]
@@ -915,7 +932,7 @@ private fun BookSheet(
             val topInset = androidx.compose.foundation.layout.WindowInsets.statusBars
                 .asPaddingValues().calculateTopPadding()
             Box(Modifier.fillMaxWidth()) {
-                Wallpaper(height = 340.dp + topInset)
+                Wallpaper(height = 340.dp + topInset, color = rememberBookInk(book.coverUrl))
                 Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = topInset)) {
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { SheetGrip() }
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -932,61 +949,64 @@ private fun BookSheet(
                             if (it == BookAction.WEBNOVEL) storyLink = true else bookAction = it
                         }
                     }
-                    // The device.
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .shadow(16.dp, androidx.compose.foundation.shape.RoundedCornerShape(28.dp), ambientColor = c.shade, spotColor = c.shade)
-                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(28.dp))
-                            .background(c.surface)
-                            .padding(12.dp),
-                    ) {
-                        Screen {
-                            Row {
-                                Column(Modifier.weight(1f)) {
-                                    DeviceLabel(
-                                        when (book.status) {
-                                            ReadStatus.FINISHED -> "Finished"
-                                            ReadStatus.DNF -> "Did not finish"
-                                            ReadStatus.PAUSED -> "Paused"
-                                            ReadStatus.TO_READ -> "Want to read"
-                                            else -> "Now reading"
-                                        } + if (book.manualAt != null && book.timestamp == book.manualAt && !ManualBooks.isManual(book)) "  /  set by you" else "",
-                                        color = c.screenDim,
-                                    )
-                                    VSpace(8)
-                                    Text(book.displayTitle, style = CpType.section.copy(fontSize = 19.sp, lineHeight = 23.sp), color = c.screenText, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                                    VSpace(6)
-                                    book.author?.let { Text(it, style = CpType.small, color = c.screenDim, maxLines = 1) }
-                                    seriesLine(facts)?.let { Text(it, style = CpType.small, color = c.screenDim, maxLines = 1) }
+                    // The title page: the cover laid on its own colour a little off register, tilted
+                    // as if put down by hand (it drifts slower than the page as you scroll), the title
+                    // set big beside it, then your place as a big figure over a bar of the cover's ink.
+                    val bookInk = rememberBookInk(book.coverUrl)
+                    VSpace(10)
+                    Row(verticalAlignment = Alignment.Top) {
+                        val pop = remember(book.document) { androidx.compose.animation.core.Animatable(0.75f) }
+                        LaunchedEffect(book.document) { pop.animateTo(1f, Motion.bouncy()) }
+                        Box(
+                            Modifier
+                                .graphicsLayer {
+                                    scaleX = pop.value; scaleY = pop.value
+                                    rotationZ = -3f + (1f - pop.value) * -12f
+                                    translationY = bookScroll.value * 0.25f
                                 }
-                                HSpace(12)
-                                // The cover pops in with a little bounce and a tilt when the book opens.
-                                val pop = remember(book.document) { androidx.compose.animation.core.Animatable(0.7f) }
-                                LaunchedEffect(book.document) { pop.animateTo(1f, Motion.bouncy()) }
-                                BookCover(
-                                    book.coverUrl, book.displayTitle, 78.dp, 116.dp,
-                                    Modifier.graphicsLayer { scaleX = pop.value; scaleY = pop.value; rotationZ = 3f + (1f - pop.value) * 14f },
-                                )
-                            }
-                            VSpace(10)
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                RollingNumber(book.percent, CpType.screenNumber, c.accent)
-                                Text("%", style = CpType.screenSmall, color = c.screenDim, modifier = Modifier.padding(start = 3.dp, bottom = 7.dp))
-                                Fill()
-                                if (facts?.rating != null || facts?.year != null) Box(Modifier.padding(bottom = 8.dp)) { RatingLine(facts) }
-                            }
-                            VSpace(10)
-                            SegmentBar(book.percentage.toFloat(), segments = 20, height = 7.dp, on = c.accent, off = c.screenOff)
+                                .size(124.dp, 186.dp)
+                                .drawBehind { drawRoundRect(bookInk, topLeft = androidx.compose.ui.geometry.Offset(6.dp.toPx(), 7.dp.toPx()), size = size, cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx())) },
+                        ) { BookCover(book.coverUrl, book.displayTitle, 124.dp, 186.dp) }
+                        HSpace(18)
+                        Column(Modifier.weight(1f).padding(top = 4.dp)) {
+                            Text(
+                                (when (book.status) {
+                                    ReadStatus.FINISHED -> "finished"
+                                    ReadStatus.DNF -> "did not finish"
+                                    ReadStatus.PAUSED -> "paused"
+                                    ReadStatus.TO_READ -> "want to read"
+                                    else -> "now reading"
+                                }) + if (book.manualAt != null && book.timestamp == book.manualAt && !ManualBooks.isManual(book)) " · set by you" else "",
+                                style = CpType.eyebrow, color = c.accentText,
+                            )
+                            VSpace(6)
+                            Text(book.displayTitle, fontFamily = io.github.prithirajn.readync.ui.theme.Display, fontWeight = androidx.compose.ui.text.font.FontWeight.Black,
+                                fontSize = 27.sp, lineHeight = 31.sp, color = c.text, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                            VSpace(6)
+                            book.author?.let { Text(it, style = CpType.body.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic), color = c.textMid, maxLines = 2) }
+                            seriesLine(facts)?.let { Text(it, style = CpType.small, color = c.quiet, maxLines = 1) }
                         }
-                        VSpace(12)
-                        // The keys: the everyday actions. Rate is the orange key until the book is rated.
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            DeviceKey(R.drawable.lucide_star, book.rating?.let { SyncEngine.stars(it) } ?: "Rate", Modifier.weight(1f), signal = book.rating == null, onClick = onRate)
-                            if (!ManualBooks.isManual(book)) DeviceKey(R.drawable.lucide_book_open, "Progress", Modifier.weight(1f)) { updating = true }
-                            DeviceKey(R.drawable.lucide_camera, "Snap", Modifier.weight(1f)) { highlighting = true }
-                            if (allLinked.isNotEmpty()) DeviceKey(R.drawable.lucide_scale, "Compare", Modifier.weight(1f)) { comparing = true }
-                        }
+                    }
+                    VSpace(18)
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        RollingNumber(book.percent, CpType.screenNumber.copy(fontSize = 64.sp, lineHeight = 62.sp), c.text)
+                        Text("%", style = CpType.screenSmall, color = c.accentText, modifier = Modifier.padding(start = 3.dp, bottom = 9.dp))
+                        Fill()
+                        if (facts?.rating != null || facts?.year != null) Box(Modifier.padding(bottom = 10.dp)) { RatingLine(facts) }
+                    }
+                    VSpace(8)
+                    SegmentBar(book.percentage.toFloat(), height = 9.dp, on = bookInk)
+                    book.pageCount?.let { total ->
+                        VSpace(6)
+                        Text("page ${(book.percentage * total).toInt().coerceIn(0, total)} of $total", style = CpType.mono, color = c.quiet)
+                    }
+                    VSpace(16)
+                    // The everyday actions as stamps: Rate inked in the section's colour until the book is rated.
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        BookStamp(R.drawable.lucide_star, book.rating?.let { SyncEngine.stars(it) } ?: "Rate", Modifier.weight(1f), filled = book.rating == null, onClick = onRate)
+                        if (!ManualBooks.isManual(book)) BookStamp(R.drawable.lucide_book_open, "Progress", Modifier.weight(1f)) { updating = true }
+                        BookStamp(R.drawable.lucide_camera, "Snap", Modifier.weight(1f)) { highlighting = true }
+                        if (allLinked.isNotEmpty()) BookStamp(R.drawable.lucide_scale, "Compare", Modifier.weight(1f)) { comparing = true }
                     }
                 }
             }
@@ -1209,6 +1229,12 @@ private fun BookSheet(
             if (storyLink && tab != 0 && !book.isMangaOrComic) WebNovelCard(vm, book, state.webNovels[book.document], book.document in state.grewAt, storyLink) { storyLink = it }
             }
         }
+        // Scrolled up: the status bar gets a strip of the page under it, so the tabs and cards
+        // don't run under the clock.
+        if (bookScroll.value > 0) {
+            val inset = androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+            Box(Modifier.fillMaxWidth().height(inset + 12.dp).background(androidx.compose.ui.graphics.Brush.verticalGradient(0f to c.page, 0.72f to c.page, 1f to c.page.copy(alpha = 0f))))
+        }
         // What you just did (a copy kept, a price tracked…) answered here, over the book.
         SheetToaster()
         }
@@ -1419,7 +1445,6 @@ internal fun PageTabs(tabs: List<String>, selected: Int, onSelect: (Int) -> Unit
             .padding(top = 4.dp)
             .clip(CpShapes.pill)
             .background(c.field)
-            .drawBehind { drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(androidx.compose.ui.graphics.Color.Black.copy(alpha = if (c.isDark) 0.35f else 0.07f), androidx.compose.ui.graphics.Color.Transparent), endY = 5.dp.toPx())) }
             .padding(4.dp),
     ) {
         Box(
@@ -1427,14 +1452,14 @@ internal fun PageTabs(tabs: List<String>, selected: Int, onSelect: (Int) -> Unit
                 .fillMaxWidth(1f / tabs.size.coerceAtLeast(1))
                 .height(38.dp)
                 .graphicsLayer { translationX = at * size.width }
-                .shadow(6.dp, CpShapes.pill, ambientColor = c.accent, spotColor = c.accent)
+                .drawBehind { drawRoundRect(c.signalLedge, topLeft = androidx.compose.ui.geometry.Offset(1.5.dp.toPx(), 2.dp.toPx()), size = size, cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)) }
                 .clip(CpShapes.pill)
-                .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(lerpColor(c.accent, androidx.compose.ui.graphics.Color.White, 0.15f), c.accent))),
+                .background(c.accent),
         )
         Row(Modifier.fillMaxWidth()) {
             tabs.forEachIndexed { i, t ->
                 val on = i == selected
-                val tint by androidx.compose.animation.animateColorAsState(if (on) androidx.compose.ui.graphics.Color.White else c.textMid, Motion.medium(), label = "tabTint")
+                val tint by androidx.compose.animation.animateColorAsState(if (on) c.onAccent else c.textMid, Motion.medium(), label = "tabTint")
                 Box(
                     Modifier
                         .weight(1f)
@@ -1465,6 +1490,43 @@ private fun DeviceKey(icon: Int, label: String, modifier: Modifier = Modifier, s
             VSpace(4)
             Text(label, style = CpType.small.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), color = keyText(kind), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+    }
+}
+
+/**
+ * One of a book's everyday actions as a stamp: an outline with its icon and word that inks in under
+ * your finger, the icon giving a little hop; [filled] inks it in the section's colour over its second ink.
+ */
+@Composable
+private fun BookStamp(icon: Int, label: String, modifier: Modifier = Modifier, filled: Boolean = false, onClick: () -> Unit) {
+    val c = Cp.colors
+    val view = androidx.compose.ui.platform.LocalView.current
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    val ink by androidx.compose.animation.core.animateFloatAsState(if (pressed) 1f else 0f, androidx.compose.animation.core.spring(dampingRatio = 0.6f, stiffness = 700f), label = "stampInk")
+    val hop by androidx.compose.animation.core.animateFloatAsState(if (pressed) 1f else 0f, androidx.compose.animation.core.spring(dampingRatio = 0.35f, stiffness = 600f), label = "stampHop")
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 18.dp, topEnd = 7.dp, bottomEnd = 18.dp, bottomStart = 7.dp)
+    val fg = if (filled) c.onAccent else androidx.compose.ui.graphics.lerp(c.text, c.accentText, ink)
+    Column(
+        modifier
+            .height(66.dp)
+            .graphicsLayer { scaleX = 1f - 0.05f * ink; scaleY = 1f - 0.05f * ink }
+            .drawBehind {
+                if (filled) drawRoundRect(c.signalLedge, topLeft = androidx.compose.ui.geometry.Offset(2.5.dp.toPx(), 3.dp.toPx()), size = size, cornerRadius = androidx.compose.ui.geometry.CornerRadius(14.dp.toPx()))
+            }
+            .clip(shape)
+            .background(if (filled) c.accent else c.accentTint.copy(alpha = 0.25f + 0.75f * ink))
+            .drawBehind {
+                if (!filled) drawRoundRect(c.text.copy(alpha = 0.22f * (1f - ink)), cornerRadius = androidx.compose.ui.geometry.CornerRadius(14.dp.toPx()),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+            }
+            .clickable(source, indication = null, role = androidx.compose.ui.semantics.Role.Button, onClickLabel = label) { Haptics.tick(view); onClick() },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        LucideIcon(icon, Modifier.size(19.dp).graphicsLayer { translationY = -4.dp.toPx() * hop; rotationZ = -10f * hop }, fg)
+        VSpace(5)
+        Text(label, style = CpType.small.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), color = fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

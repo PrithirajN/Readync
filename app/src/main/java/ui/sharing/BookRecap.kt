@@ -889,7 +889,7 @@ fun BookRecapSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () ->
                                                     Modifier.align(Alignment.TopEnd).padding(8.dp).size(30.dp).clip(androidx.compose.foundation.shape.CircleShape)
                                                         .background(if (n != null) c.accent else androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f)),
                                                     contentAlignment = Alignment.Center,
-                                                ) { Text(n?.toString() ?: "", style = CpType.bodyStrong, color = androidx.compose.ui.graphics.Color.White) }
+                                                ) { Text(n?.toString() ?: "", style = CpType.bodyStrong, color = if (n != null) c.onAccent else androidx.compose.ui.graphics.Color.White) }
                                             }
                                         }
                                     }

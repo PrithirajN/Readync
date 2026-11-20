@@ -44,10 +44,64 @@ class AuthException(message: String) : Exception(message)
 class ServiceException(message: String) : Exception(message)
 
 /**
+ * The service is there but can't take it right now: rate-limited (429), down for a moment (5xx),
+ * or a bot check in the way. Not the update's fault, so it stays queued and isn't counted as a
+ * failed try; the service is left alone for [retryAfterSec] (or a while) before it's tried again.
+ */
+class BusyException(message: String, val retryAfterSec: Long? = null) : Exception(message) {
+    companion object {
+        /** Seconds from a Retry-After header (a number of seconds, or an HTTP date), if it has one. */
+        fun retryAfter(r: HttpResponse): Long? {
+            val v = r.header("retry-after")?.trim() ?: return null
+            v.toLongOrNull()?.let { return it.coerceIn(1, 6 * 3600) }
+            return runCatching {
+                val at = java.time.ZonedDateTime.parse(v, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toEpochSecond()
+                (at - System.currentTimeMillis() / 1000).coerceIn(1, 6 * 3600)
+            }.getOrNull()
+        }
+
+        /**
+         * Whether [e] (from any tracker) means "not now" rather than "not this": the services' own
+         * words for being busy, rate limits, server errors and timeouts. Lets the queue keep an update
+         * that a tracker reported as a plain error, without changing every tracker.
+         */
+        fun looksBusy(e: Throwable): Boolean {
+            if (e is BusyException) return true
+            val m = e.message ?: return false
+            return Regex("(?i)HTTP (429|5\\d\\d)\\b|rate.?limit|too many requests|\\bbusy\\b|try again later|temporarily|timed? ?out|service unavailable|bad gateway|gateway time|cloudflare|bot check|just a moment").containsMatchIn(m)
+        }
+    }
+}
+
+/**
  * Not an error: the update can't be made for a reason only the user can fix on the
  * tracker (e.g. no page count). Shown as a note on the book, not retried.
  */
 class SkipException(message: String) : Exception(message)
+
+/**
+ * Clears a site's bot check (Amazon's WAF on Goodreads, Cloudflare on StoryGraph) as a browser
+ * would: given the page, the saved cookies and the user agent, it loads the page unseen, lets the
+ * check's script run, and hands back the cookies the site then has. Set when the app starts
+ * (PageBrowser); null in tests, when a check just means "try again later".
+ */
+object BotCheck {
+    @Volatile var solver: ((url: String, cookieHeader: String, userAgent: String?) -> String?)? = null
+
+    /** When clearing last failed, per site (ms): not tried unseen again for 20 minutes after. */
+    private val failedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Fresh cookies for [url] with the check passed, or null (no solver, tried lately, or it didn't clear). */
+    fun clear(url: String, cookieHeader: String, userAgent: String?): String? {
+        val s = solver ?: return null
+        val host = runCatching { java.net.URL(url).host }.getOrNull() ?: return null
+        if (System.currentTimeMillis() - (failedAt[host] ?: 0L) < 20 * 60_000L) return null
+        val fresh = runCatching { s(url, cookieHeader, userAgent) }.getOrNull()
+        if (fresh.isNullOrBlank() || !fresh.contains('=')) { failedAt[host] = System.currentTimeMillis(); return null }
+        failedAt.remove(host)
+        return fresh
+    }
+}
 
 object Http {
     const val BROWSER_USER_AGENT: String =
@@ -189,6 +243,10 @@ object Http {
         val r = send()
         if (r.code !in 502..504) return r
         Thread.sleep(2_000)
+        val again = send()
+        if (again.code !in 502..504) return again
+        // Still not through after a longer wait: one last try, then it's handed back to be queued.
+        Thread.sleep(6_000)
         return send()
     }
 
@@ -245,6 +303,26 @@ object Http {
     }
 
     fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
+
+    /**
+     * Whether [e] is the phone being offline or the network failing on the way (no DNS, a timeout,
+     * a dropped connection), not the other side saying no: worth trying again later, never a reason
+     * to give up on what was being sent.
+     */
+    fun isOffline(e: Throwable?): Boolean {
+        var t = e
+        var depth = 0
+        while (t != null && depth++ < 6) {
+            if (t is NetworkException || t is java.net.UnknownHostException || t is java.net.SocketTimeoutException ||
+                t is java.net.ConnectException || t is java.net.NoRouteToHostException || t is javax.net.ssl.SSLException ||
+                t is java.io.InterruptedIOException || t is java.net.SocketException) return true
+            val m = t.message.orEmpty()
+            if (m.contains("Unable to resolve host") || m.contains("timeout", ignoreCase = true) || m.contains("connection abort", ignoreCase = true) ||
+                m.contains("Connection reset", ignoreCase = true) || m.contains("Failed to connect", ignoreCase = true)) return true
+            t = t.cause
+        }
+        return false
+    }
 
     fun form(vararg pairs: Pair<String, String>): String =
         pairs.joinToString("&") { (k, v) -> enc(k) + "=" + enc(v) }

@@ -57,15 +57,15 @@ import java.time.ZoneId
  * rating rubric and how it compares with your stars, a ranked image of the year's top books, and
  * your whole library exported as a spreadsheet.
  */
-fun androidx.compose.foundation.lazy.LazyListScope.shelfprintTools(vm: AppViewModel, state: Snapshot) {
-    item(key = "shelfprint-tools") { ToolsCard(vm, state) }
-    if (state.rubric.isNotEmpty()) item(key = "gut-rubric") { GutVsRubricCard(state) }
+internal fun androidx.compose.foundation.lazy.LazyListScope.shelfprintTools(vm: AppViewModel, state: Snapshot, data: ActivityData?) {
+    if (data == null) return
+    item(key = "shelfprint-tools", contentType = "shelfprint-tools") { DebugTimed("library") { ToolsCard(vm, state, data.issues, data.collectionLine) } }
+    if (state.rubric.isNotEmpty() && data.gut.size >= 2) item(key = "gut-rubric", contentType = "gut-rubric") { DebugTimed("gut") { GutVsRubricCard(data.gut) } }
 }
 
 @Composable
-private fun ToolsCard(vm: AppViewModel, state: Snapshot) {
+private fun ToolsCard(vm: AppViewModel, state: Snapshot, issues: List<LibraryChecks.Issue>, collectionLine: String) {
     val c = Cp.colors
-    val issues = remember(state.books, state.facts) { LibraryChecks.run(state) }
     var checks by remember { mutableStateOf(false) }
     var rubric by remember { mutableStateOf(false) }
     var collection by remember { mutableStateOf(false) }
@@ -75,7 +75,7 @@ private fun ToolsCard(vm: AppViewModel, state: Snapshot) {
         CpCard {
             Column {
                 if (CollectionHooks.available) {
-                    NavRow(io.github.prithirajn.readync.R.drawable.lucide_library_big, "Your collection", CollectionHooks.summary(state)) { collection = true }
+                    NavRow(io.github.prithirajn.readync.R.drawable.lucide_library_big, "Your collection", collectionLine.ifEmpty { null }) { collection = true }
                     RowDivider()
                 }
                 val n = LibraryChecks.count(issues)
@@ -206,15 +206,8 @@ fun RubricCard(vm: AppViewModel, state: Snapshot, book: Book) {
 
 /** Your stars against your rubric average, a dot per book, with the books where they disagree most. */
 @Composable
-private fun GutVsRubricCard(state: Snapshot) {
+private fun GutVsRubricCard(pts: List<Triple<Book, Double, Double>>) {
     val c = Cp.colors
-    val pts = remember(state.books, state.rubricScores, state.rubric) {
-        state.books.values.mapNotNull { b ->
-            val r = b.rating ?: return@mapNotNull null
-            val avg = state.rubric.mapNotNull { state.rubricScores[b.document]?.get(it) }.takeIf { it.isNotEmpty() }?.average() ?: return@mapNotNull null
-            Triple(b, r * 2, avg)
-        }
-    }
     if (pts.size < 2) return
     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp)) {
         Text("Gut vs rubric", style = CpType.bodyStrong, color = c.text)
@@ -233,7 +226,7 @@ private fun GutVsRubricCard(state: Snapshot) {
                         drawCircle(dot.copy(alpha = 0.35f), 15f, at(x, y), style = Stroke(2f))
                     }
                 }
-                val gaps = pts.sortedByDescending { kotlin.math.abs(it.third - it.second) }.take(3).filter { kotlin.math.abs(it.third - it.second) >= 1.5 }
+                val gaps = remember(pts) { pts.sortedByDescending { kotlin.math.abs(it.third - it.second) }.take(3).filter { kotlin.math.abs(it.third - it.second) >= 1.5 } }
                 if (gaps.isNotEmpty()) {
                     VSpace(10)
                     for ((b, g, r) in gaps) {

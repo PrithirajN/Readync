@@ -62,15 +62,35 @@ object Shelves {
         java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault()).month
             .getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
 
+    @Volatile private var daysCache: Triple<Any, Any, Map<String, Int>>? = null
+
     /**
-     * Pages read this month: the days counted so far this month ([Snapshot.pagesByDay]), with
-     * today's live count ([today]) in place of today's saved one. Only reading done while this
-     * app was counting is in it; past reading brought in from a tracker's history isn't.
+     * Pages read each day ("2026-11-19" -> pages): what this app counted, and the days your history
+     * brought in (each book's reading days, from KOReader, Hardcover, Seekquel…), the larger for a
+     * day where both have it. A day with minutes but no pages counts as 1, so it keeps a streak. A
+     * day you cleared stays at none.
+     */
+    fun allDays(s: Snapshot): Map<String, Int> {
+        daysCache?.let { (a, b, m) -> if (a === s.pagesByDay && b === s.readingDays) return m }
+        val out = HashMap<String, Int>()
+        for (days in s.readingDays.values) for ((d, v) in days) {
+            val p = v.pages ?: if ((v.minutes ?: 0) > 0) 1 else 0
+            if (p > 0) out[d] = (out[d] ?: 0) + p
+        }
+        for ((d, p) in s.pagesByDay) out[d] = maxOf(out[d] ?: 0, p)
+        for (d in s.pagesCleared) out[d] = 0
+        daysCache = Triple(s.pagesByDay, s.readingDays, out)
+        return out
+    }
+
+    /**
+     * Pages read this month: the days so far this month ([allDays]: counted here, and from your
+     * books' reading days), with today's live count ([today]) in place of today's saved one.
      */
     fun pagesThisMonth(s: Snapshot, today: Int?, now: Long = System.currentTimeMillis()): Int {
         val m = month(now)
         val d = day(now)
-        val earlier = s.pagesByDay.filterKeys { it.startsWith(m) && it != d }.values.sum()
+        val earlier = allDays(s).filterKeys { it.startsWith(m) && it != d }.values.sum()
         return earlier + (today ?: s.pagesByDay[d] ?: 0)
     }
 
@@ -81,8 +101,9 @@ object Shelves {
     fun streak(s: Snapshot, today: Int?, now: Long = System.currentTimeMillis()): Int {
         val zone = java.time.ZoneId.systemDefault()
         var d = java.time.Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+        val all = allDays(s)
         fun pages(day: java.time.LocalDate): Int =
-            if (day.toString() == day(now)) (today ?: s.pagesByDay[day.toString()] ?: 0) else (s.pagesByDay[day.toString()] ?: 0)
+            if (day.toString() == day(now)) (today ?: s.pagesByDay[day.toString()] ?: 0).let { maxOf(it, all[day.toString()] ?: 0) } else (all[day.toString()] ?: 0)
         if (pages(d) <= 0) d = d.minusDays(1)
         var n = 0
         while (pages(d) > 0 && n < 3650) { n++; d = d.minusDays(1) }
@@ -169,11 +190,12 @@ object Shelves {
             firstRun -> maxOf(counted, s.pagesByDay[today] ?: 0)
             else -> counted
         }
-        val days = (s.pagesByDay + (today to todayPages)).entries.sortedByDescending { it.key }.take(60).associate { it.key to it.value }
+        // Every day kept (a number a day: years of them are a few kilobytes).
+        val days = s.pagesByDay + (today to todayPages)
         return s.copy(
             pagesTotal = pagesRead(s.books.values), pagesDay = today, pagesByDay = days,
             pagesStartF = starts, pagesLastF = last,
-            pagesCleared = s.pagesCleared.filter { it >= day(now - 62L * 86_400_000) }.toSet(),
+            pagesCleared = s.pagesCleared,
         )
     }
 

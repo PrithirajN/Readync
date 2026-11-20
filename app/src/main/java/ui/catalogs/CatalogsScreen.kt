@@ -189,18 +189,14 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     val latestServers = remember(latestFound.size) { latestFound.map { it.first.id }.distinct().size }
     val listState = rememberLazyListState()
 
-    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp)) {
+    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp + TabBarSpace)) {
         item(key = "head") {
-            Column(PagePadding) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Eyebrow(if (servers.isEmpty()) "OPDS book servers" else "${servers.size} server${if (servers.size == 1) "" else "s"}, searched together")
-                        PageTitle("Catalogs")
-                    }
+            Column {
+                TabHeader(if (servers.isEmpty()) "opds book servers" else "${servers.size} server${if (servers.size == 1) "" else "s"}, searched together", "Catalogs") {
                     IconCircleButton(R.drawable.lucide_list_checks, "Paste a list of servers", { pasting = true }, tint = c.textMid)
-                    HSpace(8)
                     IconCircleButton(R.drawable.lucide_plus, "Add a server", { addingNew = true }, tint = c.accentText)
                 }
+                Column(Modifier.padding(horizontal = 16.dp)) {
                 VSpace(12)
                 Segmented(listOf("Search", "Posts", "Deals"), mode, { if (it == "Deals" && state.priceWatch.isNotEmpty()) "Deals · ${state.priceWatch.size}" else it }, { mode = it }, Modifier.fillMaxWidth())
                 if (servers.isNotEmpty() && mode == "Search") {
@@ -208,6 +204,7 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
                     val clear: (@Composable () -> Unit)? = if (query.isNotEmpty()) { { IconCircleButton(R.drawable.lucide_x, "Clear", { query = "" }) } } else null
                     CpTextField(query, { query = it }, "Search every catalog", placeholder = "Title, author or series", trailing = clear)
                 }
+            }
             }
         }
 

@@ -16,6 +16,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,6 +81,29 @@ object CoverAccent {
         if (seed != before) io.github.prithirajn.trackersync.widget.Widgets.refreshAll(context)
         return seed
     }
+
+    private val inks = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /**
+     * Blocking: the colour of any book's cover (from the phone's cache only, never downloading),
+     * for small marks like its spine and progress. Doesn't change the colour the app wears.
+     */
+    fun inkOf(context: Context, url: String): Int? {
+        seeds[url]?.let { return it }
+        inks[url]?.let { return it }
+        if (url in none) return null
+        val bmp = runCatching { CoverCache.loadCached(context, url, 160) }.getOrNull() ?: return null
+        val small = Bitmap.createScaledBitmap(bmp, 32, 48, true)
+        val px = IntArray(small.width * small.height)
+        small.getPixels(px, 0, small.width, 0, 0, small.width, small.height)
+        if (small !== bmp) small.recycle()
+        val seed = io.github.prithirajn.readync.util.Palette.vibrant(px)
+        if (seed == null) none.add(url) else inks[url] = seed
+        return seed
+    }
+
+    /** Already known, without any work: for the first frame. */
+    fun knownInk(url: String): Int? = seeds[url] ?: inks[url]
 
     private fun pick(context: Context, url: String, bmp: Bitmap): Int? {
         val small = Bitmap.createScaledBitmap(bmp, 32, 48, true)
@@ -183,6 +207,9 @@ fun BookCover(url: String?, title: String, width: Dp, height: Dp, modifier: Modi
     }
     val shape = RoundedCornerShape(if (width < 64.dp) 4.dp else 6.dp)
     val c = Cp.colors
+    // Already in memory when this spot was made (most covers, scrolling back): drawn straight away,
+    // without the fade's extra layers (what made a row of covers slow to scroll into view).
+    val ready = remember(url, heightPx) { url != null && CoverCache.cached(url, heightPx) != null }
     Box(
         modifier
             .size(width, height)
@@ -191,7 +218,12 @@ fun BookCover(url: String?, title: String, width: Dp, height: Dp, modifier: Modi
             .border(1.dp, c.hairline, shape),
         contentAlignment = Alignment.Center,
     ) {
-        // The cover fades in over the placeholder once it loads (no fade when it was already cached).
+        val img0 = image
+        if (ready && img0 != null) {
+            Image(img0, contentDescription = "Cover of $title", contentScale = ContentScale.Crop, modifier = Modifier.size(width, height))
+            return@Box
+        }
+        // The cover fades in over the placeholder once it loads.
         Crossfade(image, animationSpec = Motion.medium(), label = "cover") { img ->
         if (img != null) {
             Image(img, contentDescription = "Cover of $title", contentScale = ContentScale.Crop, modifier = Modifier.size(width, height))

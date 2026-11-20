@@ -1,0 +1,7 @@
+# Readync's own code, compiled ahead of time on install (release builds; profileinstaller, which
+# Compose brings along, puts this profile in place), so the first start and first scrolls don't
+# run it slowly while Android learns which parts are used. Compose's own libraries bring theirs.
+HSPLio/github/prithirajn/readync/**;->**(**)**
+Lio/github/prithirajn/readync/**;
+HSPLio/github/prithirajn/trackersync/**;->**(**)**
+Lio/github/prithirajn/trackersync/**;

@@ -146,9 +146,20 @@ object Releases {
     fun webNovelGrew(store: Store, document: String, title: String, from: Int, to: Int, url: String, site: String, latest: String? = null) {
         if (!store.snapshot.releaseSettings.let { it.enabled && it.webNovels } || to <= from) return
         val now = System.currentTimeMillis() / 1000
+        // Chapters seen earlier and still listed fold into this one ("3 new chapters", not three rows).
+        val base = Matcher.baseTitle(title)
+        val earlier = store.snapshot.releases.filter { (k, r) -> r.kind == "webnovel" && k.startsWith("$base|web") && k != "$base|web$to" }
+        var start = from
+        for ((k, r) in earlier) {
+            val upTo = k.substringAfter("|web").toIntOrNull() ?: continue
+            val n = Regex("^(\\d+) new chapter").find(r.title)?.groupValues?.get(1)?.toIntOrNull() ?: continue
+            start = minOf(start, upTo - n)
+        }
+        if (earlier.isNotEmpty()) store.update { it.copy(releases = it.releases - earlier.keys) }
+        val count = to - start
         keep(store, Release(
-            key = "${Matcher.baseTitle(title)}|web$to", kind = "webnovel", series = title,
-            title = "${to - from} new chapter${if (to - from == 1) "" else "s"} of $title", number = "Chapter $to", date = now,
+            key = "$base|web$to", kind = "webnovel", series = title,
+            title = "$count new chapter${if (count == 1) "" else "s"} of $title", number = "Chapter $to", date = now,
             // The newest chapter's name, shown under it (and in the alert).
             source = site, url = url, seenAt = now, author = latest?.let { "Latest: $it" },
         ))

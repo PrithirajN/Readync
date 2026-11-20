@@ -71,6 +71,10 @@ object GoodreadsTracker : Tracker {
 
     private fun isSignIn(url: String) = url.lowercase().contains("/user/sign_in") || url.contains("/ap/signin")
 
+    private fun isBotCheck(r: HttpResponse) =
+        r.header("x-amzn-waf-action") != null || (r.code == 202 && (r.body.contains("awswaf", true) || r.body.isBlank())) ||
+            (r.code == 405 && r.body.contains("awswaf", true))
+
     private fun request(
         session: Session,
         method: String,
@@ -79,16 +83,29 @@ object GoodreadsTracker : Tracker {
         extra: Map<String, String> = emptyMap(),
         raw: ByteArray? = null,
     ): HttpResponse {
-        val jar = jar(session)
+        var jar = jar(session)
         var url = if (path.startsWith("http")) path else BASE + path
         var m = method
         var b = body
         var rb = raw
+        var cleared = false
         repeat(6) {
             val r = Http.retryGateway { Http.request(m, url, headers(session, jar, extra), b, followRedirects = false, raw = rb) }
             if (jar.absorb(r)) session.put("cookies", jar.header())
-            if (r.header("x-amzn-waf-action") != null || r.code == 202 && r.body.contains("awswaf", true)) {
-                throw AuthException("Goodreads' bot check blocked the saved session; sign in again")
+            if (isBotCheck(r)) {
+                // The bot check isn't a sign-out: the session is usually still good. Cleared unseen
+                // once (at most every 20 minutes) and the same request tried again with its cookie;
+                // still blocked, the update is kept and Goodreads is left alone for an hour.
+                if (!cleared) {
+                    cleared = true
+                    val fresh = io.github.prithirajn.readync.net.BotCheck.clear("$BASE/", jar.header(), session.data.str("userAgent"))
+                    if (fresh != null) {
+                        jar = CookieJar.parse(jar.header() + "; " + fresh)
+                        session.put("cookies", jar.header())
+                        return@repeat
+                    }
+                }
+                throw io.github.prithirajn.readync.net.BusyException("Goodreads' bot check is in the way right now; will try again later", 3600)
             }
             val location = r.header("location")
             if (r.isRedirect && location != null) {
@@ -198,8 +215,10 @@ object GoodreadsTracker : Tracker {
     /** Loads the home page for a fresh CSRF token; also proves the session works. */
     private fun csrf(session: Session): String {
         val r = request(session, "GET", "/")
-        val token = if (r.ok) Html.csrf(r.body) else null
-        if (token == null || !r.body.contains("/user/show/")) {
+        // An error page (5xx, or one without the page's token) is Goodreads having trouble, not a sign-out.
+        if (!r.ok) throw io.github.prithirajn.readync.net.BusyException("Goodreads answered HTTP ${r.code}; will try again")
+        val token = Html.csrf(r.body) ?: throw io.github.prithirajn.readync.net.BusyException("Goodreads sent an unexpected page; will try again")
+        if (!r.body.contains("/user/show/")) {
             throw AuthException("Goodreads didn't show a signed-in page; sign in again")
         }
         return token
@@ -684,16 +703,14 @@ object GoodreadsTracker : Tracker {
 
     override fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility) {
         val id = link.externalId ?: throw ServiceException("Book isn't linked")
-        val token = csrf(session)
-        val r = request(
-            session, "POST", "/user_status.json",
-            Http.form(
-                "user_status[book_id]" to id,
-                "user_status[percent]" to percent.coerceIn(0, 100).toString(),
-                "user_status[body]" to "",
-            ),
-            ajax(token).plus("Accept" to "*/*"),
+        val form = Http.form(
+            "user_status[book_id]" to id,
+            "user_status[percent]" to percent.coerceIn(0, 100).toString(),
+            "user_status[body]" to "",
         )
+        var r = request(session, "POST", "/user_status.json", form, ajax(csrf(session)).plus("Accept" to "*/*"))
+        // A stale token (422/403) or a passing hiccup: once more with a fresh one, as for the shelf.
+        if (!r.ok) r = request(session, "POST", "/user_status.json", form, ajax(csrf(session)).plus("Accept" to "*/*"))
         if (!r.ok) throw ServiceException("Goodreads didn't accept the progress (HTTP ${r.code})")
     }
 

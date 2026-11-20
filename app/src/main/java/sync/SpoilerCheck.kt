@@ -65,7 +65,7 @@ object SpoilerCheck {
                 val toTracker = sending.any { t ->
                     c.createdAt >= s.service(t.id).highlightsSince && "${t.id}|${c.id}" !in s.sentClippings && s.link(t.id, c.document)?.confirmed == true
                 }
-                toTracker || (c.document in s.threadsBooks && c.id !in s.threadsSeen)
+                toTracker || (io.github.prithirajn.readync.ui.ThreadsAuto.posting(s, c.document) && c.id !in s.threadsSeen)
             }
             .sortedByDescending { it.createdAt }
             .map { it.id }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -80,82 +81,70 @@ private fun DevicePanel(modifier: Modifier = Modifier, content: @Composable () -
  * streak, the week as a row of lit columns, and the month in one line.
  */
 @Composable
-internal fun TodayPanel(state: Snapshot) {
+internal fun TodayPanel(data: ActivityData) {
     val c = Cp.colors
-    val todayPages = rememberTodayPages(state)
-    val today = remember { LocalDate.now() }
-    val w = remember(state.pagesByDay, todayPages) { Insights.week(state, today, todayPages) }
-    val streak = remember(state.pagesByDay, todayPages) { Shelves.streak(state, todayPages) }
-    val month = remember(state.pagesByDay, todayPages, state.books) {
-        val pages = Shelves.pagesThisMonth(state, todayPages)
-        val finished = Shelves.finishedThisMonth(state.books.values)
-        val m = Shelves.month()
-        val hl = Highlights.all(state).count { it.clip.createdAt > 0 && Shelves.month(it.clip.createdAt * 1000) == m }
-        Triple(pages, finished, hl)
-    }
-    DevicePanel(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
-        Screen(Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.Bottom) {
-                for ((label, n, hot) in listOf(
-                    Triple("Today", todayPages ?: 0, (todayPages ?: 0) > 0),
-                    Triple("This week", w.total, false),
-                    Triple("Streak", streak, streak >= 2),
-                )) Column(Modifier.weight(1f)) {
-                    DeviceLabel(label, color = c.screenDim)
-                    RollingNumber(n, CpType.screenNumber.copy(fontSize = 34.sp, lineHeight = 36.sp), if (hot) c.accent else c.screenText)
+    val todayPages = data.todayPages
+    val w = data.week
+    val streak = data.streak
+    val month = data.month
+    // The week as a printed poster: the week's pages as one huge figure, the days as bars of ink
+    // (today's printed over a second ink), and the rest of the numbers set in a line of small figures.
+    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp).fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.Bottom) {
+            androidx.compose.runtime.key(w.total) {
+                RegisteredText(w.total.toString(), CpType.screenNumber.copy(fontSize = 88.sp, lineHeight = 84.sp), replay = LocalTabVisible.current)
+            }
+            Column(Modifier.padding(start = 12.dp, bottom = 10.dp)) {
+                Text("pages this week", fontFamily = io.github.prithirajn.readync.ui.theme.Display, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium, fontSize = 22.sp, lineHeight = 24.sp, color = c.text)
+                w.changePercent?.let { ch ->
+                    Text((if (ch >= 0) "up " else "down ") + "${kotlin.math.abs(ch)}% on last week", style = CpType.mono, color = if (ch >= 0) c.accentText else c.quiet)
                 }
             }
-            w.changePercent?.let { ch ->
-                DeviceLabel((if (ch >= 0) "▲ " else "▼ ") + "${kotlin.math.abs(ch)}% on last week", color = if (ch >= 0) c.accent else c.screenDim)
-            }
-            Spacer(Modifier.height(12.dp))
-            // The week: a column of segments per day, lit up to that day's pages.
+            Spacer(Modifier.weight(1f))
+            // The week in miniature: seven slim ticks of ink, today's the boldest.
             val max = (w.days.maxOfOrNull { it.second } ?: 0).coerceAtLeast(1)
             val spoken = w.days.joinToString(", ") { (d, p) -> "${d.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault())} $p pages" }
-            Row(Modifier.fillMaxWidth().height(86.dp).semantics { contentDescription = spoken }, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                w.days.forEachIndexed { i, (d, p) ->
+            Row(Modifier.padding(bottom = 14.dp).height(34.dp).semantics { contentDescription = spoken }, horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+                w.days.forEachIndexed { i, (_, p) ->
                     val isToday = i == w.days.lastIndex
-                    val frac by animateFloatAsState(p.toFloat() / max, spring(dampingRatio = 0.6f, stiffness = 120f), label = "dayBar")
-                    Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Canvas(Modifier.fillMaxWidth().weight(1f)) {
-                            val segs = 8
-                            val gap = 3.dp.toPx()
-                            val sh = (size.height - gap * (segs - 1)) / segs
-                            for (k in 0 until segs) {
-                                val lit = p > 0 && (k + 0.5f) / segs <= frac.coerceAtLeast(0.07f)
-                                drawRoundRect(
-                                    if (lit) (if (isToday) c.accent else c.accent.copy(alpha = 0.6f)) else c.screenOff,
-                                    topLeft = Offset(0f, size.height - (k + 1) * sh - k * gap), size = Size(size.width, sh),
-                                    cornerRadius = CornerRadius(2.dp.toPx()),
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        DeviceLabel(d.dayOfWeek.getDisplayName(TextStyle.NARROW, Locale.getDefault()), color = if (isToday) c.accent else c.screenDim)
-                    }
+                    val frac by animateFloatAsState(p.toFloat() / max, spring(dampingRatio = 0.55f, stiffness = 90f), label = "tick")
+                    Box(
+                        Modifier
+                            .width(5.dp)
+                            .fillMaxHeight(frac.coerceAtLeast(0.08f))
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(if (p == 0) c.track else if (isToday) c.accent else c.accent.copy(alpha = 0.5f)),
+                    )
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            val (mp, mf, mh) = month
-            DeviceLabel("${Shelves.monthName()}: $mp pages · $mf finished · $mh highlights", color = c.screenDim)
         }
+        Spacer(Modifier.height(14.dp))
+        Box(Modifier.fillMaxWidth().height(1.5.dp).background(c.text.copy(alpha = 0.6f)))
+        val (mp, mf, mh) = month
+        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+            for ((n, label) in listOf((todayPages ?: 0) to "today", streak to "day streak", mp to "this month", mf to "finished", mh to "marked")) {
+                Column(Modifier.weight(1f)) {
+                    RollingNumber(n, CpType.screenSmall, c.text)
+                    Text(label, style = CpType.mono, color = c.accentText, maxLines = 2)
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.text.copy(alpha = 0.2f)))
     }
 }
 
 /** Two keys into the things made from your reading: your year (Wrapped and the pictures) and today's review. */
 @Composable
-internal fun ReadingToolsRow(vm: AppViewModel, state: Snapshot) {
-    val c = Cp.colors
-    val context = LocalContext.current
+internal fun ReadingToolsRow(vm: AppViewModel, state: Snapshot, left: Int, onReviewClosed: () -> Unit) {
     var year by remember { mutableStateOf(false) }
     var review by remember { mutableStateOf(false) }
-    val left = remember(state.cpClips, state.koClips, state.paperClips, review) { runCatching { DailyReview.left(context, state) }.getOrDefault(0) }
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         ToolTile("✨", "Your year", "Wrapped & pictures", Modifier.weight(1f), signal = false) { year = true }
         ToolTile("🔁", "Review", if (left > 0) "$left today" else "Done today", Modifier.weight(1f), signal = left > 0) { review = true }
     }
     if (year) YourYearSheet(vm, state) { year = false }
-    if (review) DailyReviewSheet(vm, state) { review = false }
+    if (review) DailyReviewSheet(vm, state) { review = false; onReviewClosed() }
 }
 
 @Composable
@@ -166,7 +155,7 @@ private fun ToolTile(emoji: String, title: String, line: String, modifier: Modif
             Text(emoji, fontSize = 20.sp)
             Spacer(Modifier.height(6.dp))
             Text(title, style = CpType.bodyStrong, color = keyText(kind), maxLines = 1)
-            Text(line, style = CpType.small, color = if (signal) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f) else Cp.colors.quiet, maxLines = 1)
+            Text(line, style = CpType.small, color = if (signal) Cp.colors.onAccent.copy(alpha = 0.8f) else Cp.colors.quiet, maxLines = 1)
         }
     }
 }
@@ -176,25 +165,23 @@ private fun ToolTile(emoji: String, title: String, line: String, modifier: Modif
  * pages and the books you read on it.
  */
 @Composable
-internal fun HeatmapCard(state: Snapshot) {
+internal fun HeatmapCard(state: Snapshot, data: ActivityData) {
     val c = Cp.colors
     val view = LocalView.current
     val today = remember { LocalDate.now() }
-    val weeks = 18
+    val weeks = ActivityData.HEAT_WEEKS
     // Columns are weeks (oldest first), rows Monday to Sunday.
-    val start = remember { today.minusDays((today.dayOfWeek.value - 1).toLong()).minusWeeks((weeks - 1).toLong()) }
-    val pages = remember(state.pagesByDay) { (0 until weeks * 7).map { start.plusDays(it.toLong()) }.associateWith { state.pagesByDay[it.toString()] ?: 0 } }
-    if (pages.values.all { it == 0 }) return
-    val levels = remember(pages) {
-        val nonzero = pages.values.filter { it > 0 }.sorted()
-        listOf(0.25, 0.5, 0.75).map { q -> nonzero.getOrElse((nonzero.size * q).toInt()) { nonzero.lastOrNull() ?: 1 } }
-    }
+    val start = data.heatStart
+    val pages = data.heat
+    val levels = data.heatLevels
+    val lit = remember(pages, today) { pages.count { it.value > 0 } to pages.keys.count { !it.isAfter(today) } }
+    if (lit.first == 0) return
     var picked by remember { mutableStateOf<LocalDate?>(null) }
     val fmt = remember { DateTimeFormatter.ofPattern("EEE d MMM") }
     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 22.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Reading days", style = CpType.bodyStrong, color = c.text, modifier = Modifier.weight(1f))
-            DeviceLabel("${pages.count { it.value > 0 }} of ${pages.keys.count { !it.isAfter(today) }} days", color = c.quiet)
+            DeviceLabel("${lit.first} of ${lit.second} days", color = c.quiet)
         }
         Spacer(Modifier.height(8.dp))
         CpCard {
@@ -205,7 +192,7 @@ internal fun HeatmapCard(state: Snapshot) {
                     for (wk in 0 until weeks) {
                         val d = start.plusWeeks(wk.toLong())
                         Box(Modifier.weight(1f)) {
-                            if (d.monthValue != lastMonth && d.dayOfMonth <= 7) DeviceLabel(d.month.getDisplayName(TextStyle.SHORT, Locale.getDefault()), color = c.faint)
+                            if (d.monthValue != lastMonth && d.dayOfMonth <= 7) DeviceLabel(d.month.getDisplayName(TextStyle.SHORT, Locale.getDefault()), color = c.faint, modifier = Modifier.wrapContentWidth(Alignment.Start, unbounded = true))
                         }
                         lastMonth = if (d.dayOfMonth <= 7) d.monthValue else lastMonth
                     }
@@ -262,53 +249,61 @@ internal fun HeatmapCard(state: Snapshot) {
     }
 }
 
-/** The books you're reading with when each will be done at your pace, soonest first. */
+/**
+ * Your rhythm, printed like the week above it: the weekdays as bars of ink (the big day in full ink,
+ * with a line saying so), then your best day, longest run and an ordinary reading day as figures.
+ */
 @Composable
-internal fun FinishingSoonCard(state: Snapshot) {
+internal fun RhythmCard(r: Rhythm) {
     val c = Cp.colors
-    val rows = remember(state.books) {
-        state.books.values.filter { it.status == ReadStatus.READING && !it.held }
-            .map { it to ReadingStats.of(it) }
-            .sortedWith(compareBy({ it.second.eta == null }, { it.second.eta }, { -it.first.timestamp }))
-            .take(4)
-    }
-    if (rows.isEmpty()) return
-    val fmt = remember { DateTimeFormatter.ofPattern("EEE d MMM") }
-    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 22.dp)) {
-        Text("On the go", style = CpType.bodyStrong, color = c.text)
-        Spacer(Modifier.height(8.dp))
-        CpCard {
-            rows.forEachIndexed { i, (b, st) ->
-                if (i > 0) RowDivider()
-                Row(
-                    Modifier.fillMaxWidth()
-                        .bouncyClickable(androidx.compose.ui.graphics.RectangleShape, pressedScale = 0.99f, role = Role.Button, onClickLabel = b.displayTitle) { AppActions.pending.value = AppAction.OpenBook(b.document) }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    BookCover(b.coverUrl, b.displayTitle, 30.dp, 45.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(QuoteCard.shortTitle(b.displayTitle), style = CpType.body, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(4.dp))
-                        SegmentBar(b.percentage.toFloat(), Modifier.fillMaxWidth(), segments = 16, height = 5.dp)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            listOfNotNull(
-                                "${b.percent}%",
-                                st.eta?.let { "done around ${fmt.format(it)}" },
-                                st.pagesPerDay?.let { "${Math.round(it)} pages a day" },
-                                if (st.eta == null && st.pageCount != null && st.pagesRead != null) "${st.pageCount - st.pagesRead} pages left" else null,
-                            ).joinToString(" · "),
-                            style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+    val fmt = remember { DateTimeFormatter.ofPattern("d MMM yyyy") }
+    Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 26.dp).fillMaxWidth()) {
+        Text("Your rhythm", style = CpType.bodyStrong, color = c.text)
+        Text(
+            r.bigDay?.let { d ->
+                val name = d.getDisplayName(TextStyle.FULL, Locale.getDefault())
+                "${name}s are your big day: ${Math.round(r.weekdays[d.value - 1])} pages on average"
+            } ?: "You read about the same every day of the week",
+            fontFamily = io.github.prithirajn.readync.ui.theme.Display, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium, fontSize = 19.sp, lineHeight = 22.sp, color = c.textMid,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+        Spacer(Modifier.height(12.dp))
+        val max = (r.weekdays.maxOrNull() ?: 0.0).coerceAtLeast(1.0)
+        val spoken = r.weekdays.withIndex().joinToString(", ") { (i, v) -> "${java.time.DayOfWeek.of(i + 1).getDisplayName(TextStyle.SHORT, Locale.getDefault())} ${Math.round(v)} pages" }
+        Row(Modifier.fillMaxWidth().height(84.dp).semantics { contentDescription = "Average pages by weekday: $spoken" }, horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
+            r.weekdays.forEachIndexed { i, v ->
+                val big = r.bigDay?.value == i + 1
+                Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
+                    Box(
+                        Modifier.fillMaxWidth().fillMaxHeight((v / max).toFloat().coerceIn(0.04f, 1f) * 0.78f)
+                            .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 2.dp, bottomStart = 2.dp, bottomEnd = 6.dp))
+                            .background(if (v <= 0.0) c.track else if (big) c.accent else c.accent.copy(alpha = 0.45f)),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(java.time.DayOfWeek.of(i + 1).getDisplayName(TextStyle.NARROW, Locale.getDefault()), style = CpType.mono, color = if (big) c.accentText else c.quiet)
                 }
             }
         }
+        Spacer(Modifier.height(12.dp))
+        Box(Modifier.fillMaxWidth().height(1.5.dp).background(c.text.copy(alpha = 0.6f)))
+        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+            val figures = listOfNotNull(
+                r.best?.let { (d, p) -> p.toString() to "best day · ${fmt.format(d)}" },
+                r.longest.toString() to "longest run",
+                r.perDay.toString() to (if (r.minutes != null) "a reading day · ${r.minutes} min" else "a reading day"),
+                "${r.share}%" to "of days read lately",
+            )
+            for ((n, label) in figures) {
+                Column(Modifier.weight(1f)) {
+                    Text(n, style = CpType.screenSmall, color = c.text, maxLines = 1)
+                    Text(label, style = CpType.mono, color = c.accentText, maxLines = 2)
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.text.copy(alpha = 0.2f)))
     }
 }
-
 
 /**
  * Everything made from your year in one place (before: Wrapped and the shelf poster here, the top

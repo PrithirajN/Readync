@@ -89,7 +89,7 @@ private fun ActionTile(item: BookActionItem, modifier: Modifier) {
                 .background(if (item.highlighted) c.accent else c.accentTint),
             contentAlignment = Alignment.Center,
         ) {
-            LucideIcon(item.icon, Modifier.size(20.dp), if (item.highlighted) Color.White else c.accentText)
+            LucideIcon(item.icon, Modifier.size(20.dp), if (item.highlighted) c.onAccent else c.accentText)
         }
         Text(
             item.label,
@@ -187,23 +187,24 @@ fun NavRow(icon: Int, title: String, summary: String?, summaryWarn: Boolean = fa
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // A little moulded key with the icon on it, sitting on its ledge.
-        Box(Modifier.size(38.dp)) {
-            Box(Modifier.matchParentSize().padding(top = 2.dp).clip(CpShapes.control).background(c.keyLedge))
-            Box(
-                Modifier
-                    .size(38.dp, 36.dp)
-                    .offset(y = dip)
-                    .clip(CpShapes.control)
-                    .background(Brush.verticalGradient(listOf(c.keyTop, c.keyBottom)))
-                    .drawBehind { drawRect(Color.White.copy(alpha = if (c.isDark) 0.06f else 0.6f), size = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx())) },
-                contentAlignment = Alignment.Center,
-            ) { LucideIcon(icon, Modifier.size(18.dp), if (summaryWarn) c.errorText else c.text) }
-        }
-        HSpace(12)
+        // The icon in a ring of ink that fills in under your finger.
+        val fill by androidx.compose.animation.core.animateFloatAsState(if (pressed) 1f else 0f, androidx.compose.animation.core.spring(dampingRatio = 0.6f, stiffness = 700f), label = "navFill")
+        val ring = if (summaryWarn) c.error else c.accent
+        Box(
+            Modifier
+                .size(40.dp)
+                .offset(y = dip)
+                .drawBehind {
+                    val r = size.minDimension / 2f
+                    drawCircle(ring.copy(alpha = 0.16f + 0.84f * fill), r)
+                    drawCircle(ring, r - 0.75.dp.toPx(), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+                },
+            contentAlignment = Alignment.Center,
+        ) { LucideIcon(icon, Modifier.size(18.dp), androidx.compose.ui.graphics.lerp(if (summaryWarn) c.errorText else c.text, c.onAccent, fill)) }
+        HSpace(14)
         Column(Modifier.weight(1f)) {
-            Text(title, style = CpType.bodyStrong, color = c.text, maxLines = 1)
-            summary?.let { Text(it, style = CpType.small, color = if (summaryWarn) c.errorText else c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            Text(title, fontFamily = io.github.prithirajn.readync.ui.theme.DisplaySmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, fontSize = 17.sp, lineHeight = 21.sp, color = c.text, maxLines = 1)
+            summary?.let { Text(it, style = CpType.small.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic), color = if (summaryWarn) c.errorText else c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
         trailing?.let { HSpace(8); it() }
         HSpace(4)

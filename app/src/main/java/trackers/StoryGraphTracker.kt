@@ -69,14 +69,29 @@ object StoryGraphTracker : Tracker {
         extra: Map<String, String> = emptyMap(),
         raw: ByteArray? = null,
     ): HttpResponse {
-        val jar = jar(session)
+        var jar = jar(session)
         var url = if (path.startsWith("http")) path else BASE + path
         var m = method
         var b = body
         var rb = raw
+        var cleared = false
         repeat(6) {
             val r = Http.retryGateway { Http.request(m, url, headers(session, jar, extra), b, followRedirects = false, raw = rb) }
             if (jar.absorb(r)) session.put("cookies", jar.header())
+            // Cloudflare's check (a challenge page, not StoryGraph): cleared unseen once and the same
+            // request tried again with its cookie; still there, the update is kept for an hour.
+            if (r.header("cf-mitigated") == "challenge" || (r.code in setOf(403, 503) && r.body.contains("challenge-platform"))) {
+                if (!cleared) {
+                    cleared = true
+                    val fresh = io.github.prithirajn.readync.net.BotCheck.clear("$BASE/", jar.header(), session.data.str("userAgent"))
+                    if (fresh != null) {
+                        jar = CookieJar.parse(jar.header() + "; " + fresh)
+                        session.put("cookies", jar.header())
+                        return@repeat
+                    }
+                }
+                throw io.github.prithirajn.readync.net.BusyException("StoryGraph's Cloudflare check is in the way right now; will try again later", 3600)
+            }
             if (r.code == 401) throw AuthException("StoryGraph signed you out; sign in again")
             val location = r.header("location")
             if (r.isRedirect && location != null) {
@@ -86,9 +101,6 @@ object StoryGraphTracker : Tracker {
                 if (!url.startsWith(BASE)) return r
                 m = "GET"; b = null; rb = null
                 return@repeat
-            }
-            if (r.header("cf-mitigated") == "challenge") {
-                throw ServiceException("StoryGraph's Cloudflare check blocked the request; try again later")
             }
             return r
         }
@@ -114,7 +126,32 @@ object StoryGraphTracker : Tracker {
         if (query.isEmpty()) return emptyList()
         val r = request(session, "GET", "/browse?search_term=${Http.enc(query)}")
         if (!r.ok) throw ServiceException("StoryGraph search answered HTTP ${r.code}")
-        val html = r.body
+        val found = parseBooks(r.body)
+        // Books only you can see (ones you added yourself, a web novel say, waiting on StoryGraph's
+        // librarians) never show in its search: looked for on your own shelves too, first when they match.
+        val mine = runCatching { onShelves(session, title) }.getOrDefault(emptyList())
+        return (mine + found).distinctBy { it.id }
+    }
+
+    /** The books on your own shelves (reading, to read, read) whose title has every word of [title]. */
+    private fun onShelves(session: Session, title: String): List<RemoteBook> {
+        val words = io.github.prithirajn.readync.sync.Matcher.baseTitle(title).split(' ').filter { it.length > 1 }
+        if (words.isEmpty()) return emptyList()
+        val user = session.data.str("username")?.takeIf { it.isNotBlank() } ?: run {
+            val home = request(session, "GET", "/")
+            Regex("href=\"/profile/([^\"/?]+)\"").find(home.body)?.groupValues?.get(1)?.also { session.put("username", it) }
+        } ?: return emptyList()
+        val out = ArrayList<RemoteBook>()
+        for (shelf in listOf("currently-reading", "to-read", "books-read")) {
+            val page = runCatching { request(session, "GET", "/$shelf/${Http.enc(user)}") }.getOrNull()?.takeIf { it.ok } ?: continue
+            out += parseBooks(page.body).filter { b -> io.github.prithirajn.readync.sync.Matcher.baseTitle(b.title).let { t -> words.all { it in t } } }
+            if (out.isNotEmpty()) break
+        }
+        return out
+    }
+
+    /** The books listed on a StoryGraph page (its search, or a shelf). */
+    private fun parseBooks(html: String): List<RemoteBook> {
         val starts = Regex("book-title-author-and-series").findAll(html).map { it.range.first }.toList()
         val seen = HashSet<String>()
         val out = ArrayList<RemoteBook>()
@@ -245,6 +282,18 @@ object StoryGraphTracker : Tracker {
         return kept.map { it.first } to kept.filter { it.second == "graphic" }.map { it.first }
     }
 
+    /**
+     * The page's form token. Every StoryGraph page has one, signed in or not, so a page without it
+     * is an error or interstitial page: kept for later, not a sign-out. Only a page that is the
+     * sign-in form (and shows no profile of yours) means signing in again.
+     */
+    private fun csrfOf(html: String): String {
+        Html.csrf(html)?.let { return it }
+        val signInForm = html.contains("user[email]") || html.contains("/users/sign_in")
+        if (signInForm && !html.contains("href=\"/profile/")) throw AuthException("StoryGraph signed you out; sign in again")
+        throw io.github.prithirajn.readync.net.BusyException("StoryGraph sent an unexpected page; will try again")
+    }
+
     private fun bookPage(session: Session, link: Link): String {
         val id = link.externalId ?: throw ServiceException("Book isn't linked")
         val r = request(session, "GET", "/books/$id")
@@ -358,7 +407,7 @@ object StoryGraphTracker : Tracker {
         if (!formPage.ok) throw ServiceException("StoryGraph's read dates didn't open (HTTP ${formPage.code})")
         val form = DateForm.parse(formPage.body) ?: throw ServiceException("StoryGraph's read-dates form wasn't found")
         val fields = form.fill(started, finished) ?: throw ServiceException("StoryGraph's read-dates form has no date fields")
-        val token = fields["authenticity_token"] ?: Html.csrf(formPage.body) ?: throw AuthException("StoryGraph didn't show a signed-in page; sign in again")
+        val token = fields["authenticity_token"] ?: csrfOf(formPage.body)
         val formPagePath = path.substringBefore('?')
         val action = when {
             form.action.startsWith("http://") || form.action.startsWith("https://") -> form.action
@@ -488,7 +537,7 @@ object StoryGraphTracker : Tracker {
         val id = link.externalId ?: throw ServiceException("Book isn't linked")
         val html = bookPage(session, link)
         if (statusFrom(html) == status) return
-        val csrf = Html.csrf(html) ?: throw AuthException("StoryGraph didn't show a signed-in page; sign in again")
+        val csrf = csrfOf(html)
         val slug = when (status) {
             ReadStatus.TO_READ -> "to-read"
             ReadStatus.READING -> "currently-reading"
@@ -507,7 +556,7 @@ object StoryGraphTracker : Tracker {
     override fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility) {
         val id = link.externalId ?: throw ServiceException("Book isn't linked")
         val html = bookPage(session, link)
-        val csrf = Html.csrf(html) ?: throw AuthException("StoryGraph didn't show a signed-in page; sign in again")
+        val csrf = csrfOf(html)
         val pages = field(html, "read_status[book_num_of_pages]") ?: "0"
         val body = Http.form(
             "read_status[progress_number]" to percent.coerceIn(0, 100).toString(),
@@ -627,7 +676,7 @@ object StoryGraphTracker : Tracker {
     private fun journalEntry(session: Session, link: Link, progress: Int?, note: String, clip: io.github.prithirajn.readync.source.Clipping? = null) {
         val id = link.externalId ?: throw ServiceException("Book isn't linked")
         val html = bookPage(session, link)
-        val csrf = Html.csrf(html) ?: throw AuthException("StoryGraph didn't show a signed-in page; sign in again")
+        val csrf = csrfOf(html)
         val prevPercent = percentFrom(html)
         val number = progress ?: prevPercent
         val totalPagesStr = field(html, "read_status[book_num_of_pages]") ?: field(html, "book_num_of_pages") ?: "0"

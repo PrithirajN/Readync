@@ -163,7 +163,7 @@ object Wrapped {
     private fun compute(s: Snapshot, period: Period, from: LocalDate, to: LocalDate, zone: ZoneId): Data {
         fun day(sec: Long?) = sec?.takeIf { it > 0 }?.let { Instant.ofEpochSecond(it).atZone(zone).toLocalDate() }
         fun inside(d: LocalDate?) = d != null && !d.isBefore(from) && !d.isAfter(to)
-        val days = generateSequence(from) { it.plusDays(1) }.takeWhile { !it.isAfter(to) }.map { it to (s.pagesByDay[it.toString()] ?: 0) }.toList()
+        val days = generateSequence(from) { it.plusDays(1) }.takeWhile { !it.isAfter(to) }.map { it to (io.github.prithirajn.readync.sync.Shelves.allDays(s)[it.toString()] ?: 0) }.toList()
         val minutes = s.readingDays.values.sumOf { m -> m.entries.sumOf { (d, v) -> if (inside(runCatching { LocalDate.parse(d) }.getOrNull())) v.minutes ?: 0 else 0 } }
         var streak = 0; var best = 0
         for ((_, p) in days) { if (p > 0) { streak++; best = maxOf(best, streak) } else streak = 0 }

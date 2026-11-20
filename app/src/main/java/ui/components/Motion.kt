@@ -176,7 +176,8 @@ fun HealthLight(status: Health.Status, onClick: () -> Unit) {
             .bouncyClickable(CircleShape, pressedScale = 0.85f, onClickLabel = status.title, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        if (level == Health.Level.WARN || level == Health.Level.BAD) {
+        // The halo pulses only on the tab you're looking at: elsewhere it would keep the screen redrawing.
+        if ((level == Health.Level.WARN || level == Health.Level.BAD) && LocalTabVisible.current && LocalAnimationsOn.current) {
             val pulse = rememberInfiniteTransition(label = "pulse")
             val p by pulse.animateFloat(
                 initialValue = 0f,

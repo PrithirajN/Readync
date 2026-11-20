@@ -197,7 +197,10 @@ fun ReadingStatsCard(book: Book) {
         r.days?.let { d -> add((if (finished) "Read in" else "Reading for") to "$d day${if (d == 1) "" else "s"}") }
         r.started?.let { add("Started" to fmt.format(it)) }
         r.finished?.let { add("Finished" to fmt.format(it)) }
-        r.pagesPerDay?.let { p -> add("Pace" to (if (p >= 10) "${Math.round(p)}" else String.format(java.util.Locale.getDefault(), "%.1f", p)) + " pages a day") }
+        r.pagesPerDay?.let { p ->
+            val n = if (p >= 10) "${Math.round(p)}" else String.format(java.util.Locale.getDefault(), "%.1f", p).removeSuffix(".0").removeSuffix(",0")
+            add("Pace" to (if (n == "1") "a page a day" else "$n pages a day"))
+        }
         r.eta?.let { add("Done around" to fmt.format(it)) }
     }
     if (cells.isEmpty()) return

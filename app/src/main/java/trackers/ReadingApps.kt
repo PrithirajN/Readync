@@ -17,7 +17,8 @@ import org.json.JSONObject
 internal fun checkAnswer(r: HttpResponse, name: String, what: String = "", authOn403: Boolean = true) {
     when {
         r.code == 401 || (authOn403 && r.code == 403) -> throw AuthException("$name didn't accept the sign-in. Link it again.")
-        r.code == 429 -> throw ServiceException("$name is busy (too many requests); will try again")
+        r.code == 429 -> throw io.github.prithirajn.readync.net.BusyException("$name is busy (too many requests); will try again", io.github.prithirajn.readync.net.BusyException.retryAfter(r))
+        r.code in 500..599 -> throw io.github.prithirajn.readync.net.BusyException("$name is having trouble (HTTP ${r.code}); will try again")
         !r.ok -> throw ServiceException("$name answered HTTP ${r.code}" + (if (what.isNotEmpty()) " $what" else "") +
             (serverReason(r.body)?.let { ": $it" } ?: ""))
     }

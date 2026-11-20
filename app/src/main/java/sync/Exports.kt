@@ -304,6 +304,8 @@ object Exports {
     fun run(store: Store) {
         val jobs = listOf("readwise" to ::pushReadwise, "notion" to ::pushNotion, "obsidian" to ::pushObsidian)
         for ((name, job) in jobs) {
+            // Readwise and Notion get your highlights from one phone only (Obsidian writes to this phone's own vault).
+            if (name != "obsidian" && !PostingDevice.isThis(store.snapshot)) continue
             val on = when (name) {
                 "readwise" -> store.snapshot.readwiseToken != null
                 "notion" -> store.snapshot.notionToken != null && store.snapshot.notionParent != null

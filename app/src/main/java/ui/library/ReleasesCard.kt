@@ -42,13 +42,14 @@ import java.time.format.DateTimeFormatter
  * hide a series you don't want news of. Its settings say what to look for, where, and what to be told.
  */
 @Composable
-fun ReleasesCard(vm: AppViewModel, state: Snapshot) {
+fun ReleasesCard(vm: AppViewModel, state: Snapshot, sortedOut: List<Release>? = null, sortedComing: List<Release>? = null) {
     val c = Cp.colors
     val set = state.releaseSettings
     var settings by remember { mutableStateOf(false) }
     val now = System.currentTimeMillis() / 1000
-    val out = state.releases.values.filter { it.isOut(now) }.sortedByDescending { it.date ?: it.seenAt }
-    val coming = state.releases.values.filter { !it.isOut(now) }.sortedBy { it.date ?: Long.MAX_VALUE }
+    // Already sorted off the main thread when the Activity tab hands them over.
+    val out = sortedOut ?: remember(state.releases) { state.releases.values.filter { it.isOut(now) }.sortedByDescending { it.date ?: it.seenAt } }
+    val coming = sortedComing ?: remember(state.releases) { state.releases.values.filter { !it.isOut(now) }.sortedBy { it.date ?: Long.MAX_VALUE } }
     var showAll by remember { mutableStateOf(false) }
     Column(PagePadding) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -116,7 +117,7 @@ private fun ReleaseRow(vm: AppViewModel, r: Release, now: Long) {
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        BookCover(r.coverUrl, r.title, 36.dp, 54.dp)
+        BookCover(r.coverUrl, if (r.kind == "webnovel" || r.kind == "chapter") r.series else r.title, 36.dp, 54.dp)
         HSpace(12)
         Column(Modifier.weight(1f)) {
             Text(r.title, style = CpType.body, color = c.text, maxLines = 2)

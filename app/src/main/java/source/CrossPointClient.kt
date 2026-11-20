@@ -230,6 +230,29 @@ class CrossPointClient(private val account: Account) {
         }
     }
 
+    /**
+     * Day by day for up to 50 books at once (GET /api/v1/stats/activity/books): each book's print
+     * pages and recorded reading time on every day the server knows, from the reader's progress
+     * history and its reading statistics. Keyed by the document ids asked for (a merged copy's id
+     * answers for its book). [tzOffsetMinutes] as JavaScript's getTimezoneOffset().
+     */
+    fun bookDays(documents: List<String>, tzOffsetMinutes: Int): Map<String, Map<String, Pair<Int, Int>>> {
+        if (documents.isEmpty()) return emptyMap()
+        val o = get("/api/v1/stats/activity/books?tz=$tzOffsetMinutes&documents=" + documents.take(50).joinToString(",") { Http.enc(it) })
+        val out = HashMap<String, Map<String, Pair<Int, Int>>>()
+        for (b in o.arr("books")?.objects() ?: emptyList()) {
+            val days = (b.arr("days")?.objects() ?: emptyList()).mapNotNull { d ->
+                val day = d.str("day") ?: return@mapNotNull null
+                val pages = d.num("pages")?.toInt() ?: 0
+                val seconds = d.num("seconds")?.toInt() ?: 0
+                if (pages <= 0 && seconds <= 0) null else day to (pages to seconds)
+            }.toMap()
+            val asked = b.arr("requested")?.strings().orEmpty().ifEmpty { listOfNotNull(b.str("document")) }
+            for (d in asked) out[d] = days
+        }
+        return out
+    }
+
     /** The book's start and finish dates, from the server's reading activity. */
     fun dates(document: String, tzOffsetMinutes: Int): BookDates? {
         val o = get("/api/v1/stats/activity?tz=$tzOffsetMinutes")

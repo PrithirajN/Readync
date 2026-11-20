@@ -98,15 +98,20 @@ object PageboundTracker : Tracker {
 
     /** Trades the Firebase id token for Pagebound's own API token. */
     private fun exchange(session: Session) {
-        val r = Http.request(
-            "POST", "$API/api/v1/auth/firebase_auth",
-            webHeaders("null"),
-            jsonOf("id_token" to (session.data.str("idToken") ?: "")).toString(),
-            timeoutMs = 45_000, // the API host can take a while to wake up
-        )
+        val r = Http.retryGateway {
+            Http.request(
+                "POST", "$API/api/v1/auth/firebase_auth",
+                webHeaders("null"),
+                jsonOf("id_token" to (session.data.str("idToken") ?: "")).toString(),
+                timeoutMs = 45_000, // the API host can take a while to wake up
+            )
+        }
         val o = runCatching { JSONObject(r.body) }.getOrNull()
         val token = o?.str("token")
-        if (r.code != 200 || token == null) throw AuthException("Pagebound didn't accept the sign-in (HTTP ${r.code})")
+        // Only a refusal of the sign-in itself means signing in again; the server waking up or busy
+        // (5xx, 429) or a garbled answer keeps the updates for later.
+        if (r.code in setOf(400, 401, 403, 422)) throw AuthException("Pagebound didn't accept the sign-in (HTTP ${r.code})")
+        if (r.code != 200 || token == null) throw io.github.prithirajn.readync.net.BusyException("Pagebound's server didn't answer the sign-in properly (HTTP ${r.code}); will try again", io.github.prithirajn.readync.net.BusyException.retryAfter(r))
         session.put("apiToken", token)
         o.obj("user")?.idString("id")?.let { session.put("userId", it) }
         o.obj("user")?.str("email")?.let { session.put("email", it) }
@@ -133,7 +138,10 @@ object PageboundTracker : Tracker {
         if (r.code == 401 || r.code == 403) {
             ensureSession(session, true)
             r = send()
-            if (r.code == 401 || r.code == 403) throw AuthException("Pagebound rejected the saved login")
+            // Refused even with a token just renewed: a 401 is the login itself; a 403 is this one
+            // request not being allowed (a book or post you can't change), not a reason to sign out.
+            if (r.code == 401) throw AuthException("Pagebound rejected the saved login")
+            if (r.code == 403) throw io.github.prithirajn.readync.net.ServiceException("Pagebound didn't allow that (HTTP 403)")
         }
         return r
     }
@@ -249,10 +257,19 @@ object PageboundTracker : Tracker {
             .put("is_dnf", false)
         // A user book has one review: once there is one, it's updated rather than added again.
         val ubKey = ub.str("uuid") ?: userBookId.toString()
-        var existingId = reviewIdIn(ub, userBookId)
-            ?: runCatching { request(session, "GET", "/api/v1/user_books/${Http.enc(ubKey)}") }.getOrNull()
-                ?.takeIf { it.ok }?.let { r -> runCatching { JSONObject(r.body) }.getOrNull() }
-                ?.let { o -> (o.obj("user_review") ?: o.obj("user_book")?.obj("user_review"))?.let { it.idString("id") ?: it.str("uuid") } }
+        // Where the review's id came from, and what the user book says about reviews, for the log.
+        var idSource = "nowhere"
+        val ubReviewKeys = reviewKeys(ub)
+        // As Pagebound's own app finds it: GET /user_books/{uuid}, then its "review" object's id (the app's
+        // edit sheet sends PUT /reviews/{that id}). The book page's user_book is only a fallback: its other
+        // review-like fields aren't your review.
+        val fromUserBook = runCatching { request(session, "GET", "/api/v1/user_books/${Http.enc(ubKey)}") }.getOrNull()
+            ?.takeIf { it.ok }?.let { r -> runCatching { JSONObject(r.body) }.getOrNull() }
+        val appReview = fromUserBook?.let { o -> o.obj("user_book")?.obj("review") ?: o.obj("review")?.takeIf { it.has("overall_rating") || it.has("review") || it.has("id") } }
+        var existingId = appReview?.idString("id")?.also { idSource = "GET user_books/{uuid} › review (as Pagebound's app)" }
+            ?: ub.obj("review")?.idString("id")?.also { idSource = "the book's user_book › review" }
+            ?: reviewIdIn(ub, userBookId)?.also { idSource = "the book's user_book (other fields)" }
+            ?: fromUserBook?.let { o -> reviewIdIn(o.obj("user_book") ?: o, userBookId) }?.also { idSource = "GET user_books/{uuid} (other fields)" }
         // Where each try went and what came back, for the log when none is taken.
         val tried = ArrayList<String>()
         /** The review's other ids seen (its uuid beside its number, or the reverse). */
@@ -316,15 +333,15 @@ object PageboundTracker : Tracker {
         // from another part of its answer). Look it up afresh; with none, write it as a new one.
         if (r.code == 404 && existingId != null) {
             val tried = existingId
-            existingId = findReview(session, link, ubKey, userBookId)?.takeIf { it != tried }
+            existingId = findReview(session, link, ubKey, userBookId)?.takeIf { it != tried }?.also { idSource = "a reviews lookup" }
             r = send()
             if (r.code == 404 && existingId != null) { existingId = null; r = send() }
         }
         // 422 ("User book has already been taken"): a review is there already. Find it and update it.
         if (r.code == 422 && existingId == null) {
             runCatching { JSONObject(r.body) }.getOrNull()?.let { noteIds(it) }
-            existingId = runCatching { JSONObject(r.body) }.getOrNull()?.let { reviewIdIn(it, userBookId) }
-                ?: findReview(session, link, ubKey, userBookId)
+            existingId = runCatching { JSONObject(r.body) }.getOrNull()?.let { reviewIdIn(it, userBookId) }?.also { idSource = "the 422 answer" }
+                ?: findReview(session, link, ubKey, userBookId)?.also { idSource = "a reviews lookup" }
             if (existingId != null) r = send()
         }
         // Still refused with a quarter star: try the nearest half star.
@@ -333,7 +350,8 @@ object PageboundTracker : Tracker {
             review.put("overall_rating", Math.round(q.toDouble() * 2) / 2.0)
             r = send()
         }
-        if (!r.ok) throw ServiceException("Pagebound didn't take the review (HTTP ${r.code}" + ((serverReason(r.body) ?: said)?.let { ": $it" } ?: "") + "; tried " + tried.distinct().joinToString(", ") + ")")
+        if (!r.ok) throw ServiceException("Pagebound didn't take the review (HTTP ${r.code}" + ((serverReason(r.body) ?: said)?.let { ": $it" } ?: "") + "; tried " + tried.distinct().joinToString(", ") +
+            "; review id from $idSource; user book's review fields: " + ubReviewKeys.ifEmpty { "none" } + ")")
     }
 
     /**
@@ -341,7 +359,8 @@ object PageboundTracker : Tracker {
      * any review object in it that belongs to this user book.
      */
     private fun reviewIdIn(o: JSONObject, userBookId: Long): String? {
-        for (k in listOf("user_review", "review", "my_review", "current_user_review")) {
+        // "review" first: it's the one Pagebound's own app edits.
+        for (k in listOf("review", "user_review", "my_review", "current_user_review")) {
             o.obj(k)?.let { r -> (r.idString("id") ?: r.str("uuid"))?.let { return it } }
         }
         (o.idString("review_id") ?: o.str("review_uuid"))?.let { return it }
@@ -363,12 +382,25 @@ object PageboundTracker : Tracker {
         return null
     }
 
+    /** What [o] (a user book) holds about reviews: each key naming one, with its ids or a short value (never the review's words). */
+    private fun reviewKeys(o: JSONObject): String = o.keys().asSequence().filter { "review" in it.lowercase() }.map { k ->
+        when (val v = o.opt(k)) {
+            is JSONObject -> "$k{" + listOfNotNull(v.idString("id")?.let { "id=$it" }, v.str("uuid")?.let { "uuid=$it" }, v.idString("user_book_id")?.let { "user_book_id=$it" }).joinToString(" ") + " keys=" + v.keys().asSequence().take(12).joinToString("/") + "}"
+            is JSONArray -> "$k[${v.length()}]"
+            is String -> "$k=\"${v.take(12)}…\""
+            else -> "$k=$v"
+        }
+    }.joinToString(", ")
+
     /** Looks up the review already on this user book: the user book itself, then the reviews lists. */
     private fun findReview(session: Session, link: Link, ubKey: String, userBookId: Long): String? {
         val paths = listOfNotNull(
             "/api/v1/user_books/${Http.enc(ubKey)}",
             "/api/v1/user_books/${Http.enc(ubKey)}/review",
             "/api/v1/reviews?user_book_id=$userBookId",
+            "/api/v1/user_books/${Http.enc(ubKey)}/reviews",
+            "/api/v1/reviews/mine",
+            "/api/v1/me/reviews",
             link.externalUuid?.let { "/api/v1/books/${Http.enc(it)}/reviews?mine=true" },
             link.externalId?.let { "/api/v1/reviews?book_id=${Http.enc(it)}" },
         )

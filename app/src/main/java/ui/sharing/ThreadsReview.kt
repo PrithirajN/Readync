@@ -93,7 +93,7 @@ fun ThreadsBookCard(vm: AppViewModel, state: Snapshot, book: Book, onReview: () 
 fun ThreadsHighlightsToggle(vm: AppViewModel, state: Snapshot, book: Book) {
     if (state.threadsToken == null) return
     val c = Cp.colors
-    val on = book.document in state.threadsBooks
+    val on = ThreadsAuto.posting(state, book.document)
     VSpace(12)
     CpCard {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {

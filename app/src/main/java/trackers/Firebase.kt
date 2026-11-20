@@ -40,8 +40,19 @@ internal object Firebase {
             mapOf("Content-Type" to "application/x-www-form-urlencoded"),
             Http.form("grant_type" to "refresh_token", "refresh_token" to refreshToken),
         )
-        if (!r.ok) throw AuthException("Session expired; sign in again")
-        val o = JSONObject(r.body)
+        if (!r.ok) {
+            // Only Google saying the sign-in itself is over means signing in again. Its token service
+            // being busy or down for a moment (429, 5xx) or any other hiccup is kept for later instead.
+            val why = message(r.body).orEmpty()
+            val over = r.code in 400..403 && Regex("TOKEN_EXPIRED|INVALID_REFRESH_TOKEN|USER_DISABLED|USER_NOT_FOUND|INVALID_GRANT_TYPE|MISSING_REFRESH_TOKEN|PROJECT_NUMBER_MISMATCH").containsMatchIn(why)
+            if (over) throw AuthException("Session expired; sign in again")
+            throw io.github.prithirajn.readync.net.BusyException(
+                "The sign-in service didn't answer properly (HTTP ${r.code}${if (why.isNotEmpty()) ": $why" else ""}); will try again",
+                io.github.prithirajn.readync.net.BusyException.retryAfter(r),
+            )
+        }
+        val o = runCatching { JSONObject(r.body) }.getOrNull()
+            ?: throw io.github.prithirajn.readync.net.BusyException("The sign-in service sent something unreadable; will try again")
         val id = o.str("id_token") ?: throw AuthException("Session expired; sign in again")
         val refresh = o.str("refresh_token") ?: refreshToken
         val expiresIn = o.long("expires_in") ?: 3600L

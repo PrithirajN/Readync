@@ -45,13 +45,16 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -72,6 +75,7 @@ import io.github.prithirajn.readync.ui.theme.CpShapes
 import io.github.prithirajn.readync.ui.theme.CpType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 /*
  * Gadget: the parts of the little reading device the app is drawn as. Keys that sink onto their
@@ -136,24 +140,52 @@ fun Key(
         if (down) spring(dampingRatio = 1f, stiffness = Spring.StiffnessHigh) else spring(dampingRatio = 0.45f, stiffness = 700f),
         label = "keyTravel",
     )
-    val (top, bottom, ledgeColor) = when (kind) {
-        KeyKind.SIGNAL -> Triple(c.accent.copy(alpha = 1f).let { lerpColor(it, Color.White, 0.18f) }, c.accent, c.signalLedge)
-        KeyKind.INK -> Triple(lerpColor(c.ink, Color.White, 0.1f), c.ink, Color.Black)
-        else -> Triple(c.keyTop, c.keyBottom, c.keyLedge)
+    // Riso stamps: flat ink, printed a little off register over a second ink (or a shadow for plain
+    // keys). Pressing sinks the face onto it, and a splash of light spreads from your finger.
+    val (face, ledgeColor) = when (kind) {
+        KeyKind.SIGNAL -> c.accent to c.signalLedge
+        KeyKind.INK -> c.ink to (if (c.isDark) c.accent else Color.Black)
+        else -> c.keyTop to c.keyLedge
     }
+    val splash = remember { Animatable(1f) }
+    var at by remember { mutableStateOf(Offset.Unspecified) }
+    val animate = LocalAnimationsOn.current
+    val splashScope = androidx.compose.runtime.rememberCoroutineScope()
+    LaunchedEffect(source, enabled) {
+        source.interactions.collect { i ->
+            if (i is PressInteraction.Press && enabled && animate) {
+                at = i.pressPosition
+                // Its own coroutine, so the finger lifting never cuts it off half-spread (it used to
+                // stay on the key as a pale circle).
+                splashScope.launch {
+                    splash.snapTo(0f)
+                    splash.animateTo(1f, tween(durationMillis = 520, easing = FastOutSlowInEasing))
+                }
+            }
+        }
+    }
+    val misX = if (kind == KeyKind.SIGNAL) 2.dp else 0.dp
     Box(
         modifier
             .clickable(source, indication = null, enabled = enabled, role = role, onClickLabel = label, onClick = onClick)
             .padding(bottom = ledge)
-            // The ledge: the key's own shape, a little lower, darker.
+            // The second ink (or shadow): the key's own shape, nudged down and a touch across.
             .drawBehind {
-                drawRoundRect(ledgeColor, topLeft = Offset(0f, ledge.toPx()), size = size, cornerRadius = cornerOf(shape, size, this))
+                drawRoundRect(ledgeColor, topLeft = Offset(misX.toPx(), ledge.toPx()), size = size, cornerRadius = cornerOf(shape, size, this))
             }
             .offset(y = travel)
             .clip(shape)
-            .background(Brush.verticalGradient(listOf(top, bottom)))
-            // A thin light edge along the top, as on a moulded key.
-            .drawBehind { drawRect(Color.White.copy(alpha = if (c.isDark) 0.06f else 0.55f), size = Size(size.width, 1.dp.toPx())) }
+            .background(face)
+            .then(if (kind == KeyKind.PLAIN || kind == KeyKind.DANGER) Modifier.drawBehind {
+                drawRect(c.hairline, style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx() * 2))
+            } else Modifier)
+            .drawBehind {
+                val t = splash.value
+                if (t < 1f && at.isSpecified) {
+                    val r = size.maxDimension * (0.15f + 1.1f * t)
+                    drawCircle(Color.White.copy(alpha = (if (kind == KeyKind.SIGNAL) 0.42f else 0.2f) * (1f - t)), r, at)
+                }
+            }
             .then(if (enabled) Modifier else Modifier.background(c.page.copy(alpha = 0.45f))),
         contentAlignment = Alignment.Center,
         content = content,
@@ -171,7 +203,7 @@ internal fun lerpColor(a: Color, b: Color, t: Float) = androidx.compose.ui.graph
 /** Text on a key in the colour its kind writes in. */
 @Composable
 fun keyText(kind: KeyKind): Color = when (kind) {
-    KeyKind.SIGNAL -> Color.White
+    KeyKind.SIGNAL -> Cp.colors.onAccent
     KeyKind.DANGER -> Cp.colors.error
     KeyKind.PLAIN -> Cp.colors.text
     KeyKind.INK -> Cp.colors.onInk
@@ -187,18 +219,19 @@ fun Screen(modifier: Modifier = Modifier, content: @Composable ColumnScope.() ->
     Column(
         modifier
             .fillMaxWidth()
+            // Printed a little off register over the section's second ink.
+            .drawBehind {
+                val o = cornerOf(CpShapes.screen, size, this)
+                drawRoundRect(c.signalLedge.copy(alpha = 0.8f), topLeft = Offset(3.dp.toPx(), 4.dp.toPx()), size = size, cornerRadius = CornerRadius(maxOf(o.x, 16.dp.toPx())))
+            }
             .clip(CpShapes.screen)
             .background(c.screen)
-            .drawBehind {
-                // Inner shade at the top edge.
-                drawRect(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.5f), Color.Transparent), endY = 14.dp.toPx()))
-                // Faint pixel rows.
-                val step = 3.dp.toPx()
-                var y = 0f
-                while (y < size.height) {
-                    drawRect(Color.White.copy(alpha = 0.018f), topLeft = Offset(0f, y), size = Size(size.width, 1f))
-                    y += step
-                }
+            // A halftone corner in the section's ink, dots shrinking away from the top right. Drawn once
+            // into a picture (redrawn only when the panel's size or ink changes), so a frame just pastes it.
+            .drawWithCache {
+                val reach = size.minDimension * 0.9f
+                val bmp = halftone(androidx.compose.ui.geometry.Size(reach, reach), c.accent.copy(alpha = 0.32f), 7.dp.toPx(), 1.3.dp.toPx())
+                onDrawBehind { drawImage(bmp, topLeft = Offset(size.width - reach, 0f)) }
             }
             .padding(14.dp),
         content = content,
@@ -217,30 +250,29 @@ fun DeviceLabel(text: String, modifier: Modifier = Modifier, color: Color = Cp.c
  */
 @Composable
 fun RollingNumber(value: Int, style: TextStyle, color: Color, modifier: Modifier = Modifier, countUp: Boolean = true) {
-    var started by remember { mutableStateOf(!countUp) }
-    LaunchedEffect(Unit) { started = true }
-    val shown by animateIntAsState(if (started) value else 0, tween(durationMillis = 900, easing = FastOutSlowInEasing), label = "count")
-    Row(modifier) {
-        for ((i, ch) in shown.toString().withIndex()) {
-            androidx.compose.runtime.key(shown.toString().length - i) {
-                AnimatedContent(
-                    targetState = ch,
-                    transitionSpec = {
-                        // Rolls up when the number grows, down when it shrinks, like a real odometer.
-                        val up = if (targetState > initialState) 1 else -1
-                        (slideInVertically(spring(dampingRatio = 0.7f, stiffness = 500f)) { it * up } + fadeIn(tween(120))) togetherWith
-                            (slideOutVertically(tween(160)) { -it * up } + fadeOut(tween(120)))
-                    },
-                    label = "digit",
-                ) { d -> Text(d.toString(), style = style, color = color) }
-            }
-        }
+    // Kept across being scrolled away in a list and back (rememberSaveable), so a number only counts
+    // up again when its tab comes back on screen, not each time its row scrolls into view.
+    var started by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(!countUp) }
+    var seen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    val visible = LocalTabVisible.current
+    val animOn = LocalAnimationsOn.current
+    LaunchedEffect(visible) {
+        if (!visible) { seen = false; return@LaunchedEffect }
+        if (seen) return@LaunchedEffect
+        seen = true
+        if (countUp && started && animOn) { started = false; kotlinx.coroutines.delay(16) }
+        started = true
     }
+    val target = if (started) value else 0
+    val shown by animateIntAsState(target, tween(durationMillis = 900, easing = FastOutSlowInEasing), label = "count")
+    // Plain figures: the count itself is the motion. (A rolling digit for each place, kept even at
+    // rest, was most of the work of showing a row of numbers, every time it scrolled into view.)
+    Text(shown.toString(), style = style, color = color, modifier = modifier)
 }
 
 /**
- * Progress as a row of lit segments: they light one after another up to [fraction] (the last one
- * partly), the first time and whenever it moves.
+ * Progress as a riso bar: a bar of ink grows to [fraction] with a spring, its ends cut a little
+ * unevenly, over a faint track. ([segments] is kept for older callers; the bar is one stroke now.)
  */
 @Composable
 fun SegmentBar(
@@ -252,84 +284,186 @@ fun SegmentBar(
     off: Color = Cp.colors.track,
 ) {
     val target = fraction.coerceIn(0f, 1f)
-    val shown = remember { Animatable(0f) }
-    LaunchedEffect(target) { shown.animateTo(target, tween(durationMillis = 260 + (target * 700).toInt(), easing = FastOutSlowInEasing)) }
+    val animate = LocalAnimationsOn.current
+    val shown = remember { Animatable(if (animate) 0f else target) }
+    // Grows to its place, and grows again each time its tab comes back on screen.
+    val visible = LocalTabVisible.current
+    LaunchedEffect(target, visible) {
+        if (animate && visible && shown.value == target) shown.snapTo(0f)
+        shown.animateTo(target, spring(dampingRatio = 0.75f, stiffness = 120f))
+    }
     Box(
         modifier
             .fillMaxWidth()
             .height(height)
             .drawBehind {
-                val gap = 3.dp.toPx()
-                val w = (size.width - gap * (segments - 1)) / segments
-                val r = CornerRadius(size.height / 2f)
-                for (i in 0 until segments) {
-                    val x = i * (w + gap)
-                    drawRoundRect(off, topLeft = Offset(x, 0f), size = Size(w, size.height), cornerRadius = r)
-                    val lit = (shown.value * segments - i).coerceIn(0f, 1f)
-                    if (lit > 0f) drawRoundRect(on, topLeft = Offset(x, 0f), size = Size(w * lit, size.height), cornerRadius = r)
+                val h = size.height
+                drawRoundRect(off, size = size, cornerRadius = CornerRadius(h / 2f))
+                val w = (size.width * shown.value.coerceIn(0f, 1f))
+                if (w > 0.5f) {
+                    // Uneven ends, like ink pulled across by hand.
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                            0f, 0f, w, h,
+                            topLeftCornerRadius = CornerRadius(h * 0.3f), topRightCornerRadius = CornerRadius(h * 0.9f),
+                            bottomRightCornerRadius = CornerRadius(h * 0.45f), bottomLeftCornerRadius = CornerRadius(h),
+                        ))
+                    }
+                    drawPath(path, on)
                 }
             },
     )
 }
 
+/** The colour of a book's cover, for its spine and progress: the section's ink until it's known. */
+@Composable
+fun rememberBookInk(url: String?): Color {
+    val c = Cp.colors
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val seed by androidx.compose.runtime.produceState<Int?>(url?.let { CoverAccent.knownInk(it) }, url) {
+        if (url != null && value == null) value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { CoverAccent.inkOf(context, url) }
+    }
+    val target = seed?.let { io.github.prithirajn.readync.util.Palette.signalFrom(it, c.isDark) }?.let { Color(it.accent) } ?: c.accent
+    return androidx.compose.animation.animateColorAsState(target, tween(500), label = "bookInk").value
+}
+
 /**
- * The wallpaper behind the device: soft blooms in the colour of the book you're reading, drifting
- * slowly. Strongest at the top; the device's body takes over lower down.
+ * The paper every page is printed on: a fine, still grain of two inks' dots over a little noise.
+ * Drawn once into a tile and repeated, so it costs nothing while you scroll.
+ */
+@Composable
+fun RisoPaper(modifier: Modifier = Modifier, inkA: Color = Cp.colors.accent, inkB: Color = Cp.colors.signalLedge) {
+    val c = Cp.colors
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    val brush = remember(inkA, inkB, c.isDark, density) { paperBrush(inkA, inkB, c.isDark, density) }
+    Box(modifier.graphicsLayer().drawBehind { drawRect(brush) })
+}
+
+private fun paperBrush(inkA: Color, inkB: Color, dark: Boolean, density: Float): Brush {
+    val a = (7 * density).toInt().coerceAtLeast(6)
+    val b = (9 * density).toInt().coerceAtLeast(8)
+    val tile = a * b
+    val bmp = androidx.compose.ui.graphics.ImageBitmap(tile, tile)
+    val canvas = androidx.compose.ui.graphics.Canvas(bmp)
+    val paint = androidx.compose.ui.graphics.Paint().apply { isAntiAlias = true }
+    val r = 1.05f * density
+    paint.color = inkA.copy(alpha = if (dark) 0.10f else 0.15f)
+    var y = 0
+    while (y < tile) { var x = 0; while (x < tile) { canvas.drawCircle(Offset(x + a / 2f, y + a / 2f), r, paint); x += a }; y += a }
+    paint.color = inkB.copy(alpha = if (dark) 0.08f else 0.12f)
+    y = 0
+    while (y < tile) { var x = 0; while (x < tile) { canvas.drawCircle(Offset(x + b / 2f + 3 * density, y + b / 2f + 5 * density), r, paint); x += b }; y += b }
+    // Paper noise: a sprinkle of light and dark specks.
+    val rnd = java.util.Random(7)
+    paint.isAntiAlias = false
+    repeat(tile * tile / 60) {
+        val light = rnd.nextBoolean()
+        paint.color = (if (light) Color.White else Color.Black).copy(alpha = if (dark) (if (light) 0.035f else 0.06f) else (if (light) 0.12f else 0.035f))
+        val s = if (rnd.nextInt(5) == 0) 2f else 1f
+        canvas.drawRect(androidx.compose.ui.geometry.Rect(rnd.nextInt(tile).toFloat(), rnd.nextInt(tile).toFloat(), 0f, 0f).let { androidx.compose.ui.geometry.Rect(it.left, it.top, it.left + s, it.top + s) }, paint)
+    }
+    return androidx.compose.ui.graphics.ShaderBrush(androidx.compose.ui.graphics.ImageShader(bmp, androidx.compose.ui.graphics.TileMode.Repeated, androidx.compose.ui.graphics.TileMode.Repeated))
+}
+
+/**
+ * A book's page header: a still halftone in its cover's colour, the dots biggest at the top and
+ * shrinking down into the paper. Its own layer, so it's drawn once.
  */
 @Composable
 fun Wallpaper(modifier: Modifier = Modifier, height: Dp = 340.dp, color: Color = Cp.colors.wall) {
-    val c = Cp.colors
-    val on = LocalAnimationsOn.current
-    // The drift is slow (once round in 26 s), so it's moved 15 times a second, not on every frame
-    // (on a 120 Hz screen that's 8 times less drawing behind everything you scroll).
-    val tState = androidx.compose.runtime.remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
-    if (on) androidx.compose.runtime.LaunchedEffect(Unit) {
-        var last = 0L
-        while (true) {
-            androidx.compose.runtime.withFrameMillis { ms ->
-                if (ms - last >= 66) { last = ms; tState.floatValue = ((ms % 26_000L) / 26_000f) * (Math.PI * 2).toFloat() }
-            }
-        }
-    }
-    val glow = if (c.isDark) 0.55f else 0.85f
-    val second = lerpColor(color, if (c.isDark) Color(0xFF6B4BFF) else Color(0xFFFFC7E3), 0.55f)
     Box(
         modifier
             .fillMaxWidth()
             .height(height)
-            // The blooms are bigger than the box: keep them inside it, so the colour ends in the fade
-            // instead of carrying on below it in a hard line.
             .clipToBounds()
-            // Its own layer: its redraws don't make the screen above it redraw.
-            .graphicsLayer()
-            .drawBehind {
-                val t = tState.floatValue
-                val w = size.width
-                val h = size.height
-                fun bloom(x: Float, y: Float, r: Float, col: Color, a: Float) =
-                    drawCircle(Brush.radialGradient(listOf(col.copy(alpha = a), col.copy(alpha = a * 0.4f), col.copy(alpha = 0f)), Offset(x, y), r), r, Offset(x, y))
-                bloom(w * (0.25f + 0.08f * kotlin.math.cos(t)), h * (0.18f + 0.06f * kotlin.math.sin(t)), w * 0.95f, color, glow)
-                bloom(w * (0.85f - 0.07f * kotlin.math.sin(t)), h * (0.45f + 0.05f * kotlin.math.cos(t)), w * 0.8f, second, glow * 0.8f)
-                // Fades into the page at the bottom.
-                drawRect(Brush.verticalGradient(listOf(Color.Transparent, c.page.copy(alpha = 0.55f), c.page), startY = h * 0.3f, endY = h * 0.96f))
-                drawRect(c.page, topLeft = Offset(0f, h * 0.96f))
+            .drawWithCache {
+                val bmp = stripes(size, color.copy(alpha = 0.55f), 8.dp.toPx(), 2.4.dp.toPx())
+                onDrawBehind { drawImage(bmp) }
             },
     )
+}
+
+/** The Screen's halftone corner, drawn once into a picture: dots shrinking with distance from the top right. */
+private fun halftone(area: Size, color: Color, step: Float, maxR: Float): androidx.compose.ui.graphics.ImageBitmap {
+    val w = area.width.toInt().coerceAtLeast(1)
+    val bmp = androidx.compose.ui.graphics.ImageBitmap(w, w)
+    val canvas = androidx.compose.ui.graphics.Canvas(bmp)
+    val paint = androidx.compose.ui.graphics.Paint().apply { this.color = color; isAntiAlias = true }
+    val reach = area.width
+    var y = step / 2
+    while (y < reach) {
+        var x = reach - step / 2
+        while (x > 0f) {
+            val d = kotlin.math.hypot(reach - x, y) / reach
+            if (d < 1f) canvas.drawCircle(Offset(x, y), maxR * (1f - d), paint)
+            x -= step
+        }
+        y += step
+    }
+    return bmp
+}
+
+/** A book page header's halftone, drawn once into a picture: rows of dots shrinking down the page. */
+private fun stripes(area: Size, color: Color, step: Float, maxR: Float): androidx.compose.ui.graphics.ImageBitmap {
+    val bmp = androidx.compose.ui.graphics.ImageBitmap(area.width.toInt().coerceAtLeast(1), area.height.toInt().coerceAtLeast(1))
+    val canvas = androidx.compose.ui.graphics.Canvas(bmp)
+    val paint = androidx.compose.ui.graphics.Paint().apply { this.color = color; isAntiAlias = true }
+    val reach = area.height * 0.85f
+    var y = step / 2
+    var row = 0
+    while (y < reach) {
+        val t = 1f - y / reach
+        val rad = maxR * t * t
+        if (rad > 0.3f) {
+            var x = if (row % 2 == 0) step / 2 else step
+            while (x < area.width) { canvas.drawCircle(Offset(x, y), rad, paint); x += step }
+        }
+        y += step * 0.87f
+        row++
+    }
+    return bmp
 }
 
 /** A small light that glows when on (a status LED). */
 @Composable
 fun Led(on: Boolean, modifier: Modifier = Modifier, color: Color = Cp.colors.accent, size: Dp = 7.dp) {
     val c = Cp.colors
-    val a by animateFloatAsState(if (on) 1f else 0f, tween(300), label = "led")
+    val a by animateFloatAsState(if (on) 1f else 0f, spring(dampingRatio = 0.5f, stiffness = 500f), label = "led")
     Box(
         modifier
             .width(size).height(size)
             .drawBehind {
-                if (a > 0f) drawCircle(color.copy(alpha = 0.35f * a), radius = this.size.minDimension * 1.1f)
-                drawCircle(lerpColor(c.keyLedge, color, a))
+                drawCircle(c.track)
+                if (a > 0.01f) drawCircle(color, radius = this.size.minDimension / 2f * a.coerceIn(0f, 1.15f))
             },
     )
+}
+
+/**
+ * Works something out off the main thread (so scrolling to it never stutters), showing [initial]
+ * for the moment until it's ready, and again whenever a key changes.
+ */
+@Composable
+fun <T> rememberWorked(vararg keys: Any?, initial: T, work: () -> T): T =
+    androidx.compose.runtime.produceState(initial, *keys) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { runCatching { work() }.getOrDefault(value) }
+    }.value
+
+/**
+ * Debug builds only: times how long [content] takes to make and to lay out, and tells FrameWatch
+ * (the slowest part shows on the frame reading). Release builds just show [content].
+ */
+@Composable
+fun DebugTimed(name: String, content: @Composable () -> Unit) {
+    if (!io.github.prithirajn.readync.BuildConfig.DEBUG) { content(); return }
+    val t0 = System.nanoTime()
+    Box(Modifier.layout { m, c ->
+        val t = System.nanoTime()
+        val p = m.measure(c)
+        io.github.prithirajn.readync.FrameWatch.slow("$name layout", (System.nanoTime() - t) / 1e6)
+        layout(p.width, p.height) { p.place(0, 0) }
+    }) { content() }
+    io.github.prithirajn.readync.FrameWatch.slow(name, (System.nanoTime() - t0) / 1e6)
 }
 
 /** Space that takes the rest of a row. */
@@ -395,10 +529,14 @@ fun SheetGrip() {
 @Composable
 fun Modifier.riseIn(index: Int): Modifier {
     if (!LocalAnimationsOn.current) return this
-    val t = remember { Animatable(0f) }
+    // Rises once: a row scrolled away in a list and back is just there (whether it rose is saved).
+    var risen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    val t = remember { Animatable(if (risen) 1f else 0f) }
     LaunchedEffect(Unit) {
+        if (risen) return@LaunchedEffect
         delay(40L * index.coerceAtMost(8))
         t.animateTo(1f, spring(dampingRatio = 0.8f, stiffness = 240f))
+        risen = true
     }
     return this.graphicsLayer {
         alpha = t.value.coerceIn(0f, 1f)
@@ -444,12 +582,18 @@ fun MoreOptions(title: String = "More options", summary: String? = null, startOp
  * when it last synced, with a light per service that blinks while a sync runs.
  */
 @Composable
-fun ServicesScreenStrip(lights: List<Pair<String, Int>>, on: Int, needYou: Int, lastSync: String, running: Boolean, modifier: Modifier = Modifier) {
+fun ServicesScreenStrip(
+    lights: List<Pair<String, Int>>, on: Int, needYou: Int, lastSync: String, running: Boolean, modifier: Modifier = Modifier,
+    /** The next posts to go up: (when, where, what). */
+    next: List<Triple<String, String, String>> = emptyList(),
+    /** What the first number counts ("Trackers on", "Connected"…). */
+    onLabel: String = "Services on",
+) {
     val c = Cp.colors
     Screen(modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.Bottom) {
             Column(Modifier.weight(1f)) {
-                DeviceLabel("Services on", color = c.screenDim)
+                DeviceLabel(onLabel, color = c.screenDim)
                 RollingNumber(on, CpType.screenNumber.copy(fontSize = 40.sp, lineHeight = 40.sp), c.screenText)
             }
             Column(Modifier.weight(1f)) {
@@ -477,6 +621,24 @@ fun ServicesScreenStrip(lights: List<Pair<String, Int>>, on: Int, needYou: Int, 
             Spacer(Modifier.weight(1f))
             DeviceLabel(if (running) "Syncing" else lastSync, color = if (running) c.accent else c.screenDim)
         }
+        // What goes up next on your social networks: when, where, what.
+        if (next.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.screenDim.copy(alpha = 0.25f)))
+            Spacer(Modifier.height(12.dp))
+            DeviceLabel("Next posts", color = c.screenDim)
+            next.forEach { (whenAt, where, what) ->
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.Top) {
+                    Column(Modifier.width(118.dp)) {
+                        DeviceLabel(whenAt, color = c.accent)
+                        DeviceLabel(where, color = c.screenDim)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Text(what, style = CpType.small, color = c.screenText, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                }
+            }
+        }
     }
 }
 
@@ -503,7 +665,6 @@ fun <T> Segmented(
             .height(42.dp)
             .clip(CpShapes.control)
             .background(c.field)
-            .drawBehind { drawRect(Brush.verticalGradient(listOf(Color.Black.copy(alpha = if (c.isDark) 0.35f else 0.08f), Color.Transparent), endY = 6.dp.toPx())) }
             .padding(3.dp),
     ) {
         // The pill, drawn under the labels and slid between them.
@@ -512,14 +673,14 @@ fun <T> Segmented(
                 .fillMaxWidth(1f / options.size)
                 .fillMaxHeight()
                 .graphicsLayer { translationX = at * size.width }
-                .shadow(5.dp, androidx.compose.foundation.shape.RoundedCornerShape(11.dp), ambientColor = c.accent, spotColor = c.accent)
-                .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.dp))
-                .background(Brush.verticalGradient(listOf(lerpColor(c.accent, Color.White, 0.15f), c.accent))),
+                .drawBehind { drawRoundRect(c.signalLedge, topLeft = Offset(1.5.dp.toPx(), 2.dp.toPx()), size = size, cornerRadius = CornerRadius(11.dp.toPx())) }
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(topStart = 13.dp, topEnd = 6.dp, bottomEnd = 13.dp, bottomStart = 6.dp))
+                .background(c.accent),
         )
         Row(Modifier.fillMaxSize()) {
             options.forEachIndexed { i, o ->
                 val on = i == index
-                val fg by androidx.compose.animation.animateColorAsState(if (on) Color.White else c.textMid, tween(180), label = "segText")
+                val fg by androidx.compose.animation.animateColorAsState(if (on) c.onAccent else c.textMid, tween(180), label = "segText")
                 Row(
                     Modifier
                         .weight(1f)
@@ -552,11 +713,7 @@ fun GlowBar(on: Boolean, modifier: Modifier = Modifier, width: Dp = 24.dp) {
             Modifier
                 .width(width * grow.coerceAtLeast(0f))
                 .height(4.dp)
-                .drawBehind {
-                    if (grow > 0.01f) drawRoundRect(c.accent.copy(alpha = 0.35f * grow.coerceAtMost(1f)), topLeft = Offset(-5.dp.toPx(), -3.dp.toPx()),
-                        size = Size(size.width + 10.dp.toPx(), size.height + 6.dp.toPx()), cornerRadius = CornerRadius(6.dp.toPx()))
-                }
-                .clip(CpShapes.pill)
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(topStart = 1.dp, topEnd = 4.dp, bottomEnd = 2.dp, bottomStart = 4.dp))
                 .background(c.accent),
         )
     }

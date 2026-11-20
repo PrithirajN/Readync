@@ -11,6 +11,7 @@ import io.github.prithirajn.readync.data.Snapshot
 import io.github.prithirajn.readync.data.Store
 import io.github.prithirajn.readync.data.Visibility
 import io.github.prithirajn.readync.net.AuthException
+import io.github.prithirajn.readync.net.BusyException
 import io.github.prithirajn.readync.net.NetworkException
 import io.github.prithirajn.readync.net.ServiceException
 import io.github.prithirajn.readync.net.SkipException
@@ -267,6 +268,8 @@ class SyncEngine(private val store: Store) {
                 // site never holds up the trackers; anything they queue goes out at the end.
                 timed("Extras") {
                     runCatching { pullRatings() }
+                    // Your CrossPoint books' reading days, as far back as the server has them.
+                    runCatching { crossPointDays() }
                     // Highlights out to Readwise, Notion and Obsidian, where set up.
                     runCatching { Exports.run(store) }
                     runCatching { storiesFromEpubs() }
@@ -872,6 +875,7 @@ class SyncEngine(private val store: Store) {
             if (!t.bringsPositions) continue
             val svc = store.snapshot.service(t.id)
             if (!svc.linked || !svc.enabled || svc.needsReauth) continue
+            if (resting(t.id)) continue
             val session = Session(svc.credential)
             val s0 = store.snapshot
             // Books being read, newest first: listening ahead happens in the one you're on.
@@ -926,7 +930,11 @@ class SyncEngine(private val store: Store) {
             } catch (e: NetworkException) {
                 netFail(t.id, "Couldn't reach ${t.name} for your positions; will retry", e)
             } catch (e: Exception) {
-                store.log(t.id, "Couldn't read your places in ${t.name} (${e.message})", error = true)
+                if (BusyException.looksBusy(e)) {
+                    rest(t.id, (e as? BusyException)?.retryAfterSec)
+                    store.log(t.id, "${t.name} is busy; your places there are read again later (${e.message})", error = true)
+                } else store.log(t.id, "Couldn't read your places in ${t.name} (${e.message})", error = true)
+                if (session.changed) store.updateService(t.id) { it.copy(credential = session.encode()) }
             }
         }
     }
@@ -937,8 +945,10 @@ class SyncEngine(private val store: Store) {
             val svc = store.snapshot.service(t.id)
             val bridgeForKindle = t.id == "goodreads" && store.snapshot.kindle != null
             if (!svc.linked || !svc.enabled || svc.needsReauth || (!svc.importReading && !bridgeForKindle)) continue
+            // Resting after being busy (see rest): its library is read again once that's over.
+            if (resting(t.id)) continue
+            val session = Session(svc.credential)
             try {
-                val session = Session(svc.credential)
                 learnLibraryKeys(t, session)
                 // Read only to carry Kindle progress over (bringing in its books is off): nothing else is imported.
                 importLibrary(t, t.library(session).also { libraries[t.id] = it }, bridgeOnly = !svc.importReading)
@@ -948,7 +958,13 @@ class SyncEngine(private val store: Store) {
             } catch (e: NetworkException) {
                 netFail(t.id, "Couldn't reach ${t.name} for your reading; will retry", e)
             } catch (e: Exception) {
-                store.log(t.id, "Couldn't read your ${t.name} library (${e.message})", error = true)
+                if (BusyException.looksBusy(e)) {
+                    rest(t.id, (e as? BusyException)?.retryAfterSec)
+                    store.log(t.id, "${t.name} is busy; your library there is read again later (${e.message})", error = true)
+                } else store.log(t.id, "Couldn't read your ${t.name} library (${e.message})", error = true)
+            } finally {
+                // Cookies it renewed while being read (a session cookie, a bot check cleared) are kept.
+                if (session.changed) store.updateService(t.id) { it.copy(credential = session.encode()) }
             }
         }
     }
@@ -1150,6 +1166,34 @@ class SyncEngine(private val store: Store) {
             }
         }
         return out
+    }
+
+    /**
+     * Every CrossPoint book's reading days, as far back as the server has them (its progress history
+     * and the reader's statistics): pages and minutes for each day, kept on the book, for the
+     * streak, the reading-days grid, the week and Wrapped. Days from elsewhere (KOReader, Seekquel,
+     * by hand) stay as they are. Every few hours, a few requests of 50 books each.
+     */
+    private fun crossPointDays(force: Boolean = false) {
+        val account = store.snapshot.account ?: return
+        val now = System.currentTimeMillis() / 1000
+        if (!force && now - (store.snapshot.extras["cp.daysAt"]?.toLongOrNull() ?: 0L) < 6 * 3600) return
+        val client = CrossPointClient(account)
+        val tz = -java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000
+        val docs = store.snapshot.books.values.filter { it.origin == null }.map { it.document }
+        val found = HashMap<String, Map<String, Pair<Int, Int>>>()
+        for (chunk in docs.chunked(50)) found += client.bookDays(chunk, tz)
+        store.update { s ->
+            val days = HashMap(s.readingDays)
+            for ((doc, list) in found) {
+                if (doc !in s.books || list.isEmpty()) continue
+                val have = days[doc] ?: emptyMap()
+                val add = list.filterKeys { d -> have[d]?.let { it.source == "crosspoint" } ?: true }
+                    .mapValues { (_, v) -> io.github.prithirajn.readync.data.ReadDay(pages = v.first.takeIf { it > 0 }, minutes = (v.second / 60).takeIf { it > 0 }, source = "crosspoint") }
+                if (add.isNotEmpty()) days[doc] = have + add
+            }
+            s.copy(readingDays = days, extras = s.extras + ("cp.daysAt" to now.toString()))
+        }
     }
 
     /** Copies each book's pages read and finish date from the server's reading activity. */
@@ -2660,13 +2704,17 @@ class SyncEngine(private val store: Store) {
 
     /** Sends every queued update, one tracker at a time (or for onlyDocument if specified). */
     private fun pushPending(onlyDocument: String? = null): Result {
+        if (!PostingDevice.isThis(store.snapshot)) return Result("Up to date · ${PostingDevice.name(store.snapshot) ?: "your other phone"} sends to your trackers")
         val attention = java.util.Collections.synchronizedList(ArrayList<String>())
         val sent = java.util.concurrent.atomic.AtomicInteger(0)
         // Every tracker at once, each in its own worker; each tracker's own updates still go one
         // at a time, at its usual pace.
         inParallel(Trackers.all) { tracker ->
             val svc = store.snapshot.service(tracker.id)
-            if (!svc.linked || !svc.enabled || svc.needsReauth) return@inParallel
+            // "Sign in again" because of Goodreads' bot check (as it used to be taken) is tried again
+            // anyway: the session is usually still good once the check has passed.
+            val botChecked = svc.needsReauth && svc.lastError?.contains("bot check", ignoreCase = true) == true
+            if (!svc.linked || !svc.enabled || (svc.needsReauth && !botChecked)) return@inParallel
             val queue = store.snapshot.pending.values
                 .filter { it.service == tracker.id && (onlyDocument == null || it.document == onlyDocument) }
                 .sortedBy { it.queuedAt }
@@ -2675,7 +2723,12 @@ class SyncEngine(private val store: Store) {
                 if (svc.lastError != null) store.updateService(tracker.id) { it.copy(lastError = null) }
                 return@inParallel
             }
+            // Busy a moment ago (rate-limited, down, a bot check): left alone until its cooldown is over,
+            // so a struggling service isn't asked again every few minutes. Its books stay queued.
+            val resting = (busyUntil[tracker.id] ?: 0L) - System.currentTimeMillis()
+            if (resting > 0 && onlyDocument == null) return@inParallel
             var failed = false
+            var busyInARow = 0
             val session = Session(svc.credential).also { it.visibility = svc.visibility }
             try {
                 for (p in queue) {
@@ -2683,18 +2736,45 @@ class SyncEngine(private val store: Store) {
                         dropPending(p, "Gave up after $MAX_AGE_DAYS days")
                         continue
                     }
+                    // What the book was when this send started: changed by the time it's done (read on,
+                    // marked finished meanwhile), the update stays queued so the newer state goes out too.
+                    val before = sendSignature(store.snapshot.books[p.document])
                     try {
                         val outcome = process(tracker, session, p)
                         if (outcome != null) sent.incrementAndGet()
-                        store.update { s -> s.copy(pending = s.pending - p.key) }
+                        busyInARow = 0
+                        store.update { s ->
+                            if (sendSignature(s.books[p.document]) != before && s.pending.containsKey(p.key)) s.copy(pending = s.pending + (p.key to p.copy(tries = 0, lastError = null)))
+                            else s.copy(pending = s.pending - p.key)
+                        }
                     } catch (e: AwaitingConfirm) {
                         // Matched, and waiting for you to confirm it's the right book: kept queued.
                         continue
+                    } catch (e: DatesRetry) {
+                        // Sent, all but its days: tried again on the next syncs, three times in all, then
+                        // left with the note on the book (as ShelfSync gives a refused date a few tries).
+                        if (e.did != null) sent.incrementAndGet()
+                        busyInARow = 0
+                        val tries = p.tries + 1
+                        store.update { s ->
+                            if (tries >= DATE_TRIES || !s.pending.containsKey(p.key)) s.copy(pending = s.pending - p.key)
+                            else s.copy(pending = s.pending + (p.key to p.copy(tries = tries, lastError = e.message)))
+                        }
                     } catch (e: AuthException) {
                         throw e
                     } catch (e: NetworkException) {
                         throw e
                     } catch (e: Exception) {
+                        if (BusyException.looksBusy(e)) {
+                            // Not this book's fault: kept as it is, no try counted (it still ages out after
+                            // $MAX_AGE_DAYS days), and after a few in a row the tracker is rested.
+                            store.update { s -> if (s.pending.containsKey(p.key)) s.copy(pending = s.pending + (p.key to p.copy(lastError = e.message))) else s }
+                            failed = true
+                            busyInARow++
+                            if (e is BusyException || busyInARow >= 3) throw e
+                            Thread.sleep(PAUSE_MS)
+                            continue
+                        }
                         val tries = p.tries + 1
                         if (tries >= MAX_TRIES) {
                             dropPending(p, e.message ?: "Failed")
@@ -2708,9 +2788,14 @@ class SyncEngine(private val store: Store) {
                     }
                     Thread.sleep(PAUSE_MS)
                 }
+                // Got through: no cooldown any more.
+                if (!failed) { busyUntil.remove(tracker.id); busyStrikes.remove(tracker.id) }
                 // A pass where every book went through clears the error from an earlier one.
                 store.updateService(tracker.id) {
-                    it.copy(lastSync = System.currentTimeMillis(), lastError = if (failed) it.lastError else null)
+                    it.copy(
+                        lastSync = System.currentTimeMillis(), lastError = if (failed) it.lastError else null,
+                        needsReauth = if (botChecked && !failed) false else it.needsReauth,
+                    )
                 }
             } catch (e: AuthException) {
                 attention.add(tracker.name)
@@ -2719,6 +2804,13 @@ class SyncEngine(private val store: Store) {
             } catch (e: NetworkException) {
                 // This tracker is unreachable right now; its books stay queued and the others go on.
                 netFail(tracker.id, "Couldn't reach ${tracker.name}; will retry (${e.message})", e)
+            } catch (e: Exception) {
+                if (!BusyException.looksBusy(e)) throw e
+                // Busy (see above): rested for what it asked, or longer each time it happens again.
+                rest(tracker.id, (e as? BusyException)?.retryAfterSec)
+                val msg = "${tracker.name} is busy right now; ${queue.size} update${if (queue.size == 1) "" else "s"} kept for later (${e.message})"
+                store.log(tracker.id, msg, error = true)
+                store.updateService(tracker.id) { it.copy(lastError = msg) }
             } finally {
                 if (session.changed) {
                     val credential = session.encode()
@@ -2941,10 +3033,14 @@ class SyncEngine(private val store: Store) {
     }
 
     private fun pushHighlights(onlyDocument: String? = null): Int {
+        // Another phone sends (Readync on two phones): nothing goes out twice.
+        if (!PostingDevice.isThis(store.snapshot)) return 0
         val s0 = store.snapshot
         // Trackers with "Send highlights" on, and ones a highlight was sent to by hand ("Post to Fable").
         val active = Trackers.all.filter { t ->
-            highlightsOn(t, s0) || (canTakeHighlights(t, s0) && s0.resend.any { it.startsWith("${t.id}|") })
+            (highlightsOn(t, s0) || (canTakeHighlights(t, s0) && s0.resend.any { it.startsWith("${t.id}|") })) &&
+                // Resting after being busy: its highlights wait until that's over.
+                (onlyDocument != null || !resting(t.id))
         }
         if (active.isEmpty()) return 0
         // CrossPoint's highlights and ones photographed from paper, as you edited them.
@@ -3090,7 +3186,7 @@ class SyncEngine(private val store: Store) {
                             // followed by ", back to X%" if your real reading progress was restored.
                             val where = if (t.highlightEntriesSetProgress && positions.isNotEmpty()) {
                                 val atStr = "at " + positions.distinct().joinToString(", ") { "$it%" }
-                                if (restoredProgress != null) "$atStr, back to $restoredProgress%" else atStr
+                                if (restoredProgress != null) "$atStr, then your place ($restoredProgress%)" else atStr
                             } else null
                             recordSent(t.id, doc, SendEvent(at = System.currentTimeMillis(), highlights = sortedNew.size, other = where))
                             sent.addAndGet(sortedNew.size)
@@ -3139,6 +3235,25 @@ class SyncEngine(private val store: Store) {
     }
 
     private fun title(document: String) = store.snapshot.books[document]?.displayTitle ?: document
+
+    /** Whether [trackerId] is resting after being busy (see [rest]). */
+    private fun resting(trackerId: String) = (busyUntil[trackerId] ?: 0L) > System.currentTimeMillis()
+
+    /** What a send to a tracker depends on: when any of it changes mid-send, the update stays queued. */
+    private fun sendSignature(b: Book?): List<Any?> =
+        if (b == null) emptyList() else listOf(b.percent, b.status, b.startedAt, b.finishedAt, b.rating, b.pageCount, b.manualAt, b.held)
+
+    /**
+     * Rests a busy tracker: for as long as it asked (Retry-After), or 5, 15, 45 minutes and then up to
+     * 3 hours the more often it happens in a row. Forgotten as soon as it takes an update again.
+     */
+    private fun rest(trackerId: String, askedSec: Long?) {
+        val strikes = (busyStrikes[trackerId] ?: 0) + 1
+        busyStrikes[trackerId] = strikes
+        val backoffMin = minOf(5L * Math.pow(3.0, (strikes - 1).toDouble()).toLong(), 180L)
+        val ms = maxOf((askedSec ?: 0L) * 1000, backoffMin * 60_000)
+        busyUntil[trackerId] = System.currentTimeMillis() + ms
+    }
 
     private fun dropPending(p: Pending, why: String) {
         store.update { s -> s.copy(pending = s.pending - p.key) }
@@ -3191,6 +3306,8 @@ class SyncEngine(private val store: Store) {
         var skipped = false
         // Finished there and not read again here: its read (and its days) are left alone.
         var leftAsIs = false
+        // The start and finish days didn't go through: kept queued to try them again (see DatesRetry).
+        var datesFailed = false
 
         try {
         when (target) {
@@ -3294,8 +3411,10 @@ class SyncEngine(private val store: Store) {
                 } catch (e: NetworkException) {
                     throw e
                 } catch (e: Exception) {
-                    // The dates are a nicety: note it and keep the update; tried again next time the book goes out.
+                    // The dates are a nicety: noted on the book, and the update kept to try them again
+                    // on the next syncs (a finished book may never change again to send them otherwise).
                     note = "Dates not set on ${tracker.name}: ${e.message}"
+                    datesFailed = true
                 }
             }
         }
@@ -3320,8 +3439,12 @@ class SyncEngine(private val store: Store) {
                 other = extras.distinct().joinToString(", ").ifEmpty { null },
             ))
         }
+        if (datesFailed) throw DatesRetry(did, note)
         return did
     }
+
+    /** The update went through but its days didn't: kept queued a few syncs more to try the days again. */
+    private class DatesRetry(val did: String?, message: String?) : Exception(message)
 
     /** Whether the crosspoint-sync server sends [book] to [trackerId] itself (linked there too, and a CrossPoint book). */
     private fun serverSends(trackerId: String, book: Book?): Boolean =
@@ -3336,6 +3459,7 @@ class SyncEngine(private val store: Store) {
      * per change. A tracker that refuses is noted and not retried until the review changes.
      */
     private fun pushReviews(onlyDocument: String? = null): Int {
+        if (!PostingDevice.isThis(store.snapshot)) return 0
         val s0 = store.snapshot
         val books = s0.books.values.filter { (it.rating != null || !it.review.isNullOrBlank()) && !it.held && (onlyDocument == null || it.document == onlyDocument) }
         if (books.isEmpty()) return 0
@@ -3344,6 +3468,7 @@ class SyncEngine(private val store: Store) {
             if (t.reviews == ReviewSupport.NONE) continue
             val svc = store.snapshot.service(t.id)
             if (!svc.linked || !svc.enabled || svc.needsReauth) continue
+            if (onlyDocument == null && resting(t.id)) continue
             val session = Session(svc.credential).also { it.visibility = svc.visibility }
             try {
                 for (b in books) {
@@ -3680,7 +3805,12 @@ class SyncEngine(private val store: Store) {
         /** Kindle (Amazon) is checked at most this often by the regular sync. */
         const val KINDLE_EVERY_MS = 3 * 3_600_000L
         const val RECENT_DAYS = 7L
+        /** Trackers resting after being busy (id -> until, ms), and how many times in a row. Kept while the app runs. */
+        private val busyUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        private val busyStrikes = java.util.concurrent.ConcurrentHashMap<String, Int>()
         const val MAX_AGE_DAYS = 28L
+        /** Tries at a book's start and finish days that a tracker didn't take, before they're left. */
+        const val DATE_TRIES = 3
         const val MAX_TRIES = 5
         const val PAUSE_MS = 700L
         /** Trackers with an API for this (the rest are posted to the way you would by hand). */

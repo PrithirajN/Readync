@@ -146,36 +146,75 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
             .fillMaxSize()
             .fadeTopEdge(pageScroll.value > 0)
             .verticalScroll(pageScroll)
-            .padding(bottom = 32.dp)
+            .padding(bottom = 32.dp + TabBarSpace)
     ) {
-        Column(PagePadding) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    PageTitle("Services")
-                    Quiet("Where your reading goes, and where it comes from.")
-                }
-                // The app's own settings (sync, AI, backup, updates) behind the gear.
-                IconCircleButton(R.drawable.lucide_settings, "Settings", { appSettings = true })
-            }
+        TabHeader("where your reading comes and goes", "Services") {
+            // The app's own settings (sync, AI, backup, updates) behind the gear.
+            IconCircleButton(R.drawable.lucide_settings, "Settings", { appSettings = true })
         }
+        VSpace(12)
         Column(Modifier.padding(horizontal = 16.dp)) {
-            if (linked.isNotEmpty()) {
-                // A glance before anything else: how many are on, how many want you, and a light each.
-                val lights = linked.map { t ->
-                    val svc = state.service(t.id)
-                    val wants = svc.needsReauth || svc.lastError != null || summary(state, t).second
-                    t.name to when { !svc.enabled -> 0; wants -> 2; else -> 1 }
+            // Readync on another phone too, and that one sends: said here, with a way to take over.
+            PostingDeviceCard(vm, state)
+            // A glance before anything else, for the tab you're on: how many are on, how many want
+            // you, a light each, and when it last did something (and, under Share & export, what posts next).
+            fun trackerLight(t: Tracker): Pair<String, Int> {
+                val svc = state.service(t.id)
+                val wants = svc.needsReauth || svc.lastError != null || summary(state, t).second
+                return t.name to when { !svc.enabled -> 0; wants -> 2; else -> 1 }
+            }
+            fun level(h: Health.Status) = when (h.level) { Health.Level.OFF -> 0; Health.Level.GOOD -> 1; else -> 2 }
+            val full = io.github.prithirajn.readync.Edition.full
+            val (onLabel, lights, lastLine) = when (servicesTab) {
+                0 -> Triple(
+                    "Trackers on",
+                    linkedTrackers.map { trackerLight(it) },
+                    linkedTrackers.maxOfOrNull { state.service(it.id).lastSync }?.takeIf { it > 0 }?.let { "Synced ${ago(it)}" } ?: "Not synced yet",
+                )
+                1 -> Triple(
+                    "Apps on",
+                    listOfNotNull(
+                        Health.source(state)?.let { "CrossPoint" to level(it) },
+                        Health.kindle(state)?.takeIf { full }?.let { "Kindle" to level(it) },
+                        Health.libby(state)?.takeIf { full }?.let { "Libby" to level(it) },
+                        Health.audible(state)?.takeIf { full }?.let { "Audible" to level(it) },
+                        (Health.mihon(state) ?: Health.anilist(state))?.let { "Manga" to level(it) },
+                        Health.kosync(state)?.let { "KOSync" to level(it) },
+                        Health.moon(state)?.let { "Moon+" to level(it) },
+                    ) + linkedApps.map { trackerLight(it) },
+                    (listOf(state.sourceOkAt, state.kosyncOkAt, state.moonOkAt) +
+                        (if (full) listOf(state.kindleOkAt, state.libbyOkAt, state.audibleOkAt) else emptyList()) +
+                        linkedApps.map { state.service(it.id).lastSync }).max().takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Not checked yet",
+                )
+                else -> Triple(
+                    "Connected",
+                    SocialNets.all().filter { SocialNets.connected(state, it.id) }.map { it.name to 1 } +
+                        listOfNotNull(
+                            ("Readwise" to 1).takeIf { state.readwiseToken != null },
+                            ("Notion" to 1).takeIf { state.notionToken != null },
+                            ("Obsidian" to 1).takeIf { state.obsidianFolder != null },
+                        ),
+                    if (!io.github.prithirajn.readync.sync.PostingDevice.isThis(androidx.compose.ui.platform.LocalContext.current, state)) "Posting from your other phone"
+                    else state.threadsPostLog.maxOrNull()?.let { "Posted ${ago(it * 1000)}" } ?: "Nothing posted yet",
+                )
+            }
+            run {
+                // The next 3 posts across your social networks (worked out off the main thread, again as things change).
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                var nextPosts by remember { mutableStateOf<List<Triple<String, String, String>>>(emptyList()) }
+                LaunchedEffect(state.threadsPostLog, state.threadsBooks, state.extras, state.books.size, state.threadsToken) {
+                    nextPosts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        runCatching { UpcomingPosts.next(ctx, state).map { Triple(UpcomingPosts.whenText(it), it.where, it.what) } }.getOrDefault(emptyList())
+                    }
                 }
-                val last = linked.maxOf { state.service(it.id).lastSync }
-                Box(Modifier.riseIn(0).padding(bottom = 16.dp).shadow(14.dp, RoundedCornerShape(26.dp), ambientColor = c.shade, spotColor = c.shade).clip(RoundedCornerShape(26.dp)).background(c.surface).padding(10.dp)) {
-                    ServicesScreenStrip(
-                        lights,
-                        on = lights.count { it.second > 0 },
-                        needYou = lights.count { it.second == 2 },
-                        lastSync = if (last > 0) "Synced ${ago(last)}" else "Not synced yet",
-                        running = state.running,
-                    )
-                }
+                ServicesMasthead(
+                    lights,
+                    label = onLabel.lowercase(),
+                    lastLine = lastLine,
+                    running = state.running && servicesTab != 2,
+                    next = if (servicesTab == 2) nextPosts else emptyList(),
+                    modifier = Modifier.padding(bottom = 18.dp).animateContentSize(),
+                )
             }
             PageTabs(listOf("Trackers", "Reading apps", "Share & export"), servicesTab) { servicesTab = it }
             // The tab's page slides in from the side you moved toward.
@@ -193,7 +232,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 0 -> {
                 if (linkedTrackers.isNotEmpty()) {
                     VSpace(16)
-                    CpCard {
+                    RisoList {
                         linkedTrackers.forEachIndexed { i, t ->
                             if (i > 0) RowDivider()
                             Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
@@ -216,7 +255,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 // Everything else as one short list of rows, each opening its own sheet, so the page
                 // stays a glance instead of a long scroll.
                 VSpace(16)
-                CpCard {
+                RisoList {
                     NavRow(
                         R.drawable.lucide_library_big, "CrossPoint",
                         listOfNotNull(state.account?.username, state.sourceOkAt.takeIf { it > 0 }?.let { "reached ${ago(it)}" }).joinToString(" · ").ifEmpty { null },
@@ -288,7 +327,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 // Reading apps and servers linked here: most go both ways, a few only bring your place in.
                 if (linkedApps.isNotEmpty()) {
                     VSpace(16)
-                    CpCard {
+                    RisoList {
                         linkedApps.forEachIndexed { i, t ->
                             if (i > 0) RowDivider()
                             Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
@@ -302,26 +341,13 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 }
                 else -> {
                     VSpace(16)
-                    CpCard {
-                    NavRow(
-                        R.drawable.lucide_upload, "Threads",
-                        when {
-                            state.threadsToken == null -> "Post new highlights there by themselves"
-                            state.threadsBooks.isNotEmpty() -> "@${state.threadsUser ?: "you"} · ${state.threadsBooks.size} book${if (state.threadsBooks.size == 1) "" else "s"} posting"
-                            else -> "@${state.threadsUser ?: "you"} · posting off"
-                        },
-                    ) { page = "threads" }
-                    RowDivider()
-                    // The same posts on Bluesky and Mastodon (and the full edition's own), and a daily one-tap for X.
-                    val sc = io.github.prithirajn.readync.sync.Socials.config(state)
-                    val on = listOfNotNull("Bluesky".takeIf { sc.bluesky.on && sc.bluesky.did != null }, "Mastodon".takeIf { sc.mastodon.on && sc.mastodon.account != null }) +
-                        ProPosts.on(state) + listOfNotNull("X".takeIf { sc.x.on })
-                    NavRow(R.drawable.lucide_globe, "Post elsewhere", if (on.isEmpty()) (listOf("Bluesky", "Mastodon") + ProPosts.offered).joinToString(", ") + ", and X in one tap" else on.joinToString(" · ")) { page = "socials" }
-                    }
+                    // Social networks, as connectors: the connected ones, each with its own page; the rest under "Add".
+                    DeviceLabel("Social media", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
+                    SocialsList(vm, state) { id -> page = "social:$id" }
                     // Each place your highlights can go as text, with its own page of options.
                     VSpace(14)
                     DeviceLabel("Highlights as text", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
-                    CpCard {
+                    RisoList {
                         ExportRow(state, "readwise", "Readwise", state.readwiseToken != null,
                             if (state.readwiseToken != null) "${state.readwiseDone.size} sent" else "Daily review, and Readwise's own exports") { page = "readwise" }
                         RowDivider()
@@ -334,7 +360,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     // Your own copy of everything: backups, moving phones, and history from other apps.
                     VSpace(14)
                     DeviceLabel("Your data", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
-                    CpCard {
+                    RisoList {
                         NavRow(R.drawable.lucide_download, "Backup & import", "Back up, move to a new phone, or bring in history from Goodreads, StoryGraph, Hardcover or KOReader") { page = "backup" }
                         RowDivider()
                         // Moved here from Activity › Your library, beside the app's other copies of your data.
@@ -349,7 +375,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
 
     if (appSettings) {
         SettingsSheet("Settings", onClose = { appSettings = false }) {
-            CpCard {
+            RisoList {
 
                 val s0 = state.settings
                 val every = s0.intervalMinutes.let { m -> if (m < 60) "every $m min" else if (m == 60) "every hour" else "every ${m / 60} hours" }
@@ -370,7 +396,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
             }
             VSpace(24)
             Text(
-                "${io.github.prithirajn.readync.Edition.name} $appVersion · Fonts: Inter, Lora, Caveat (OFL) · Icons: Lucide (ISC) · Requests based on ShelfSync (MIT)",
+                "${io.github.prithirajn.readync.Edition.name} $appVersion · Fonts: Bodoni Moda, Literata, Lora, Inter, Caveat (OFL) · Icons: Lucide (ISC) · Requests based on ShelfSync (MIT)",
                 style = CpType.small,
                 color = c.faint,
                 modifier = Modifier.padding(horizontal = 4.dp),
@@ -388,7 +414,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
             if (addingApps) {
                 Quiet("Two-way ones take your progress and send their own place back. Ones that read only bring your place in.", Modifier.padding(start = 4.dp, bottom = 10.dp), color = c.faint)
             }
-            CpCard {
+            RisoList {
                 group.forEachIndexed { i, t ->
                     if (i > 0) RowDivider()
                     AvailableRow(t, onServer = t.id in state.serverLinked, onLink = { adding = false; signingIn = t })
@@ -399,10 +425,11 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     }
 
     page?.let { p ->
+        val socialPages = SocialNets.all().map { "social:${it.id}" }
         SettingsSheet(
             when (p) {
                 "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"; "kohl" -> "KOReader highlights"
-                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "socials" -> "Post elsewhere"; "exports" -> "Export highlights"; "readwise" -> "Readwise"; "notion" -> "Notion"; "obsidian" -> "Obsidian"; "storage" -> "Storage"; else -> "App update"
+                "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "socials" -> "Post elsewhere"; in socialPages -> SocialNets.title(p.removePrefix("social:")); "exports" -> "Export highlights"; "readwise" -> "Readwise"; "notion" -> "Notion"; "obsidian" -> "Obsidian"; "storage" -> "Storage"; else -> "App update"
             },
             onClose = { page = null },
         ) {
@@ -436,8 +463,8 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                     }
                 }
                 "kohl" -> KoHlCard(vm, state, onAdd = { addingKoHl = true }, onRemove = { page = null; removingKoHl = true })
-                "threads" -> ThreadsCard(vm, state)
-                "socials" -> SocialsCard(vm, state)
+                "threads", "social:threads" -> ThreadsCard(vm, state)
+                in socialPages -> SocialPage(vm, state, p.removePrefix("social:"))
                 "exports" -> ExportsCard(vm, state)
                 "readwise", "notion", "obsidian" -> ExportPage(vm, state, p)
                 "moon" -> MoonCard(vm, state, onAdd = { addingMoon = true }, onGuide = { moonGuide = true }, onRemove = { page = null; removingMoon = true })
@@ -577,7 +604,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
 /** A settings page as a sheet over Services: its title, then its card(s). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
+internal fun SettingsSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     GuardedSheet(
         dragHandle = { SheetGrip() },
@@ -622,7 +649,7 @@ private fun summary(state: Snapshot, t: Tracker): Pair<String, Boolean> {
 @Composable
 private fun TrackerName(t: Tracker) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(t.name, style = CpType.bodyStrong, color = Cp.colors.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        Text(t.name, fontFamily = io.github.prithirajn.readync.ui.theme.DisplaySmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, fontSize = 17.sp, lineHeight = 21.sp, color = Cp.colors.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
         if (!isBookTracker(t)) DirectionTag(t)
         if (isBeta(t)) Chip("Beta")
     }
@@ -653,7 +680,7 @@ private fun LinkedRow(vm: AppViewModel, state: Snapshot, t: Tracker, onOpen: () 
         Modifier
             .fillMaxWidth()
             .bouncyClickable(RectangleShape, pressedScale = 0.985f, onClick = onOpen)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val dim by androidx.compose.animation.core.animateFloatAsState(if (svc.enabled) 1f else 0.4f, Motion.medium(), label = "paused")
@@ -661,14 +688,15 @@ private fun LinkedRow(vm: AppViewModel, state: Snapshot, t: Tracker, onOpen: () 
         LaunchedEffect(svc.needsReauth) {
             if (svc.needsReauth) for (x in listOf(6f, -5f, 4f, -2f, 0f)) shake.animateTo(x, androidx.compose.animation.core.tween(55))
         }
-        Box(Modifier.graphicsLayer { alpha = dim; translationX = shake.value * density; rotationZ = shake.value * 0.8f }) { ServiceTile(t.name) }
-        HSpace(12)
+        Box(Modifier.graphicsLayer { translationX = shake.value * density; rotationZ = shake.value * 0.8f }) { ServiceTile(t.name, 40.dp, muted = !svc.enabled) }
+        HSpace(14)
         Column(Modifier.weight(1f)) {
             TrackerName(t)
             val tone by animateColorAsState(if (bad) c.errorText else c.quiet, Motion.medium(), label = "summary")
             AnimatedQuiet(line, color = tone, maxLines = 1)
         }
-        Health.tracker(state, t.id, t.name)?.let { h ->
+        // A light only when there's something to say: a paused tracker's switch says it already.
+        Health.tracker(state, t.id, t.name)?.takeIf { it.level != Health.Level.OFF }?.let { h ->
             HealthLight(h) { vm.notify(h.title, h.detail, error = h.level == Health.Level.BAD) }
         }
         HSpace(4)
@@ -1508,6 +1536,7 @@ private fun BackupPasswordSheet(vm: AppViewModel, saving: Boolean, uri: Uri, onC
     val c = Cp.colors
     var password by remember { mutableStateOf("") }
     var again by remember { mutableStateOf("") }
+    var keepOther by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     GuardedSheet(
@@ -1528,6 +1557,10 @@ private fun BackupPasswordSheet(vm: AppViewModel, saving: Boolean, uri: Uri, onC
             if (saving) {
                 VSpace(10)
                 CpTextField(again, { again = it }, "Same password again", password = true)
+            } else {
+                // Moving phones (the usual), or Readync on both: then only the other one sends, so nothing goes twice.
+                VSpace(8)
+                ThreadsSwitch("Readync stays on my other phone too", "Then that phone keeps sending to your trackers and posting; this one shows everything", keepOther) { keepOther = it }
             }
             error?.let { VSpace(10); Text(it, style = CpType.small, color = c.errorText) }
             VSpace(16)
@@ -1537,7 +1570,7 @@ private fun BackupPasswordSheet(vm: AppViewModel, saving: Boolean, uri: Uri, onC
                     if (saving && password != again) { error = "The passwords don't match"; return@BigButton }
                     busy = true; error = null
                     val done: (String?) -> Unit = { e -> busy = false; if (e == null) onClose() else error = e }
-                    if (saving) vm.exportBackup(uri, password, done) else vm.restoreBackup(uri, password, done)
+                    if (saving) vm.exportBackup(uri, password, done) else vm.restoreBackup(uri, password, keepOther, done)
                 },
                 busy = busy,
                 enabled = password.length >= 6,
@@ -3675,7 +3708,7 @@ private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
 
 /** The way into the Add sheet: one dashed row, instead of every unlinked service listed. */
 @Composable
-private fun AddServiceRow(text: String, onClick: () -> Unit) {
+internal fun AddServiceRow(text: String, onClick: () -> Unit) {
     val c = Cp.colors
     val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
@@ -3694,7 +3727,7 @@ private fun AddServiceRow(text: String, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(30.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
-            LucideIcon(R.drawable.lucide_plus, Modifier.size(16.dp).graphicsLayer { rotationZ = turn }, Color.White)
+            LucideIcon(R.drawable.lucide_plus, Modifier.size(16.dp).graphicsLayer { rotationZ = turn }, c.onAccent)
         }
         HSpace(12)
         Text(text, style = CpType.bodyStrong, color = c.text)
@@ -3729,7 +3762,7 @@ private fun ExportRow(state: Snapshot, key: String, name: String, on: Boolean, s
 
 /** A heading inside the Threads settings: a small label with a rule. */
 @Composable
-private fun ThreadsSection(title: String) {
+internal fun ThreadsSection(title: String) {
     val c = Cp.colors
     VSpace(22)
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3741,7 +3774,7 @@ private fun ThreadsSection(title: String) {
 
 /** One switch: a title, one short line under it, the switch beside it; the whole row flips it. */
 @Composable
-private fun ThreadsSwitch(title: String, line: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun ThreadsSwitch(title: String, line: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
     val c = Cp.colors
     val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Row(

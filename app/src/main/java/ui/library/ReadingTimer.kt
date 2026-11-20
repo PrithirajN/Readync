@@ -142,7 +142,7 @@ fun ReadingTimerSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
                             (fadeIn(tween(140)) + androidx.compose.animation.slideInVertically { it / 2 * up }) togetherWith (fadeOut(tween(100)) + androidx.compose.animation.slideOutVertically { -it / 2 * up })
                         }, label = "page") { p -> Text("$p", style = CpType.screenNumber.copy(fontSize = 56.sp, lineHeight = 60.sp), color = c.accentText) }
                     }
-                    Key({ page++ ; Haptics.tick(view) }, Modifier.size(84.dp, 86.dp), kind = KeyKind.SIGNAL, shape = CircleShape, label = "Next page") { Text("+", style = CpType.pageTitle, color = androidx.compose.ui.graphics.Color.White) }
+                    Key({ page++ ; Haptics.tick(view) }, Modifier.size(84.dp, 86.dp), kind = KeyKind.SIGNAL, shape = CircleShape, label = "Next page") { Text("+", style = CpType.pageTitle, color = c.onAccent) }
                 }
                 book.pageCount?.let { n -> Text("of $n", style = CpType.small, color = c.quiet, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp)) }
                 Spacer(Modifier.weight(1f))

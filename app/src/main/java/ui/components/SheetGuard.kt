@@ -123,8 +123,13 @@ fun GuardedSheet(
         containerColor = containerColor,
         scrimColor = Color.Black.copy(alpha = if (dark) 0.66f else 0.45f),
         dragHandle = handle,
-        content = content,
-    )
+    ) {
+        // Sheets are printed on the same grained paper as the page they came from.
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxWidth()) {
+            io.github.prithirajn.readync.ui.RisoPaper(androidx.compose.ui.Modifier.matchParentSize())
+            androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.fillMaxWidth(), content = content)
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

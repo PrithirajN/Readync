@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -66,19 +68,44 @@ fun ActivityScreen(vm: AppViewModel, state: Snapshot) {
     }
     val problemKinds = remember(state.log) { state.log.filter { it.error }.distinctBy { it.service to it.message }.size }
 
+    // Everything the sections show, worked out once in the background (see ActivityData).
+    var reviewRefresh by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    val data = rememberActivityData(state, reviewRefresh)
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
-        item {
-            Column(PagePadding) {
-                PageTitle("Activity")
-                Quiet("Your reading in numbers, and what ${io.github.prithirajn.readync.Edition.name} did.")
+    // A tap on the frame reading (when shown) scrolls this tab down and back at a steady fling's
+    // speed, so how smoothly it scrolls can be measured without a finger.
+    run {
+        val bench = io.github.prithirajn.readync.FrameWatch.bench.intValue
+        val visible = LocalTabVisible.current
+        androidx.compose.runtime.LaunchedEffect(bench) {
+            if (bench == 0 || !visible) return@LaunchedEffect
+            listState.scrollToItem(0)
+            repeat(2) {
+                listState.animateScrollBy(6000f, androidx.compose.animation.core.tween(5000, easing = androidx.compose.animation.core.LinearEasing))
+                listState.animateScrollBy(-6000f, androidx.compose.animation.core.tween(5000, easing = androidx.compose.animation.core.LinearEasing))
             }
         }
-        activityInsights(vm, state)
+    }
+    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 24.dp + TabBarSpace)) {
+        item(key = "header", contentType = "header") {
+            // Three quick taps on the title show or hide how smoothly the app draws and how long it
+            // took to start, at the top of the screen.
+            val taps = remember { LongArray(3) }
+            val headerTap = Modifier.clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {
+                val now = System.currentTimeMillis()
+                taps[0] = taps[1]; taps[1] = taps[2]; taps[2] = now
+                if (now - taps[0] < 900) {
+                    taps.fill(0)
+                    io.github.prithirajn.readync.FrameWatch.showBadge.value = !io.github.prithirajn.readync.FrameWatch.showBadge.value
+                }
+            }
+            DebugTimed("header") { TabHeader("your reading in numbers", "Activity", headerTap) }
+        }
+        activityInsights(vm, state, data) { reviewRefresh++ }
         // Library checks, your rating rubric, the top-books image and the reading-log export.
-        shelfprintTools(vm, state)
+        shelfprintTools(vm, state, data)
         // What's new in your series.
-        item(key = "releases") { VSpace(8); ReleasesCard(vm, state) }
+        item(key = "releases", contentType = "releases") { DebugTimed("releases") { Column { VSpace(8); ReleasesCard(vm, state, data?.releasesOut, data?.releasesComing) } } }
         item(key = "log-head") {
             // Kinds of problem, not every repeat of one (the same failure on each sync counts once),
             // and being offline isn't one.
