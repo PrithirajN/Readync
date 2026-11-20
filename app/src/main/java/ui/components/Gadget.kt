@@ -490,6 +490,8 @@ fun SheetGrip() {
     )
     val barPx = with(density) { barDp.roundToPx() }
     var clear by remember { androidx.compose.runtime.mutableStateOf(0) }
+    // How many times the room has come and gone: after a few, it's kept as it is.
+    var flips by remember { androidx.compose.runtime.mutableStateOf(0) }
     Row(
         Modifier
             .onGloballyPositioned { co ->
@@ -501,8 +503,17 @@ fun SheetGrip() {
                 while (up != null && up.size.height <= co.size.height + 1) up = up.parentLayoutCoordinates
                 val sheetHeight = up?.size?.height ?: return@onGloballyPositioned
                 val screen = view.rootView.height
-                val need = if (sheetHeight - clear + barPx >= screen - 2) barPx else 0
-                if (need != clear) clear = need
+                // Given when the sheet would reach the bar; taken away only when the sheet, room and all,
+                // is clearly shorter (well over a bar's height clear of the top). Deciding both ways at the
+                // same line made a loop on phones whose sheets stop a little short of the full screen: the
+                // room made the full-height sheet's contents shorter, which read as "not tall enough", so the
+                // room went, the sheet grew back, the room came back… and the sheet bobbed up and down.
+                val need = when {
+                    flips >= 4 -> clear
+                    clear == 0 -> if (sheetHeight + barPx >= screen - 2) barPx else 0
+                    else -> if (sheetHeight < screen - 2 * barPx - with(density) { 24.dp.roundToPx() }) 0 else clear
+                }
+                if (need != clear) { clear = need; flips++ }
             }
             .padding(top = 12.dp + with(density) { clear.toDp() }, bottom = 10.dp),
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
