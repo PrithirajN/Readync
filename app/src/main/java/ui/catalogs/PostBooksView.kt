@@ -100,7 +100,7 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
         if (PostBooks.platformOf(l) == null && io.github.prithirajn.readync.source.BookPrices.trackable(l) != null) {
             ShareJobs.trackPrice(context, l)
             link = ""
-            vm.notify("Tracking that book's price", "It'll be on Catalogs › Deals in a moment")
+            vm.notify("Tracking that book's price", "It'll be on Discover › Deals in a moment")
             return
         }
         error = null
@@ -116,7 +116,7 @@ fun PostBooksView(vm: AppViewModel, state: Snapshot) {
         if (uris.isEmpty() || working != null) return
         error = null
         working = "Reading the pictures"
-        vm.notify("Looking for books in ${if (uris.size == 1) "that picture" else "those ${uris.size} pictures"}", "You'll see them on Catalogs › Posts")
+        vm.notify("Looking for books in ${if (uris.size == 1) "that picture" else "those ${uris.size} pictures"}", "You'll see them on Discover › Catalogs › From posts")
         scope.launch {
             val r = runCatching { PostBooks.fromMedia(context, uris) { working = it } }
             working = null

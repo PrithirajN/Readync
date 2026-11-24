@@ -5,6 +5,7 @@ import io.github.prithirajn.readync.data.ReadStatus
 import io.github.prithirajn.readync.data.Visibility
 import io.github.prithirajn.readync.net.Http
 import io.github.prithirajn.readync.net.ServiceException
+import io.github.prithirajn.readync.net.SkipException
 import io.github.prithirajn.readync.util.arr
 import io.github.prithirajn.readync.util.num
 import io.github.prithirajn.readync.util.objects
@@ -14,9 +15,11 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Readwise Reader (readwise.io/read), through its API v3: a finished book is archived there
- * (and marked seen), and its reading progress there can move the book here. Books are matched by
- * title and author among what's not archived yet. For highlights to Readwise, use Export highlights.
+ * Readwise Reader (readwise.io/read), through its API v3: your place both ways (its
+ * reading_progress), and a finished book is archived there (and marked seen). Books are matched by
+ * title and author across the whole library, archived ones too, so a reread still matches. Reader's
+ * own newer place isn't written over (the usual never-move-back rule, as it reads back), and PDFs
+ * there take no progress. (After crosspoint-sync d899e02.) For highlights to Readwise, use Export highlights.
  */
 object ReadwiseReaderTracker : Tracker {
     override val id = "readwise-reader"
@@ -24,18 +27,15 @@ object ReadwiseReaderTracker : Tracker {
     override val signInKind = SignInKind.TOKEN
     override val privacy = PrivacySupport.PRIVATE_ONLY
     override val privacyNote = "Reader is your own library; nothing is shared."
-    // Only its finish is sent, so its percentage isn't compared with yours.
-    override val readsProgress = false
+    override val readsProgress = true
     override val statuses = setOf(ReadStatus.READING, ReadStatus.FINISHED)
-    override val hint = "Archives books there when you finish them"
-    override val tokenHelp = "Copy your access token from readwise.io/access_token and paste it here. Finished books are archived in Reader, and reading further there moves them here."
+    override val hint = "Syncs your place both ways and archives books you finish"
+    override val tokenHelp = "Copy your access token from readwise.io/access_token and paste it here. Your place goes to Reader and comes back from it; finished books are archived there."
     override val tokenUrl = "https://readwise.io/access_token"
     override val tokenLabel = "Access token"
     override val bringsPositions = true
-    override val takesProgress = false
 
     private const val BASE = "https://readwise.io/api/v3"
-    private val LOCATIONS = listOf("new", "later", "shortlist", "feed")
     private const val MAX_PAGES = 20
 
     private fun headers(session: Session) = mapOf(
@@ -59,16 +59,18 @@ object ReadwiseReaderTracker : Tracker {
         val key = session.data.str("token") ?: return emptyList()
         pools[key]?.takeIf { System.currentTimeMillis() - it.first < 10 * 60_000 }?.let { return it.second }
         val out = LinkedHashMap<String, RemoteBook>()
-        for (loc in LOCATIONS) {
+        run {
             var cursor: String? = null
-            for (page in 0 until MAX_PAGES) {
-                val q = "location=$loc&withHtmlContent=false" + (cursor?.let { "&pageCursor=" + Http.enc(it) } ?: "")
+            for (page in 0 until MAX_PAGES * 3) {
+                val q = "withHtmlContent=false" + (cursor?.let { "&pageCursor=" + Http.enc(it) } ?: "")
                 val r = Http.request("GET", "$BASE/list/?$q", headers(session), timeoutMs = 30_000)
                 if (r.code == 429) break
                 checkAnswer(r, name)
                 val o = jsonOrNull(r.body) ?: break
                 for (d in o.arr("results")?.objects() ?: emptyList()) {
                     val id = d.str("id") ?: continue
+                    // Your highlights and notes are documents there too: not books.
+                    if (d.str("category") == "highlight" || d.str("category") == "note") continue
                     val title = d.str("title") ?: continue
                     out.putIfAbsent(id, RemoteBook(id, title, d.str("author") ?: d.str("site_name"), coverUrl = d.str("image_url")))
                 }
@@ -103,8 +105,16 @@ object ReadwiseReaderTracker : Tracker {
         return RemotePosition(p, d.str("location") == "archive" && p >= 0.98, at)
     }
 
-    /** Reader has no progress apps can set: only finishing (archived) goes there. */
-    override fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility) {}
+    /** Your place, as Reader's reading_progress (0–1). A PDF there takes none. */
+    override fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility) {
+        val id = link.externalId ?: return
+        val d = doc(session, link) ?: throw SkipException("This document is gone from Readwise Reader")
+        if (d.str("category") == "pdf") return
+        val update = JSONObject().put("id", id).put("reading_progress", percent.coerceIn(0, 100) / 100.0)
+        val r = Http.request("PATCH", "$BASE/bulk_update/", headers(session), JSONObject().put("updates", JSONArray().put(update)).toString())
+        if (r.code == 207) throw ServiceException("Readwise Reader didn't take the position; will try again")
+        checkAnswer(r, name)
+    }
 
     override fun setStatus(session: Session, link: Link, status: ReadStatus) {
         val id = link.externalId ?: return

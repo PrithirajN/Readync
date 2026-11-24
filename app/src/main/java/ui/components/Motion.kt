@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
@@ -83,6 +84,14 @@ fun Modifier.bouncyClickable(
     val wash = remember { Animatable(0f) }
     val ink = Cp.colors.text
     val view = androidx.compose.ui.platform.LocalView.current
+    // Pressed off-centre, the surface dips on that side, as a card does under a fingertip, and the
+    // wash spreads out from where the finger is. Wide rows dip less, so their far edge stays put.
+    val tilt = androidx.compose.ui.platform.LocalDensity.current
+    val tiltOn = LocalAnimationsOn.current
+    val tiltX = remember { Animatable(0f) }
+    val tiltY = remember { Animatable(0f) }
+    val spread = remember { Animatable(0f) }
+    val box = remember { floatArrayOf(0f, 0f, -1f, -1f) } // width, height, press x, press y
     // Sink under the finger, then spring back past full size and settle. A quick tap still
     // gets the whole dip and bounce, so every press feels answered.
     LaunchedEffect(source, enabled) {
@@ -91,7 +100,19 @@ fun Modifier.bouncyClickable(
                 is PressInteraction.Press -> if (enabled) {
                     // Felt on the way down, like a real switch, not after the finger has gone.
                     view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                    box[2] = i.pressPosition.x; box[3] = i.pressPosition.y
+                    val w = box[0]; val h = box[1]
                     kotlinx.coroutines.coroutineScope {
+                        if (tiltOn && w > 0f && h > 0f) {
+                            val ref = with(tilt) { 120.dp.toPx() }
+                            val maxX = 6f * (ref / h).coerceAtMost(1f)
+                            val maxY = 6f * (ref / w).coerceAtMost(1f)
+                            val tx = (((i.pressPosition.y / h) - 0.5f) * -2f).coerceIn(-1f, 1f) * maxX
+                            val ty = (((i.pressPosition.x / w) - 0.5f) * 2f).coerceIn(-1f, 1f) * maxY
+                            launch { tiltX.animateTo(tx, spring(dampingRatio = 0.7f, stiffness = 900f)) }
+                            launch { tiltY.animateTo(ty, spring(dampingRatio = 0.7f, stiffness = 900f)) }
+                        }
+                        launch { spread.snapTo(0f); spread.animateTo(1f, tween(durationMillis = 340)) }
                         launch { wash.animateTo(1f, tween(durationMillis = 90)) }
                         scale.animateTo(pressedScale, spring(dampingRatio = 1f, stiffness = Spring.StiffnessHigh))
                     }
@@ -102,6 +123,9 @@ fun Modifier.bouncyClickable(
                     }
                     kotlinx.coroutines.coroutineScope {
                         launch { wash.animateTo(0f, tween(durationMillis = 380)) }
+                        launch { spread.animateTo(1f, tween(durationMillis = 200)) }
+                        launch { tiltX.animateTo(0f, Motion.bouncy()) }
+                        launch { tiltY.animateTo(0f, Motion.bouncy()) }
                         scale.animateTo(1f, Motion.bouncy())
                     }
                 }
@@ -109,14 +133,23 @@ fun Modifier.bouncyClickable(
         }
     }
     return this
+        .onSizeChanged { box[0] = it.width.toFloat(); box[1] = it.height.toFloat() }
         .graphicsLayer {
             scaleX = scale.value
             scaleY = scale.value
+            rotationX = tiltX.value
+            rotationY = tiltY.value
+            cameraDistance = 12f * density
         }
         .clip(shape)
         .drawWithContent {
             drawContent()
-            if (wash.value > 0f) drawRect(ink.copy(alpha = 0.07f * wash.value))
+            if (wash.value > 0f) {
+                // A ring of ink from the fingertip out to the edges, then the whole surface.
+                val at = if (box[2] >= 0f) androidx.compose.ui.geometry.Offset(box[2], box[3]) else center
+                val reach = kotlin.math.hypot(size.width, size.height)
+                drawCircle(ink.copy(alpha = 0.07f * wash.value), radius = reach * (0.15f + 0.85f * spread.value), center = at)
+            }
         }
         .clickable(
             interactionSource = source,

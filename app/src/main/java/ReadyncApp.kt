@@ -124,6 +124,8 @@ class ReadyncApp : Application(), androidx.work.Configuration.Provider {
         Thread({
             // Which phone sends (with one phone, this one, without a word).
             runCatching { io.github.prithirajn.readync.sync.PostingDevice.start(this, store) }
+            // Closes the error handler can't see (native crashes, not responding, killed for memory), from Android's record.
+            runCatching { CrashLog.recordExits(this) { line -> store.log(null, line, error = true) } }
             // Last time's crash, in the sync log too (once).
             CrashLog.pending(this)?.let { r ->
                 val line = "Readync closed unexpectedly: " + CrashLog.headline(r)
@@ -134,6 +136,22 @@ class ReadyncApp : Application(), androidx.work.Configuration.Provider {
             runCatching { highlightsFromV012() }
             // The worker checks whether there's anything to sync; schedule it with the saved settings.
             runCatching { SyncWorker.schedule(this, store.snapshot.settings) }
+            // 4.16.7: StoryGraph progress was held back with Only me, and a highlight resend could leave the bar
+            // at the last highlight's place: each book being read is looked at there once more, and sent where behind.
+            runCatching {
+                store.update { st ->
+                    if (st.extras["sg.requeue1"] != null) st else {
+                        val now = System.currentTimeMillis()
+                        val add = st.links.values.filter { l ->
+                            l.service == "storygraph" && l.externalId != null && l.confirmed &&
+                                st.books[l.document]?.status == io.github.prithirajn.readync.data.ReadStatus.READING
+                        }.associate { l -> l.key to io.github.prithirajn.readync.data.Pending("storygraph", l.document, now) }
+                        st.copy(pending = add + st.pending, extras = st.extras + ("sg.requeue1" to "1"))
+                    }
+                }
+            }
+            // News and releases, on their own every three hours.
+            runCatching { io.github.prithirajn.readync.sync.FeedsWorker.schedule(this) }
             watchForWidget()
         }, "app-start").start()
         Startup.note("app", android.os.SystemClock.elapsedRealtime() - appStart)

@@ -165,6 +165,11 @@ internal fun CheckChip(state: Snapshot, id: String, onPick: (String?) -> Unit) {
     if (!state.checkHighlights && id !in state.clipChecked) return
     val c = Cp.colors
     val m = state.clipChecked[id]
+    // "To check" only on one that's really waiting to go somewhere (not one no tracker would take
+    // by itself, as one made before Send highlights was turned on): Sync's "Nothing waiting" and the
+    // book's rows then say the same thing.
+    val waitingIds = remember(state.checkHighlights, state.clipChecked, state.sentClippings, state.services, state.links) { SpoilerCheck.waiting(state).toSet() }
+    if (m == null && id !in waitingIds) return
     val label = when (m) { SpoilerCheck.SPOILER -> "⚠ Spoiler"; SpoilerCheck.SKIP -> "Not sent"; SpoilerCheck.OK -> "Checked"; else -> "To check" }
     var open by remember { mutableStateOf(false) }
     Box {

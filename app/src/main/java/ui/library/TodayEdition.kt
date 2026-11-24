@@ -1,5 +1,6 @@
 package io.github.prithirajn.readync.ui
 
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -177,6 +178,9 @@ private class Cloth(val n: Int) {
     /** A push sideways, more at the free end than near the pin (as a breeze catches cloth). */
     fun gust(v: Float) { for (i in 1 until n) px[i] -= v * (i.toFloat() / (n - 1)) }
     /** One step: moves each point on by its own speed plus gravity, then pulls the chain back to its length. */
+    /** How far either side of the pin the cloth may go: it stays inside its box. */
+    var maxX = Float.MAX_VALUE
+    var maxY = Float.MAX_VALUE
     fun step(dt: Float, gravity: Float, grab: Int, gx: Float, gy: Float): Float {
         var energy = 0f
         val damp = 0.965f
@@ -201,6 +205,11 @@ private class Cloth(val n: Int) {
                     bPinned -> { x[i] += dx * diff; y[i] += dy * diff }
                     else -> { x[i] += dx * diff * 0.5f; y[i] += dy * diff * 0.5f; x[i + 1] -= dx * diff * 0.5f; y[i + 1] -= dy * diff * 0.5f }
                 }
+            }
+            // The walls of its box: a swing or a pull sideways stops at the edge, as against a page.
+            for (i in 1 until n) {
+                if (x[i] > maxX) { x[i] = maxX; px[i] = x[i] } else if (x[i] < -maxX) { x[i] = -maxX; px[i] = x[i] }
+                if (y[i] > maxY) { y[i] = maxY; py[i] = y[i] }
             }
         }
         return energy
@@ -233,7 +242,15 @@ private fun Ribbon(pct: Float, ink: androidx.compose.ui.graphics.Color, animate:
     val grab = remember { androidx.compose.runtime.mutableIntStateOf(-1) }
     val finger = remember { floatArrayOf(0f, 0f) }
     var armed by remember { androidx.compose.runtime.mutableStateOf(false) }
+    // How far it's been stretched (0 to 1 of the way to opening), for the feel of it tightening.
+    val stretched = remember { floatArrayOf(0f, 0f) }
     LaunchedEffect(Unit) { cloth.hang(fullPx * length.value / (cloth.n - 1)); if (animate) cloth.gust(3f * density.density) }
+    // Let go whenever the Library goes off screen (a swipe to another tab mid-pull ends the gesture
+    // without a word): a hold left set kept the cloth pinned where the finger was, stretched and stiff.
+    LaunchedEffect(visible) {
+        if (!visible && grab.intValue >= 0) { grab.intValue = -1; armed = false }
+        if (visible) { if (grab.intValue >= 0) grab.intValue = -1; wake.intValue++ }
+    }
     // The simulation runs only while there's motion (or a finger on it), then sleeps until woken.
     LaunchedEffect(wake.intValue, visible, animate) {
         if (!visible) return@LaunchedEffect
@@ -245,6 +262,8 @@ private fun Ribbon(pct: Float, ink: androidx.compose.ui.graphics.Color, animate:
                 val dt = if (last == 0L) 1f / 60f else ((t - last) / 1e9f).coerceIn(1f / 240f, 1f / 30f)
                 last = t
                 cloth.seg = fullPx * length.value / (cloth.n - 1)
+                cloth.maxX = with(density) { (24.dp - 10.dp).toPx() }
+                cloth.maxY = fullPx - widthPx * 0.2f
                 val g = grab.intValue
                 val e = cloth.step(dt, gravity, g, finger[0], finger[1])
                 frame.intValue++
@@ -285,7 +304,7 @@ private fun Ribbon(pct: Float, ink: androidx.compose.ui.graphics.Color, animate:
             .height(full)
             .pointerInput(Unit) {
                 val cx = size.width / 2f
-                detectDragGestures(
+                try { detectDragGestures(
                     onDragStart = { o ->
                         // Held where the finger landed: the nearest point of the cloth (never the pin).
                         var best = 1; var bd = Float.MAX_VALUE
@@ -296,20 +315,34 @@ private fun Ribbon(pct: Float, ink: androidx.compose.ui.graphics.Color, animate:
                         }
                         finger[0] = cloth.x[best]; finger[1] = cloth.y[best]
                         grab.intValue = best; armed = false; wake.intValue++
+                        stretched[0] = 0f; stretched[1] = 0f
+                        Haptics.texture(view, 0.25f) // the cloth taken between the fingers
                     },
                     onDragEnd = {
                         grab.intValue = -1
-                        if (armed) { Haptics.confirm(view); pull() }
+                        if (!animate) cloth.hang(fullPx * length.value / (cloth.n - 1))
+                        // Let go past the point: it opens, with a firm click. Let go short of it after a
+                        // good stretch: it springs back, and you feel it give.
+                        if (armed) { Haptics.done(view, 0.9f); pull() }
+                        else if (stretched[0] > 0.35f) Haptics.fall(view, 0.25f + 0.4f * stretched[0])
                         armed = false; wake.intValue++
                     },
                     onDragCancel = { grab.intValue = -1; armed = false; wake.intValue++ },
                 ) { change, drag ->
                     change.consume()
-                    finger[0] += drag.x; finger[1] += drag.y
+                    val wall = with(density) { (24.dp - 10.dp).toPx() }
+                    finger[0] = (finger[0] + drag.x).coerceIn(-wall, wall); finger[1] += drag.y
                     // Past its own length (stretched down well beyond where it hangs), letting go opens the book.
                     val reach = cloth.seg * grab.intValue.coerceAtLeast(1)
                     val past = finger[1] - reach > pullPx
-                    if (past != armed) { armed = past; if (past) Haptics.tick(view) }
+                    // Tightening as it's drawn down: a grain every few dp, firmer the closer to opening.
+                    val s = ((finger[1] - reach) / pullPx).coerceIn(0f, 1.3f)
+                    stretched[0] = maxOf(stretched[0], s.coerceAtMost(1f))
+                    if (kotlin.math.abs(s - stretched[1]) > 0.08f) { Haptics.texture(view, 0.08f + 0.5f * s.coerceAtMost(1f)); stretched[1] = s }
+                    if (past != armed) { armed = past; if (past) Haptics.rise(view, 0.7f) else Haptics.fall(view, 0.3f) }
+                } } finally {
+                    // The gesture ended some other way (the screen left, the gesture taken over): let go.
+                    if (grab.intValue >= 0) { grab.intValue = -1; armed = false; wake.intValue++ }
                 }
             }
             .drawBehind {
@@ -339,6 +372,8 @@ private fun Ribbon(pct: Float, ink: androidx.compose.ui.graphics.Color, animate:
                     for (i in n - 2 downTo 0) lineTo(rx[i], ry[i])
                     close()
                 }
+                // Kept within its own space on the page: the cloth never hangs past the box it's pinned in.
+                clipRect(left = 0f, top = -size.height, right = size.width, bottom = size.height) {
                 drawPath(path, ink)
                 // A fold of shade down one edge, like satin.
                 val shade = Path().apply {
@@ -348,6 +383,7 @@ private fun Ribbon(pct: Float, ink: androidx.compose.ui.graphics.Color, animate:
                     close()
                 }
                 drawPath(shade, androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.16f))
+                }
             },
     )
 }

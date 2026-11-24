@@ -28,6 +28,7 @@ import org.json.JSONObject
  */
 object FableTracker : Tracker {
     override val id = "fable"
+    override val progressFreshFor: Long? = 24 * 3600L
     override val name = "Fable"
     override val signInKind = SignInKind.PASSWORD
     override val privacy = PrivacySupport.PRIVATE_ONLY

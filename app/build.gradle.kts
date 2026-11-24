@@ -15,8 +15,8 @@ android {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 422
-        versionName = "4.4.3"
+        versionCode = 505
+        versionName = "4.19.12"
         // Only the processors phones and e-readers use (64-bit and older 32-bit ARM). The on-device
         // AI, text recognition and barcode libraries are native code, one copy per processor type, so
         // leaving out x86 (emulators, a few old tablets) takes away about half the APK.
@@ -137,4 +137,9 @@ dependencies {
     // A live barcode scanner (Google's, run by Play services): a framing box over the camera that
     // reads the ISBN the moment it's in view. Needs no camera permission in this app.
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // Reading an ISBN live off the camera when it's only printed (no barcode): the camera's
+    // frames, read for a barcode and for text as they come.
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
 }

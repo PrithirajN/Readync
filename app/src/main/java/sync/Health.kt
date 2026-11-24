@@ -22,15 +22,32 @@ object Health {
         if (!svc.linked) return null
         val failing = s.pending.values.count { it.service == id && it.tries > 0 }
         val waiting = s.pending.values.count { it.service == id }
-        val review = s.links.values.count { it.service == id && ((it.externalId == null && it.note == "Needs a match") || (it.externalId != null && !it.confirmed && it.source != io.github.prithirajn.readync.data.LinkSource.NONE)) }
+        val toMatch = needsMatch(s, id)
+        val review = toMatch.size
         return when {
             svc.needsReauth -> Status(Level.BAD, "$name needs you to sign in again", svc.lastError ?: "Its sign-in expired, so nothing is being sent. Tap Sign in.")
             !svc.enabled -> Status(Level.OFF, "Sync to $name is off", "Nothing is sent to $name until you switch it back on.")
             svc.lastError != null -> Status(Level.BAD, "$name had a problem", svc.lastError + if (failing > 0) "\n$failing update${if (failing == 1) "" else "s"} will be retried." else "")
             failing > 0 -> Status(Level.WARN, "$name is retrying", "$failing update${if (failing == 1) "" else "s"} didn't go through and will be tried again.")
-            review > 0 -> Status(Level.WARN, "$name needs a match", "$review book${if (review == 1) "" else "s"} couldn't be matched automatically. Open the book in Library to pick one.")
+            review > 0 -> Status(Level.WARN, "$name needs a match", "${titles(s, toMatch)} couldn't be matched on $name automatically. Open ${if (review == 1) "it" else "each"} in Library to pick one.")
             waiting > 0 -> Status(Level.GOOD, "$name is working", "$waiting update${if (waiting == 1) "" else "s"} will go out on the next sync.")
             else -> Status(Level.GOOD, "$name is healthy", if (svc.lastSync > 0) "Everything is up to date." else "Linked. It syncs on the next pass.")
+        }
+    }
+
+    /** The books waiting for you to pick or confirm their match on tracker [id], newest first. */
+    fun needsMatch(s: Snapshot, id: String): List<String> = s.links.values
+        .filter { it.service == id && !io.github.prithirajn.readync.data.ownedByTracker(s.books[it.document], id) && ((it.externalId == null && it.note == "Needs a match") || (it.externalId != null && !it.confirmed && it.source != io.github.prithirajn.readync.data.LinkSource.NONE)) }
+        .map { it.document }.distinct().sortedByDescending { s.books[it]?.timestamp ?: 0 }
+
+    /** "Eden's Rise", "Eden's Rise and Slow Horses", "Eden's Rise, Slow Horses and 2 more". */
+    fun titles(s: Snapshot, docs: List<String>): String {
+        val names = docs.map { s.books[it]?.displayTitle ?: "a book" }
+        return when (names.size) {
+            0 -> "No book"
+            1 -> names[0]
+            2 -> "${names[0]} and ${names[1]}"
+            else -> "${names[0]}, ${names[1]} and ${names.size - 2} more"
         }
     }
 

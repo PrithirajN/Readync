@@ -228,6 +228,12 @@ object BookShot {
         book?.let { b -> runCatching { io.github.prithirajn.readync.sync.SffChart.sectorsOfBook(b, s.facts[b.document], s.webNovels.containsKey(b.document)).map { it.id }.toSet() }.getOrNull() } ?: emptySet()
 
     /** Moods for this book first (by its kind of speculative fiction), then the other genre scenes, then everyday ones. */
+    /** The share sheet's ready-made book-photo looks (none without the studio). */
+    class Preset(val name: String, val group: String) {
+        fun apply(o: Options, @Suppress("UNUSED_PARAMETER") dark: Boolean, @Suppress("UNUSED_PARAMETER") source: Boolean): Options = o
+    }
+    fun presets(): List<Preset> = emptyList()
+
     fun moodsFor(sectors: Set<String>): List<Mood> {
         val suited = MOODS.filter { m -> m.sectors.any { it in sectors } }
         return suited + MOODS.filter { it !in suited && !it.everyday } + MOODS.filter { it.everyday }

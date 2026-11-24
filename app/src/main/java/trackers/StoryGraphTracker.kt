@@ -22,14 +22,16 @@ object StoryGraphTracker : Tracker {
     override val name = "StoryGraph"
     override val ratingStep = 0.25
     override val signInKind = SignInKind.WEBVIEW
-    override val privacy = PrivacySupport.SKIP_PROGRESS
+    // Progress goes into the book's reading journal, which only you see, so it's sent with Only me too
+    // (it used to be held back, and StoryGraph went weeks without progress unless a highlight carried it).
+    override val privacy = PrivacySupport.PRIVATE_ONLY
     override val readsProgress = true
     override val statuses = ReadStatus.entries.toSet()
     override val signInUrl = "https://app.thestorygraph.com/users/sign_in"
     override val cookieUrl = "https://app.thestorygraph.com"
     override val sessionCookie = "remember_user_token"
     override val privacyNote =
-        "Only me sends status changes but no progress updates. StoryGraph may still show " +
+        "Progress goes into the book's reading journal, which only you can see. StoryGraph may still show " +
             "Currently Reading and Read to your friends."
 
     /** The site (changed only by tests, to a stand-in server). */
@@ -105,6 +107,52 @@ object StoryGraphTracker : Tracker {
             return r
         }
         throw ServiceException("StoryGraph redirected too many times")
+    }
+
+    override val passwordToo = true
+    private const val APP_USER_AGENT = "Turbo Native Android Version 39 Mozilla/5.0 (Linux; Android 16; Readync; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7922.200 Mobile Safari/537.36"
+
+    /**
+     * Signed in with your email and password the way StoryGraph's own Android app does (its sign-in
+     * page and form, as ShelfSync 1.3.3 found), keeping only the session cookies it gives; your
+     * password isn't kept. StoryGraph's Cloudflare check can still refuse it: then the web sign-in.
+     */
+    override fun signInWithPassword(email: String, password: String): SignInResult {
+        if (email.isBlank() || password.isEmpty()) throw AuthException("Enter your email and password")
+        val base = mapOf(
+            "User-Agent" to APP_USER_AGENT,
+            "X-Requested-With" to "com.thestorygraph.thestorygraph",
+            "Accept-Language" to "en-GB,en-US;q=0.9,en;q=0.8",
+        )
+        val page = Http.request("GET", "$BASE/users/sign_in", base + mapOf(
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Sec-Fetch-Site" to "none", "Sec-Fetch-Mode" to "navigate", "Sec-Fetch-Dest" to "document",
+        ), followRedirects = false)
+        if (page.header("cf-mitigated") == "challenge" || page.code == 403) throw ServiceException("StoryGraph's bot check stopped the sign-in; use Sign in on the web instead")
+        if (page.code != 200) throw ServiceException("StoryGraph's sign-in page answered HTTP ${page.code}")
+        val jar = CookieJar.parse("")
+        jar.absorb(page)
+        val csrf = csrfOf(page.body)
+        if (jar["_storygraph_session"] == null) throw ServiceException("StoryGraph gave no sign-in form; use Sign in on the web instead")
+        val body = Http.form(
+            "authenticity_token" to csrf,
+            "user[email]" to email.trim(),
+            "user[password]" to password,
+            "user[remember_me]" to "1",
+        )
+        val r = Http.request("POST", "$BASE/users/sign_in", base + mapOf(
+            "Origin" to BASE, "Referer" to "$BASE/users/sign_in",
+            "Accept" to "text/vnd.turbo-stream.html, text/html, application/xhtml+xml",
+            "Content-Type" to "application/x-www-form-urlencoded;charset=UTF-8",
+            "X-CSRF-Token" to csrf, "Cookie" to jar.header(),
+            "Sec-Fetch-Site" to "same-origin", "Sec-Fetch-Mode" to "cors", "Sec-Fetch-Dest" to "empty",
+        ), body, followRedirects = false)
+        if (r.header("cf-mitigated") == "challenge") throw ServiceException("StoryGraph's bot check stopped the sign-in; use Sign in on the web instead")
+        jar.absorb(r)
+        if (r.code !in setOf(302, 303) || jar["remember_user_token"] == null) {
+            throw AuthException("StoryGraph didn't accept that email and password")
+        }
+        return signInWithCookies(jar.header(), APP_USER_AGENT)
     }
 
     override fun signInWithCookies(cookieHeader: String, userAgent: String): SignInResult {
@@ -329,7 +377,12 @@ object StoryGraphTracker : Tracker {
 
     override fun state(session: Session, link: Link): RemoteState {
         val html = bookPage(session, link)
-        return RemoteState(statusFrom(html), percentFrom(html))
+        val status = statusFrom(html)
+        var pct = percentFrom(html)
+        // A book read before (finished reads in its journal) can show a full bar from an old read
+        // while you're reading it again: the current read's own field wins then.
+        if (status == ReadStatus.READING && pct >= 98) field(html, "read_status[last_reached_percent]")?.toDoubleOrNull()?.toInt()?.let { pct = it }
+        return RemoteState(status, pct)
     }
 
     private fun ajaxHeaders(csrf: String, referer: String) = mapOf(
@@ -391,6 +444,7 @@ object StoryGraphTracker : Tracker {
     // ---- read dates ----
 
     override val takesDates = true
+    override val takesStartAlone = false
 
     /**
      * The start and finish days of your newest read, through the book's own read-dates form (its
@@ -399,10 +453,14 @@ object StoryGraphTracker : Tracker {
      * its menus list them; everything else on it is sent back as it was.
      */
     override fun setDates(session: Session, link: Link, started: java.time.LocalDate?, finished: java.time.LocalDate?) {
-        if (started == null && finished == null) return
+        // A start day alone isn't sent. StoryGraph records the start itself when the book goes to
+        // Currently reading, and its read-dates form is for a read: filled with only a start day it
+        // saved a whole new read marked Finished (the stray undated "Finished" reads in a journal).
+        if (finished == null) return
         val id = link.externalId ?: throw ServiceException("Book isn't linked")
         val page = bookPage(session, link)
-        val path = readDatesFormPath(page, id)
+        // Only the newest read's own dates are changed; a new read is never made from here.
+        val path = editReadPath(page) ?: return
         val formPage = request(session, "GET", path)
         if (!formPage.ok) throw ServiceException("StoryGraph's read dates didn't open (HTTP ${formPage.code})")
         val form = DateForm.parse(formPage.body) ?: throw ServiceException("StoryGraph's read-dates form wasn't found")
@@ -428,6 +486,10 @@ object StoryGraphTracker : Tracker {
         )
         if (r.code != 200 && !r.isRedirect) throw ServiceException("StoryGraph didn't take the dates (HTTP ${r.code})")
     }
+
+    /** Where the newest read's dates are edited, from the book page; null when it has none to edit. */
+    internal fun editReadPath(page: String): String? =
+        Regex("href=\"(/read_instances/[^\"/?]+/edit[^\"]*)\"").find(page)?.groupValues?.get(1)?.let { Html.decode(it) }
 
     /** Where the newest read's dates are edited (or a read is added), from the book page. */
     internal fun readDatesFormPath(page: String, bookId: String): String =
@@ -568,6 +630,18 @@ object StoryGraphTracker : Tracker {
         )
         val r = request(session, "POST", "/update-progress", body, ajaxHeaders(csrf, "$BASE/books/$id"))
         if (!(r.ok || r.isRedirect)) throw ServiceException("StoryGraph didn't accept the progress (HTTP ${r.code})")
+        // A 200 isn't always a yes (a page saying something went wrong, a sign-in page): read the book
+        // back, and when the new percent isn't there, say so instead of counting it as sent.
+        val now = runCatching { percentFrom(bookPage(session, link)) }.getOrNull()
+        if (now == null || kotlin.math.abs(now - percent) <= 1) return
+        // Still elsewhere: after journal entries dated earlier (highlights sent again at their own
+        // places), StoryGraph can keep the bar where the last of those left it. A dated progress entry
+        // for today (no words), the same way those entries went in, moves it to where you are.
+        runCatching { journalEntry(session, link, percent.coerceIn(0, 100), "") }
+        val after = runCatching { percentFrom(bookPage(session, link)) }.getOrNull()
+        if (after != null && kotlin.math.abs(after - percent) > 1) {
+            throw ServiceException("StoryGraph answered but still shows $after% (sent $percent%)" + (serverReason(r.body)?.let { ": $it" } ?: ""))
+        }
     }
 
     // ---- adding a book StoryGraph doesn't have ----
@@ -673,6 +747,22 @@ object StoryGraphTracker : Tracker {
         return null
     }
 
+    override val checksHighlights = true
+
+    /**
+     * The book's reading journal as text, to look a passage up in before sending it again. Its
+     * address is taken from the book page's own link to it; null when there's none or it won't open.
+     */
+    override fun existingHighlightTexts(session: Session, link: Link): String? {
+        val page = bookPage(session, link)
+        val href = Regex("href=\"(/[^\"]*journal[^\"]*)\"", RegexOption.IGNORE_CASE).findAll(page)
+            .map { Html.decode(it.groupValues[1]) }
+            .firstOrNull { link.externalId == null || it.contains(link.externalId!!) || "journal" in it.lowercase() } ?: return null
+        val r = request(session, "GET", href)
+        if (!r.ok) return null
+        return Html.decode(r.body.replace(Regex("(?s)<script.*?</script>|<style.*?</style>"), " ").replace(Regex("<[^>]+>"), " "))
+    }
+
     private fun journalEntry(session: Session, link: Link, progress: Int?, note: String, clip: io.github.prithirajn.readync.source.Clipping? = null) {
         val id = link.externalId ?: throw ServiceException("Book isn't linked")
         val html = bookPage(session, link)
@@ -691,7 +781,11 @@ object StoryGraphTracker : Tracker {
         // By page where StoryGraph knows the page count: the highlight's exact page, so two in the
         // same percent don't show the same page. Whole percent otherwise.
         val page = clip?.pageIn(totalPages)
-        val now = java.util.Calendar.getInstance()
+        // Dated the day the passage was highlighted (so entries sent again later sit where they belong
+        // in the journal), else today.
+        val now = java.util.Calendar.getInstance().apply {
+            clip?.createdAt?.takeIf { it in 1..(System.currentTimeMillis() / 1000) }?.let { timeInMillis = it * 1000 }
+        }
         fun body(byPage: Boolean) = Http.form(
             "authenticity_token" to csrf,
             "progress_update_date[day]" to now.get(java.util.Calendar.DAY_OF_MONTH).toString(),

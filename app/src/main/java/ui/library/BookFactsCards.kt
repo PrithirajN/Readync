@@ -23,6 +23,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
@@ -226,70 +228,99 @@ fun ReadingStatsCard(book: Book) {
 }
 
 /**
- * Day by day: each day you read the book, with the pages and minutes when they're known (from
- * KOReader's statistics, Hardcover's journal…), newest first, with a strip of bars for the shape
- * of it. Shown only when there's any.
+ * Day by day, compact: a strip of thin bars, one per day you read the book (oldest on the left, the
+ * last sixty), tall by pages (else minutes). Tap a bar for that day; the newest is shown until you do.
+ * The full list of days opens on request. Shown only when there's any.
  */
 @Composable
 fun DayByDayCard(days: Map<String, io.github.prithirajn.readync.data.ReadDay>?) {
     if (days.isNullOrEmpty()) return
     val c = Cp.colors
+    val view = androidx.compose.ui.platform.LocalView.current
     val sorted = remember(days) { days.entries.sortedByDescending { it.key } }
     var all by remember(days) { mutableStateOf(false) }
     val totalPages = remember(days) { days.values.mapNotNull { it.pages }.sum() }
-    val totalMinutes = remember(days) { days.values.mapNotNull { it.minutes }.sum() }
+    // Days known only by their pages get an estimate, at 75 seconds a page (crosspoint-sync 038f77e).
+    fun estimate(d: io.github.prithirajn.readync.data.ReadDay): Int? = if (d.minutes == null) d.pages?.takeIf { it > 0 }?.let { (it * 75 + 59) / 60 } else null
+    val totalMinutes = remember(days) { days.values.sumOf { it.minutes ?: estimate(it) ?: 0 } }
+    val anyEstimated = remember(days) { days.values.any { estimate(it) != null } }
     val fmt = remember { java.time.format.DateTimeFormatter.ofPattern("EEE d MMM yyyy") }
+    val short = remember { java.time.format.DateTimeFormatter.ofPattern("d MMM") }
     fun hours(m: Int) = if (m < 60) "$m min" else "${m / 60} h" + (if (m % 60 > 0) " ${m % 60} min" else "")
+    fun line(d: io.github.prithirajn.readync.data.ReadDay) = listOfNotNull(
+        d.pages?.let { "$it page${if (it == 1) "" else "s"}" },
+        d.minutes?.let { hours(it) } ?: estimate(d)?.let { "≈ " + hours(it) },
+        d.reached?.let { "to ${Math.round(it * 100)}%" },
+    ).joinToString(" · ").ifEmpty { "read" }
+    val bars = remember(sorted) { sorted.reversed().takeLast(60) }
+    var picked by remember(days) { mutableStateOf(bars.size - 1) }
     VSpace(16)
     CpCard {
-        Column(Modifier.padding(16.dp)) {
-            Text("Day by day", style = CpType.small, color = c.quiet)
-            VSpace(4)
-            Text(
-                listOfNotNull(
-                    "${days.size} day${if (days.size == 1) "" else "s"} of reading",
-                    totalPages.takeIf { it > 0 }?.let { "$it pages" },
-                    totalMinutes.takeIf { it > 0 }?.let { hours(it) },
-                ).joinToString(" · "),
-                style = CpType.bodyStrong, color = c.text,
-            )
-            // The shape of it: one bar per day (oldest on the left), by pages, else minutes.
-            val bars = sorted.reversed().takeLast(60)
-            val values = bars.map { (it.value.pages ?: it.value.minutes ?: 0).toFloat() }
-            val top = values.maxOrNull()?.takeIf { it > 0f }
-            if (top != null && bars.size > 1) {
-                VSpace(12)
-                Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    for (v in values) {
-                        Box(
-                            Modifier.weight(1f).fillMaxHeight((v / top).coerceIn(0.06f, 1f))
-                                .clip(CpShapes.pill).background(c.accent.copy(alpha = 0.75f))
-                        )
-                    }
-                }
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("Day by day", style = CpType.bodyStrong, color = c.text, modifier = Modifier.weight(1f))
+                Text(
+                    listOfNotNull(
+                        "${days.size} day${if (days.size == 1) "" else "s"}",
+                        totalPages.takeIf { it > 0 }?.let { "$it pages" },
+                        totalMinutes.takeIf { it > 0 }?.let { (if (anyEstimated) "≈ " else "") + hours(it) },
+                    ).joinToString(" · "),
+                    style = CpType.small, color = c.quiet,
+                )
             }
+            val values = bars.map { (it.value.pages ?: it.value.minutes ?: 0).toFloat() }
+            val top = values.maxOrNull()?.takeIf { it > 0f } ?: 1f
             VSpace(10)
-            for ((day, d) in (if (all) sorted else sorted.take(7))) {
-                val date = runCatching { java.time.LocalDate.parse(day) }.getOrNull()
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(date?.let { fmt.format(it) } ?: day, style = CpType.body, color = c.textMid, modifier = Modifier.weight(1f))
-                    Text(
-                        listOfNotNull(
-                            d.pages?.let { "$it page${if (it == 1) "" else "s"}" },
-                            d.minutes?.let { hours(it) },
-                            d.reached?.let { "to ${Math.round(it * 100)}%" },
-                        ).joinToString(" · ").ifEmpty { "read" },
-                        style = CpType.body, color = c.text,
+            // Thin bars on a baseline; the chosen day in full ink.
+            androidx.compose.foundation.Canvas(
+                Modifier.fillMaxWidth().height(34.dp).pointerInput(bars) {
+                    detectTapGestures { p ->
+                        val i = (p.x / (size.width / bars.size.toFloat())).toInt().coerceIn(0, bars.size - 1)
+                        picked = i; Haptics.tick(view)
+                    }
+                },
+            ) {
+                val slot = size.width / bars.size
+                val w = (slot * 0.62f).coerceIn(2.dp.toPx(), 10.dp.toPx())
+                values.forEachIndexed { i, v ->
+                    val h = (v / top).coerceIn(0.08f, 1f) * size.height
+                    drawRoundRect(
+                        if (i == picked) c.accent else c.accent.copy(alpha = 0.38f),
+                        topLeft = androidx.compose.ui.geometry.Offset(i * slot + (slot - w) / 2, size.height - h),
+                        size = androidx.compose.ui.geometry.Size(w, h),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5.dp.toPx()),
                     )
                 }
             }
-            if (sorted.size > 7) {
+            // The chosen day, one line.
+            bars.getOrNull(picked)?.let { (day, d) ->
+                val date = runCatching { java.time.LocalDate.parse(day) }.getOrNull()
+                VSpace(8)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(date?.let { fmt.format(it) } ?: day, style = CpType.label, color = c.accentText, modifier = Modifier.weight(1f))
+                    Text(line(d), style = CpType.label, color = c.text)
+                }
+            }
+            if (all) {
                 VSpace(6)
-                PillButton(if (all) "Show fewer" else "All ${sorted.size} days", { all = !all })
+                for ((day, d) in sorted) {
+                    val date = runCatching { java.time.LocalDate.parse(day) }.getOrNull()
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(date?.let { short.format(it) } ?: day, style = CpType.small, color = c.textMid, modifier = Modifier.weight(1f))
+                        Text(line(d), style = CpType.small, color = c.text)
+                    }
+                }
             }
             val from = remember(days) { days.values.map { it.source }.distinct().joinToString(", ") }
-            VSpace(6)
-            Quiet("From $from.", color = c.faint)
+            VSpace(8)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("From $from", style = CpType.small, color = c.faint, modifier = Modifier.weight(1f), maxLines = 1)
+                if (sorted.size > 1) Text(
+                    if (all) "Hide the list" else "Every day",
+                    style = CpType.small, color = c.accentText,
+                    modifier = Modifier.clip(CpShapes.pill).bouncyClickable(CpShapes.pill, pressedScale = 0.92f, onClickLabel = if (all) "Hide the list" else "Show every day") { all = !all }.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
         }
     }
 }

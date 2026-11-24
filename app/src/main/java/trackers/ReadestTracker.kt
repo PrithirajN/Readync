@@ -7,6 +7,7 @@ import io.github.prithirajn.readync.net.AuthException
 import io.github.prithirajn.readync.net.Http
 import io.github.prithirajn.readync.net.ServiceException
 import io.github.prithirajn.readync.net.SkipException
+import io.github.prithirajn.readync.util.idString
 import io.github.prithirajn.readync.util.int
 import io.github.prithirajn.readync.util.long
 import io.github.prithirajn.readync.util.num
@@ -30,6 +31,7 @@ import org.json.JSONObject
  */
 object ReadestTracker : Tracker {
     override val id = "readest"
+    override val highlightsKeyedById = true
     override val name = "Readest"
     override val signInKind = SignInKind.DEVICE_CODE
     override val beta = true
@@ -182,6 +184,40 @@ object ReadestTracker : Tracker {
             mapOf("Authorization" to "Bearer ${access(session)}", "Accept" to "application/json", "Content-Type" to "application/json"), body?.toString(), timeoutMs = 30_000)
         checkAnswer(r, name)
         return jsonOrNull(r.body) ?: JSONObject()
+    }
+
+    override val bringsHighlights = true
+
+    /**
+     * Your Readest highlights on this book, with their notes. Readest keeps notes under the file's
+     * own hash (which may have no library entry) as well as the library copy's, so both are read.
+     * Each is placed by the chapter its CFI points into. (After crosspoint-sync eafd58c/6dc24bd.)
+     */
+    override fun highlights(session: Session, link: Link): List<io.github.prithirajn.readync.source.Clipping> {
+        val hashes = listOfNotNull(runCatching { readestBook(session, link)?.first }.getOrNull(), link.document).distinct()
+        val out = LinkedHashMap<String, io.github.prithirajn.readync.source.Clipping>()
+        for (hash in hashes) {
+            // A copy Readest doesn't hold mustn't hide the other one.
+            val notes = runCatching { sync(session, "GET", "?since=0&type=notes&book=${Http.enc(hash)}").arr("notes")?.objects() }.getOrNull() ?: continue
+            for (n in notes) {
+                if (n.str("type") != "annotation") continue
+                if (n.str("deleted_at") != null || n.str("deletedAt") != null) continue
+                val owner = n.str("book_hash") ?: n.str("bookHash")
+                if (owner != null && owner != hash) continue
+                val text = n.str("text")?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+                val id = n.idString("id") ?: continue
+                val cfi = n.str("cfi")
+                // epubcfi(/6/14!/4/2,…): the 7th item of the book's spine.
+                val spine = cfi?.let { Regex("^epubcfi\\(/6/(\\d+)").find(it)?.groupValues?.get(1)?.toIntOrNull()?.let { s -> s / 2 - 1 } }
+                val at = isoSeconds(n.opt("created_at") ?: n.opt("createdAt")).takeIf { it > 0 } ?: isoSeconds(n.opt("updated_at") ?: n.opt("updatedAt"))
+                out.putIfAbsent(id, io.github.prithirajn.readync.source.Clipping(
+                    id = "readest:$id", document = link.document, text = text,
+                    note = n.str("note")?.trim()?.takeIf { it.isNotEmpty() }, chapter = null,
+                    createdAt = at.takeIf { it > 0 } ?: System.currentTimeMillis() / 1000, spine = spine,
+                ))
+            }
+        }
+        return out.values.toList()
     }
 
     private fun squash(v: String?) = (v ?: "").lowercase().filter { it.isLetterOrDigit() }

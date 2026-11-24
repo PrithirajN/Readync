@@ -23,6 +23,7 @@ import org.json.JSONObject
  */
 object GoodreadsTracker : Tracker {
     override val id = "goodreads"
+    override val progressFreshFor: Long? = 24 * 3600L
     override val name = "Goodreads"
     override val ratingStep = 0.25
     override val signInKind = SignInKind.WEBVIEW
@@ -403,13 +404,57 @@ object GoodreadsTracker : Tracker {
     }
 
     internal fun parseReleaseDay(html: String): Long? {
-        Regex(""""publicationTime"\s*:\s*(-?\d{9,})""").find(html)?.groupValues?.get(1)?.toLongOrNull()?.let { return it / 1000 }
-        // "Expected publication February 3, 2026" / "First published May 2, 2023".
-        val m = Regex("""(?i)(?:expected publication|first published|published)\s+([A-Z][a-z]+ \d{1,2}, \d{4})""").find(html.replace(Regex("<[^>]+>"), " ")) ?: return null
-        return runCatching {
-            java.time.LocalDate.parse(m.groupValues[1], java.time.format.DateTimeFormatter.ofPattern("MMMM d, yyyy", java.util.Locale.US))
-                .atTime(9, 0).atZone(java.time.ZoneId.systemDefault()).toEpochSecond()
-        }.getOrNull()
+        // The day the page shows first: "Expected publication May 4, 2027" / "First published May 2, 2023".
+        // Its hidden data can name another edition's day (May 11 for that same book), so it comes second.
+        val text = html.replace(Regex("<[^>]+>"), " ")
+        val m = Regex("""(?i)(?:expected publication|first published|published)\s+([A-Z][a-z]+ \d{1,2}, \d{4})""").find(text)
+        m?.let {
+            runCatching {
+                java.time.LocalDate.parse(it.groupValues[1], java.time.format.DateTimeFormatter.ofPattern("MMMM d, yyyy", java.util.Locale.US))
+                    .atTime(9, 0).atZone(java.time.ZoneId.systemDefault()).toEpochSecond()
+            }.getOrNull()?.let { day -> return day }
+        }
+        return Regex(""""publicationTime"\s*:\s*(-?\d{9,})""").find(html)?.groupValues?.get(1)?.toLongOrNull()?.let { it / 1000 }
+    }
+
+    /** The Goodreads id of a book's (first) author, from the book's page. */
+    fun authorIdForBook(session: Session, bookId: String): String? {
+        val r = request(session, "GET", "/book/show/${Http.enc(bookId)}")
+        if (!r.ok) return null
+        return Regex("""goodreads\.com/author/show/(\d+)""").find(r.body)?.groupValues?.get(1)
+            ?: Regex("""href="/author/show/(\d+)""").find(r.body)?.groupValues?.get(1)
+    }
+
+    /**
+     * One book of an author's list: its id, plain title, series and number (from "Title (Series, #2)"),
+     * cover, the year it says, and whether that's an expected publication (not out yet).
+     */
+    data class AuthorBook(val id: String, val title: String, val series: String?, val position: Double?, val coverUrl: String?, val year: Int?, val expected: Boolean)
+
+    /** An author's books, newest first (by first publication), as their Goodreads list shows them. */
+    fun authorBooks(session: Session, authorId: String): List<AuthorBook> {
+        val r = request(session, "GET", "/author/list/${Http.enc(authorId)}?sort=original_publication_year&order=d&per_page=30")
+        if (!r.ok) return emptyList()
+        return parseAuthorList(r.body)
+    }
+
+    internal fun parseAuthorList(html: String): List<AuthorBook> {
+        val out = ArrayList<AuthorBook>()
+        for (m in Regex("""(?s)<tr itemscope itemtype="http://schema\.org/Book">(.*?)</tr>""").findAll(html)) {
+            val row = m.groupValues[1]
+            val id = Regex("""/book/show/(\d+)""").find(row)?.groupValues?.get(1) ?: continue
+            val full = Regex("""(?s)<span itemprop=['"]name['"][^>]*>(.*?)</span>""").find(row)?.groupValues?.get(1)?.let { Html.decode(it).trim() } ?: continue
+            // "The Heretics (The Devils, #2)": the title, and the series with its number.
+            val sm = Regex("""^(.*?)\s*\(([^()]*?),?\s*#(\d+(?:\.\d+)?)\)\s*$""").find(full)
+            val title = (sm?.groupValues?.get(1) ?: full).trim()
+            val text = Html.text(row).replace(Regex("\\s+"), " ")
+            val ym = Regex("""(?i)(expected publication|published)\s+(\d{4})""").find(text)
+            val cover = Regex("""<img[^>]+src="([^"]+)"""").find(row)?.groupValues?.get(1)
+                ?.replace(Regex("""\._S[XY]\d+_\."""), ".")?.takeIf { it.startsWith("http") }
+            out += AuthorBook(id, title, sm?.groupValues?.get(2)?.trim(), sm?.groupValues?.get(3)?.toDoubleOrNull(), cover,
+                ym?.groupValues?.get(2)?.toIntOrNull(), ym?.groupValues?.get(1)?.lowercase() == "expected publication")
+        }
+        return out
     }
 
     /** The books of a series page, in order ("Book 1", "Book 2"…), as the page lists them. */

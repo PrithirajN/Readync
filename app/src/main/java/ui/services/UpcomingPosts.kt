@@ -11,7 +11,23 @@ import io.github.prithirajn.readync.sync.XQueue
  */
 object UpcomingPosts {
     /** One post to come: its time ([roughly] when the time is a "not before" with a random wait in it), where it goes, and what it is. */
-    data class Upcoming(val at: Long, val where: String, val what: String, val roughly: Boolean = false)
+    data class Upcoming(
+        val at: Long, val where: String, val what: String, val roughly: Boolean = false,
+        /** Which post it is, to look at, change, post now or take out. */
+        val ref: Ref? = null,
+        /** The first passage in it, to show under it. */
+        val snippet: String? = null,
+    )
+
+    /** Which waiting post an [Upcoming] is. */
+    sealed interface Ref {
+        /** A Threads post (and what follows it): its highlights, the first naming the post. */
+        data class Threads(val ids: List<String>) : Ref
+        /** A post waiting for X, by its folder in the queue. */
+        data class X(val path: String) : Ref
+        /** The full edition's own network: its key and any highlights in it. */
+        data class Pro(val key: String, val ids: List<String>) : Ref
+    }
 
     fun next(context: Context, s: Snapshot, limit: Int = 3, now: Long = System.currentTimeMillis() / 1000): List<Upcoming> {
         // Another phone does the posting: nothing goes up from this one.
@@ -26,7 +42,10 @@ object UpcomingPosts {
         val where = (listOf("Threads") + followers).joinToString(" + ")
         runCatching { ThreadsAuto.plan(s, now) }.getOrDefault(emptyList()).take(limit).forEach { (t, x) ->
             val n = x.items.size
-            out += Upcoming(t, where, "$n highlight${if (n == 1) "" else "s"} from “${QuoteCard.shortTitle(x.book.displayTitle)}”")
+            out += Upcoming(
+                t, where, "$n highlight${if (n == 1) "" else "s"} from “${QuoteCard.shortTitle(x.book.displayTitle)}”",
+                ref = Ref.Threads(x.items.map { it.clip.id }), snippet = x.items.first().clip.text,
+            )
         }
         // X: the oldest waiting post, at the daily time.
         if (c.x.on) runCatching {
@@ -35,8 +54,12 @@ object UpcomingPosts {
                 val zone = java.time.ZoneId.systemDefault()
                 var at = java.time.ZonedDateTime.now(zone).withHour(c.x.hour).withMinute(c.x.minute).withSecond(0)
                 if (at.toEpochSecond() <= now) at = at.plusDays(1)
-                val label = XQueue.oldest(context)?.let { XQueue.label(it.first) }?.takeIf { it.isNotBlank() } ?: "the oldest waiting post"
-                out += Upcoming(at.toEpochSecond(), "X (one tap)", label.replaceFirstChar { it.uppercase() } + if (waiting > 1) " (+${waiting - 1} waiting)" else "")
+                val oldest = XQueue.oldest(context)
+                val label = oldest?.let { XQueue.label(it.first) }?.takeIf { it.isNotBlank() } ?: "the oldest waiting post"
+                out += Upcoming(
+                    at.toEpochSecond(), "X (one tap)", label.replaceFirstChar { it.uppercase() } + if (waiting > 1) " (+${waiting - 1} waiting)" else "",
+                    ref = oldest?.let { Ref.X(it.first.path) }, snippet = oldest?.second,
+                )
             }
         }
         // The full edition's own (Instagram).

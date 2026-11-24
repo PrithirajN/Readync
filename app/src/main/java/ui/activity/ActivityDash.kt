@@ -4,12 +4,17 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Color
+import io.github.prithirajn.readync.R
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.wrapContentWidth
@@ -139,7 +144,9 @@ internal fun TodayPanel(data: ActivityData) {
 internal fun ReadingToolsRow(vm: AppViewModel, state: Snapshot, left: Int, onReviewClosed: () -> Unit) {
     var year by remember { mutableStateOf(false) }
     var review by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    // "Make": everything here makes something from your reading to keep or share.
+    Text("Make", style = CpType.bodyStrong, color = Cp.colors.text, modifier = Modifier.padding(start = 16.dp, top = 22.dp))
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         ToolTile("✨", "Your year", "Wrapped & pictures", Modifier.weight(1f), signal = false) { year = true }
         ToolTile("🔁", "Review", if (left > 0) "$left today" else "Done today", Modifier.weight(1f), signal = left > 0) { review = true }
     }
@@ -170,19 +177,34 @@ internal fun HeatmapCard(state: Snapshot, data: ActivityData) {
     val view = LocalView.current
     val today = remember { LocalDate.now() }
     val weeks = ActivityData.HEAT_WEEKS
+    // Further back, a page of eighteen weeks at a time (0 = the latest, ending this week).
+    var back by remember { mutableStateOf(0) }
+    val earliest = remember(data.allDays) { data.allDays.filterValues { it > 0 }.keys.minOrNull()?.let { runCatching { LocalDate.parse(it) }.getOrNull() } }
+    val canGoBack = earliest != null && earliest.isBefore(data.heatStart.minusWeeks((back * weeks).toLong()))
     // Columns are weeks (oldest first), rows Monday to Sunday.
-    val start = data.heatStart
-    val pages = data.heat
+    val start = data.heatStart.minusWeeks((back * weeks).toLong())
+    val pages = remember(back, data) {
+        if (back == 0) data.heat else (0 until weeks * 7).map { start.plusDays(it.toLong()) }.associateWith { data.allDays[it.toString()] ?: 0 }
+    }
     val levels = data.heatLevels
     val lit = remember(pages, today) { pages.count { it.value > 0 } to pages.keys.count { !it.isAfter(today) } }
-    if (lit.first == 0) return
+    if (back == 0 && lit.first == 0) return
     var picked by remember { mutableStateOf<LocalDate?>(null) }
     val fmt = remember { DateTimeFormatter.ofPattern("EEE d MMM") }
     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 22.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Reading days", style = CpType.bodyStrong, color = c.text, modifier = Modifier.weight(1f))
             DeviceLabel("${lit.first} of ${lit.second} days", color = c.quiet)
+            HSpace(6)
+            // Earlier and later pages of weeks.
+            HeatArrow(R.drawable.lucide_chevron_left, "Earlier weeks", canGoBack) { back++; picked = null; Haptics.tick(view) }
+            HSpace(4)
+            HeatArrow(R.drawable.lucide_chevron_right, "Later weeks", back > 0) { back--; picked = null; Haptics.tick(view) }
         }
+        if (back > 0) Text(
+            "${DateTimeFormatter.ofPattern("d MMM yyyy").format(start)} to ${DateTimeFormatter.ofPattern("d MMM yyyy").format(start.plusWeeks(weeks.toLong()).minusDays(1))}",
+            style = CpType.small, color = c.faint,
+        )
         Spacer(Modifier.height(8.dp))
         CpCard {
             Column(Modifier.padding(14.dp)) {
@@ -198,13 +220,42 @@ internal fun HeatmapCard(state: Snapshot, data: ActivityData) {
                     }
                 }
                 Spacer(Modifier.height(4.dp))
+                // The weeks ink in from the oldest, column by column, each time a page of them shows.
+                val animate = LocalAnimationsOn.current
+                val wave = remember(start) { androidx.compose.animation.core.Animatable(if (animate) 0f else 1f) }
+                LaunchedEffect(start) { if (animate) wave.animateTo(1f, tween(700)) }
+                // The day you're on pops up a size and settles.
+                val pop = remember { androidx.compose.animation.core.Animatable(1f) }
+                LaunchedEffect(picked) { if (animate && picked != null) { pop.snapTo(1.45f); pop.animateTo(1f, spring(dampingRatio = 0.38f, stiffness = 700f)) } }
                 Canvas(
                     Modifier.fillMaxWidth().height(126.dp).pointerInput(start) {
                         detectTapGestures { p ->
                             val cw = size.width / weeks.toFloat(); val ch = size.height / 7f
-                            val d = start.plusWeeks((p.x / cw).toInt().toLong()).plusDays((p.y / ch).toInt().coerceIn(0, 6).toLong())
+                            val d = start.plusWeeks((p.x / cw).toInt().coerceIn(0, weeks - 1).toLong()).plusDays((p.y / ch).toInt().coerceIn(0, 6).toLong())
                             if (!d.isAfter(today)) { picked = if (picked == d) null else d; Haptics.tick(view) }
                         }
+                    }.pointerInput(start, pages) {
+                        // Hold a day, then slide: the days you pass are read out below, each felt
+                        // as you cross it, harder on the days you read more.
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { p ->
+                                val cw = size.width / weeks.toFloat(); val ch = size.height / 7f
+                                val d = start.plusWeeks((p.x / cw).toInt().coerceIn(0, weeks - 1).toLong()).plusDays((p.y / ch).toInt().coerceIn(0, 6).toLong())
+                                if (!d.isAfter(today)) { picked = d; Haptics.rise(view, 0.4f) }
+                            },
+                            onDrag = { ch0, _ ->
+                                ch0.consume()
+                                val cw = size.width / weeks.toFloat(); val ch = size.height / 7f
+                                val d = start.plusWeeks((ch0.position.x / cw).toInt().coerceIn(0, weeks - 1).toLong()).plusDays((ch0.position.y / ch).toInt().coerceIn(0, 6).toLong())
+                                if (d != picked && !d.isAfter(today)) {
+                                    picked = d
+                                    val n = pages[d] ?: 0
+                                    val level = levels.count { n >= it } + if (n > 0) 1 else 0
+                                    Haptics.texture(view, 0.1f + 0.18f * level)
+                                }
+                            },
+                            onDragEnd = { Haptics.thud(view, 0.25f) },
+                        )
                     },
                 ) {
                     val cw = size.width / weeks; val ch = size.height / 7f
@@ -212,6 +263,8 @@ internal fun HeatmapCard(state: Snapshot, data: ActivityData) {
                     for (wk in 0 until weeks) for (dy in 0 until 7) {
                         val d = start.plusWeeks(wk.toLong()).plusDays(dy.toLong())
                         if (d.isAfter(today)) continue
+                        val inked = ((wave.value * (weeks + 5) - wk) / 5f).coerceIn(0f, 1f)
+                        if (inked <= 0f) continue
                         val p = pages[d] ?: 0
                         val col = when {
                             p == 0 -> c.track
@@ -220,9 +273,10 @@ internal fun HeatmapCard(state: Snapshot, data: ActivityData) {
                             p < levels[2] -> c.accent.copy(alpha = 0.8f)
                             else -> c.accent
                         }
-                        val tl = Offset(wk * cw + (cw - cell) / 2, dy * ch + (ch - cell) / 2)
-                        drawRoundRect(col, tl, Size(cell, cell), CornerRadius(3.dp.toPx()))
-                        if (d == picked || d == today) drawRoundRect(if (d == picked) c.text else c.accentText, Offset(tl.x - 1.5f, tl.y - 1.5f), Size(cell + 3f, cell + 3f), CornerRadius(4.dp.toPx()), style = Stroke(1.5.dp.toPx()))
+                        val sz = cell * (0.4f + 0.6f * inked) * (if (d == picked) pop.value else 1f)
+                        val tl = Offset(wk * cw + (cw - sz) / 2, dy * ch + (ch - sz) / 2)
+                        drawRoundRect(col.copy(alpha = col.alpha * inked), tl, Size(sz, sz), CornerRadius(3.dp.toPx()))
+                        if (d == picked || d == today) drawRoundRect(if (d == picked) c.text else c.accentText, Offset(tl.x - 1.5f, tl.y - 1.5f), Size(sz + 3f, sz + 3f), CornerRadius(4.dp.toPx()), style = Stroke(1.5.dp.toPx()))
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -233,7 +287,7 @@ internal fun HeatmapCard(state: Snapshot, data: ActivityData) {
                             for (a in listOf(0f, 0.3f, 0.55f, 0.8f, 1f)) Box(Modifier.padding(horizontal = 2.dp).size(10.dp).clip(RoundedCornerShape(2.dp)).background(if (a == 0f) c.track else c.accent.copy(alpha = a)))
                             Text("More", style = CpType.small, color = c.faint)
                             Spacer(Modifier.weight(1f))
-                            Text("Tap a day", style = CpType.small, color = c.faint)
+                            Text("Tap a day, or hold and slide", style = CpType.small, color = c.faint)
                         }
                     } else {
                         val key = d.toString()
@@ -247,6 +301,18 @@ internal fun HeatmapCard(state: Snapshot, data: ActivityData) {
             }
         }
     }
+}
+
+/** A small round arrow for paging the heatmap, faded when there's nothing that way. */
+@Composable
+private fun HeatArrow(res: Int, label: String, enabled: Boolean, onClick: () -> Unit) {
+    val c = Cp.colors
+    Box(
+        Modifier.size(30.dp).clip(androidx.compose.foundation.shape.CircleShape).background(if (enabled) c.divider else Color.Transparent)
+            .then(if (enabled) Modifier.clickable(onClickLabel = label) { onClick() } else Modifier)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) { LucideIcon(res, Modifier.size(16.dp), if (enabled) c.text else c.faint.copy(alpha = 0.5f)) }
 }
 
 /**
@@ -277,6 +343,7 @@ internal fun RhythmCard(r: Rhythm) {
                 Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
                     Box(
                         Modifier.fillMaxWidth().fillMaxHeight((v / max).toFloat().coerceIn(0.04f, 1f) * 0.78f)
+                            .growIn(i)
                             .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 2.dp, bottomStart = 2.dp, bottomEnd = 6.dp))
                             .background(if (v <= 0.0) c.track else if (big) c.accent else c.accent.copy(alpha = 0.45f)),
                     )
@@ -296,7 +363,7 @@ internal fun RhythmCard(r: Rhythm) {
             )
             for ((n, label) in figures) {
                 Column(Modifier.weight(1f)) {
-                    Text(n, style = CpType.screenSmall, color = c.text, maxLines = 1)
+                    FigureText(n, CpType.screenSmall, c.text, maxLines = 1)
                     Text(label, style = CpType.mono, color = c.accentText, maxLines = 2)
                 }
             }

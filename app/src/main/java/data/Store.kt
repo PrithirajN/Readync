@@ -82,12 +82,40 @@ class Store(private val file: File, private val secrets: Secrets) {
         return try {
             // A sync can't be running in a process that's only starting: a sync the system stopped
             // part-way (or the app being closed) would otherwise leave "Syncing…" showing for good.
-            fromJson(JSONObject(file.readText())).copy(running = false, syncStep = null, sffLoading = false)
+            repaired(fromJson(JSONObject(file.readText())).copy(running = false, syncStep = null, sffLoading = false))
         } catch (e: Exception) {
             // A damaged file shouldn't stop the app: start fresh, keep the bad copy for inspection.
             file.copyTo(File(file.parentFile, file.name + ".broken"), overwrite = true)
             Snapshot()
         }
+    }
+
+    /**
+     * Fixes saved books that older versions got wrong: finished books brought in from a tracker's
+     * history were stored at that tracker's progress (Seekquel keeps 0% for finished books), so they
+     * showed 0% and "0 of 418" pages. Only those history books are touched; they're sent nowhere
+     * until you turn them on, so nothing goes out because of this.
+     */
+    private fun repaired(s: Snapshot): Snapshot {
+        val wrong = s.books.filterValues { b ->
+            (b.origin?.startsWith("history:") == true && b.status == ReadStatus.FINISHED && b.percentage < 1.0 && b.currentPage == null) ||
+                // Finished on a tracker that keeps no position (Seekquel sends 0, or next to it):
+                // read to the end, not 0% / "page 0 of 475".
+                (b.origin != null && b.status == ReadStatus.FINISHED && b.percentage < 0.01 && (b.currentPage ?: 0) == 0)
+        }
+        // A "needs a match" left on the tracker a book came from (it's that tracker's own book).
+        // Also an unconfirmed match there (Eden's Rise, from Seekquel, kept asking to be matched on Seekquel).
+        val ownPlaceholders = s.links.filter { (_, l) -> (l.externalId == null || !l.confirmed) && ownedByTracker(s.books[l.document], l.service) }.keys
+        // A Coming in SFF book saved twice (see Releases.collapseSff) shows once.
+        val releases = io.github.prithirajn.readync.sync.Releases.collapseSff(LinkedHashMap(s.releases))
+        val twins = releases.size != s.releases.size
+        if (wrong.isEmpty() && ownPlaceholders.isEmpty() && !twins) return s
+        return s.copy(
+            releases = if (twins) releases else s.releases,
+            books = s.books + wrong.mapValues { (_, b) -> b.copy(percentage = 1.0, pagesRead = b.pageCount ?: b.pagesRead, currentPage = null) },
+            links = s.links - ownPlaceholders,
+            pending = s.pending - ownPlaceholders,
+        )
     }
 
     /**
@@ -126,7 +154,7 @@ class Store(private val file: File, private val secrets: Secrets) {
     private fun fromJson(o: JSONObject): Snapshot = decode(o, secrets)
 
     /** Replaces everything (a restored backup). Running state isn't carried over. */
-    fun replace(next: Snapshot) = update { next.copy(running = false) }
+    fun replace(next: Snapshot) = update { repaired(next.copy(running = false)) }
 
     private object Codec {
     fun encode(s: Snapshot, secrets: Secrets): JSONObject {
@@ -264,6 +292,7 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("muSeries", JSONObject().also { r -> s.muSeries.forEach { (k, v) -> r.put(k, v) } })
         o.put("muSent", JSONObject().also { r -> s.muSent.forEach { (k, v) -> r.put(k, v) } })
         s.anilist?.let { o.put("anilist", it.toJson(secrets.seal(it.token))) }
+        s.metronToken?.let { o.put("metronToken", secrets.seal(it)) }
         o.put("anilistClientId", s.anilistClientId ?: JSONObject.NULL)
         o.put("anilistOkAt", s.anilistOkAt)
         o.put("anilistError", s.anilistError ?: JSONObject.NULL)
@@ -514,6 +543,7 @@ class Store(private val file: File, private val secrets: Secrets) {
             muSeries = o.obj("muSeries")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
             muSent = o.obj("muSent")?.let { r -> r.keys().asSequence().associateWith { r.optInt(it) } } ?: emptyMap(),
             anilist = o.obj("anilist")?.let { m -> secrets.open(m.optString("token"))?.let { AniListAccount.fromJson(m, it) } },
+            metronToken = o.optString("metronToken").takeIf { it.isNotBlank() }?.let { secrets.open(it) },
             anilistClientId = o.str("anilistClientId"),
             anilistOkAt = o.long("anilistOkAt") ?: 0L,
             anilistError = o.str("anilistError"),

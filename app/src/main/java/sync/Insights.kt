@@ -117,7 +117,7 @@ object Insights {
         /** Books finished lately and not rated yet. */
         data class Rate(val documents: List<String>) : Need
         /** A reading source (Kindle, Libby, KOSync, CrossPoint) that isn't answering. */
-        data class Source(val name: String, val detail: String) : Need
+        data class Source(val name: String, val detail: String, val page: String? = null) : Need
     }
 
     fun needs(s: Snapshot, nowSec: Long = System.currentTimeMillis() / 1000): List<Need> {
@@ -126,12 +126,14 @@ object Insights {
             val svc = s.service(t.id)
             if (svc.linked && svc.needsReauth) out += Need.SignIn(t.id)
         }
-        s.kindleError?.takeIf { s.kindle != null }?.let { out += Need.Source("Kindle", it) }
-        s.libbyError?.takeIf { s.libby != null }?.let { out += Need.Source("Libby", it) }
-        s.kosyncError?.takeIf { s.kosync != null }?.let { out += Need.Source("KOSync", it) }
+        s.kindleError?.takeIf { s.kindle != null }?.let { out += Need.Source("Kindle", it, "kindle") }
+        s.libbyError?.takeIf { s.libby != null }?.let { out += Need.Source("Libby", it, "libby") }
+        s.kosyncError?.takeIf { s.kosync != null }?.let { out += Need.Source("KOSync", it, "kosync") }
         val linked = Trackers.all.filter { s.service(it.id).let { v -> v.linked && v.enabled } }.map { it.id }.toSet()
         val unmatched = s.links.values
-            .filter { it.service in linked && (it.externalId == null || !it.confirmed) && it.source != LinkSource.NONE && s.books[it.document]?.held == false }
+            .filter { it.service in linked && (it.externalId == null || !it.confirmed) && it.source != LinkSource.NONE && s.books[it.document]?.held == false &&
+                // A book brought in from a tracker never needs matching there (it's that tracker's own book).
+                !io.github.prithirajn.readync.data.ownedByTracker(s.books[it.document], it.service) }
             .map { it.document }.distinct()
             .sortedByDescending { s.books[it]?.timestamp ?: 0 }
         if (unmatched.isNotEmpty()) out += Need.Matches(unmatched)

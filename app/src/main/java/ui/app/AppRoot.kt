@@ -80,10 +80,10 @@ import kotlinx.coroutines.delay
 /** The tabs, each printed in its own spot ink (an index into the theme's five inks). */
 enum class Tab(val label: String, val icon: Int, val ink: Int) {
     LIBRARY("Library", R.drawable.lucide_library_big, 0),
-    SFF("SFF", R.drawable.lucide_sparkles, 3),
-    CATALOGS("Catalogs", R.drawable.lucide_globe, 1),
-    SERVICES("Services", R.drawable.lucide_link, 4),
-    ACTIVITY("Activity", R.drawable.lucide_list_checks, 2),
+    HIGHLIGHTS("Highlights", R.drawable.lucide_highlighter, 3),
+    DISCOVER("Discover", R.drawable.lucide_globe, 1),
+    STATS("Stats", R.drawable.lucide_list_checks, 2),
+    SYNC("Sync", R.drawable.lucide_link, 4),
 }
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -140,25 +140,34 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                     LaunchedEffect(pendingAction) {
                         when (pendingAction) {
                             null -> Unit
-                            AppAction.Services -> { AppActions.pending.value = null; pager.animateScrollToPage(Tab.SERVICES.ordinal) }
+                            // Each move runs on its own: clearing the action restarts this effect, and a move tied to it
+                            // was cut off half way (it stopped on Stats on the way to Sync).
+                            AppAction.Services -> { AppActions.pending.value = null; scope.launch { pager.animateScrollToPage(Tab.SYNC.ordinal) } }
                             AppAction.Sync -> { AppActions.pending.value = null; vm.syncNow() }
-                            AppAction.Releases -> { AppActions.pending.value = null; pager.animateScrollToPage(Tab.ACTIVITY.ordinal) }
-                            // The SFF tab takes the action itself (to open the story); here it's only brought up.
-                            is AppAction.Sff -> pager.animateScrollToPage(Tab.SFF.ordinal)
-                            // The Services tab opens the screen itself.
-                            is AppAction.ServicePage -> pager.animateScrollToPage(Tab.SERVICES.ordinal)
+                            AppAction.Releases -> { AppActions.pending.value = null; DiscoverGo.section.value = DiscoverSection.RELEASES; scope.launch { pager.animateScrollToPage(Tab.DISCOVER.ordinal) } }
+                            // Discover's News takes the action itself (to open the story); here it's only brought up.
+                            // The move runs on its own: the tab takes the action (and clears it) at once, and a
+                            // move tied to this effect was cut off half way (it stopped on Stats on the way to Sync).
+                            is AppAction.Sff -> { DiscoverGo.section.value = DiscoverSection.NEWS; scope.launch { pager.animateScrollToPage(Tab.DISCOVER.ordinal) } }
+                            // The Sync tab opens the screen itself.
+                            is AppAction.ServicePage -> scope.launch { pager.animateScrollToPage(Tab.SYNC.ordinal) }
+                            AppAction.Highlights -> { AppActions.pending.value = null; scope.launch { pager.animateScrollToPage(Tab.HIGHLIGHTS.ordinal) } }
                             AppAction.Posts, AppAction.Deals -> {
-                                CatalogsGo.mode.value = if (pendingAction == AppAction.Posts) "Posts" else "Deals"
+                                if (pendingAction == AppAction.Posts) { CatalogsGo.mode.value = "Posts"; DiscoverGo.section.value = DiscoverSection.CATALOGS }
+                                else DiscoverGo.section.value = DiscoverSection.DEALS
                                 AppActions.pending.value = null
-                                tab = Tab.CATALOGS
+                                tab = Tab.DISCOVER
                                 // Opened from a share with the app not running: the pager isn't laid out on the
                                 // first frame, and a move asked for then is lost. Wait for it, then move.
-                                androidx.compose.runtime.snapshotFlow { pager.layoutInfo.visiblePagesInfo.isNotEmpty() }.first { it }
-                                runCatching { pager.animateScrollToPage(Tab.CATALOGS.ordinal) }
-                                if (pager.currentPage != Tab.CATALOGS.ordinal) pager.scrollToPage(Tab.CATALOGS.ordinal)
+                                scope.launch {
+                                    androidx.compose.runtime.snapshotFlow { pager.layoutInfo.visiblePagesInfo.isNotEmpty() }.first { it }
+                                    runCatching { pager.animateScrollToPage(Tab.DISCOVER.ordinal) }
+                                    if (pager.currentPage != Tab.DISCOVER.ordinal) pager.scrollToPage(Tab.DISCOVER.ordinal)
+                                }
                             }
                             else -> {
-                                if (pager.currentPage != Tab.LIBRARY.ordinal) pager.animateScrollToPage(Tab.LIBRARY.ordinal)
+                                // The Library takes these (opening a book, say) and clears them straight away.
+                                if (pager.currentPage != Tab.LIBRARY.ordinal) scope.launch { pager.animateScrollToPage(Tab.LIBRARY.ordinal) }
                             }
                         }
                     }
@@ -214,10 +223,10 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                                 RisoPaper(Modifier.fillMaxSize())
                                 if (page in built) when (Tab.entries[page]) {
                                     Tab.LIBRARY -> LibraryScreen(vm, pageState, home = libraryHome)
-                                    Tab.SFF -> SffScreen(vm, pageState, active = pager.settledPage == page)
-                                    Tab.CATALOGS -> CatalogsScreen(vm, pageState)
-                                    Tab.SERVICES -> ServicesScreen(vm, pageState)
-                                    Tab.ACTIVITY -> ActivityScreen(vm, pageState)
+                                    Tab.HIGHLIGHTS -> HighlightsScreen(vm, pageState)
+                                    Tab.DISCOVER -> DiscoverScreen(vm, pageState, active = pager.settledPage == page)
+                                    Tab.STATS -> ActivityScreen(vm, pageState)
+                                    Tab.SYNC -> ServicesScreen(vm, pageState)
                                 }
                             }
                             }
@@ -398,7 +407,7 @@ internal fun Toaster(vm: AppViewModel, modifier: Modifier, bottom: androidx.comp
         Column(
             Modifier
                 .fillMaxWidth()
-                .drawBehind { drawRoundRect(c.signalLedge, topLeft = androidx.compose.ui.geometry.Offset(3.dp.toPx(), 4.dp.toPx()), size = size, cornerRadius = androidx.compose.ui.geometry.CornerRadius(14.dp.toPx())) }
+                .drawBehind { drawShape(CpShapes.card, c.signalLedge, androidx.compose.ui.geometry.Offset(3.dp.toPx(), 4.dp.toPx())) }
                 .clip(CpShapes.card)
                 .background(c.raised)
                 .drawBehind { drawRect(stripe, size = androidx.compose.ui.geometry.Size(6.dp.toPx(), size.height)) }

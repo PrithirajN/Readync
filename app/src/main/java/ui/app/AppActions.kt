@@ -25,11 +25,23 @@ sealed interface AppAction {
     data object Posts : AppAction
     /** Catalogs › Deals (a shop's page shared, a price notification). */
     data object Deals : AppAction
+    /** The Highlights tab (the Library's "see all", a highlight notification). */
+    data object Highlights : AppAction
 }
 
 /** Which of the Catalogs tab's views to show (Search, Posts, Deals), when something outside it asks. */
 object CatalogsGo {
     val mode = MutableStateFlow<String?>(null)
+    /** A search to run in the catalogs (from Discover's search box). */
+    val query = MutableStateFlow<String?>(null)
+}
+
+/** Discover's sections, in the order its pills show them. */
+enum class DiscoverSection(val label: String) { NEWS("News"), RELEASES("Releases"), DEALS("Deals"), CATALOGS("Catalogs") }
+
+/** Which Discover section to show, when something outside it asks (a notification, a share). */
+object DiscoverGo {
+    val section = MutableStateFlow<DiscoverSection?>(null)
 }
 
 object AppActions {

@@ -9,6 +9,31 @@ import io.github.prithirajn.readync.trackers.Trackers
 
 /** A book's highlights and notes: listing, editing, and sending again. */
 object Highlights {
+    /**
+     * Whether [key] ("tracker|clip") was really sent. Highlights brought in from a tracker's history
+     * are marked "sent" everywhere on import only so nothing goes out on its own; they count as sent
+     * only with a record of the send (its fingerprint or the entry's id there).
+     */
+    fun reallySent(s: io.github.prithirajn.readync.data.Snapshot, key: String): Boolean =
+        key in s.sentClippings && (!key.substringAfter('|').startsWith("hist-") || key in s.sentHash || key in s.clipRemote)
+
+    /**
+     * [document]'s highlights (or only [clipId]) that were never really sent: marked unsent and queued
+     * for each linked tracker with Send highlights on (the book's own tracker left out). Returns how many.
+     */
+    fun queueNeverSent(store: io.github.prithirajn.readync.data.Store, document: String, clipId: String? = null): Int {
+        var n = 0
+        store.update { s ->
+            val origin = s.books[document]?.origin?.removePrefix("history:")
+            val clips = all(s).map { it.clip }.filter { it.document == document && (clipId == null || it.id == clipId) }
+            val trackers = Trackers.all.filter { t -> t.id != origin && s.service(t.id).let { it.linked && it.enabled && it.highlights } }
+            val keys = clips.filter { !KoHighlightSync.isNote(it.id) }.flatMap { c -> trackers.map { "${it.id}|${c.id}" } }.filter { k -> !reallySent(s, k) && k !in s.resend }
+            n = keys.size
+            if (keys.isEmpty()) s else s.copy(sentClippings = s.sentClippings - keys.toSet(), resend = s.resend + keys, clipFails = s.clipFails - keys.toSet())
+        }
+        return n
+    }
+
 
     /** One highlight as shown under its book: your edited text, where it came from, where it went. */
     data class Item(
@@ -46,7 +71,7 @@ object Highlights {
                         else -> "CrossPoint"
                     },
                     edited = c.id in s.clipEdits,
-                    sentTo = Trackers.all.filter { "${it.id}|${c.id}" in s.sentClippings }.map { it.id },
+                    sentTo = Trackers.all.filter { reallySent(s, "${it.id}|${c.id}") }.map { it.id },
                     resending = Trackers.all.filter { "${it.id}|${c.id}" in s.resend }.map { it.id },
                 )
             }
@@ -167,6 +192,13 @@ object Highlights {
      * Sends the highlight again to [trackers] on the next sync: it replaces the earlier entry
      * where the tracker allows (Seekquel, Hardcover, Pagebound), else it's posted again.
      */
+    /** Whether [text] is already in [there] (a tracker's posted notes): its first 60 letters, ignoring case, spacing and punctuation. */
+    fun foundIn(there: String, text: String): Boolean {
+        fun norm(x: String) = x.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        val key = norm(text).take(60)
+        return key.length >= 12 && norm(there).contains(key)
+    }
+
     fun resend(store: Store, clipId: String, trackers: Collection<String>) = store.update { s ->
         s.copy(resend = s.resend + trackers.map { "$it|$clipId" })
     }

@@ -110,7 +110,7 @@ internal fun genreName(sec: Sector): String = when (sec) {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
+fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true, header: (@Composable () -> Unit)? = null) {
     val c = Cp.colors
     var view by rememberSaveable { mutableStateOf(SffView.FOR_YOU) }
     var openSector by rememberSaveable { mutableStateOf<String?>(null) }
@@ -169,84 +169,98 @@ fun SffScreen(vm: AppViewModel, state: Snapshot, active: Boolean = true) {
     val listState = rememberLazyListState()
     val open: (SffFeed.Story, Int) -> Unit = { s, i -> reading = s.cluster to i }
 
-    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp + TabBarSpace)) {
-        item(key = "head") {
-            Column {
-                val today = LocalDate.now()
-                TabHeader("news · " + today.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault()) + ", " + today.dayOfMonth + " " + today.month.getDisplayName(TextStyle.FULL, Locale.getDefault()), "SFF") {
-                    IconCircleButton(R.drawable.lucide_refresh_cw, "Refresh the news", { vm.refreshSff(force = true) }, busy = state.sffLoading, tint = c.accentText)
+    // Pull past the top to bring the news in now (as the refresh button does).
+    val pullNews = rememberPullToAct { if (!state.sffLoading) vm.refreshSff(force = true) }
+    PullFrame(pullNews, state.sffLoading, "Pull to bring the news in", "Let go to refresh", "Gathering the news…") { pm ->
+        LazyColumn(pm.fillMaxSize().edgeBump().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp + TabBarSpace)) {
+            item(key = "head") {
+                Column {
+                    val today = LocalDate.now()
+                    if (header != null) {
+                        // Inside Discover: its masthead, then the views with the refresh beside them.
+                        header()
+                        Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) { Segmented(SffView.entries, view, { it.label }, { view = it; openSector = null; openTopic = null }, Modifier.fillMaxWidth()) }
+                            HSpace(6)
+                            IconCircleButton(R.drawable.lucide_refresh_cw, "Refresh the news", { vm.refreshSff(force = true) }, busy = state.sffLoading, tint = c.accentText)
+                        }
+                    } else {
+                    TabHeader("news · " + today.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault()) + ", " + today.dayOfMonth + " " + today.month.getDisplayName(TextStyle.FULL, Locale.getDefault()), "SFF") {
+                        IconCircleButton(R.drawable.lucide_refresh_cw, "Refresh the news", { vm.refreshSff(force = true) }, busy = state.sffLoading, tint = c.accentText)
+                    }
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                    VSpace(12)
+                    Segmented(SffView.entries, view, { it.label }, { view = it; openSector = null; openTopic = null }, Modifier.fillMaxWidth())
+                    }
+                    }
                 }
-                Column(Modifier.padding(horizontal = 16.dp)) {
-                VSpace(12)
-                Segmented(SffView.entries, view, { it.label }, { view = it; openSector = null; openTopic = null }, Modifier.fillMaxWidth())
             }
-            }
-        }
 
-        val sector = openSector?.let { Sector.byId(it) }
-        val topic = openTopic?.let { id -> SffFeed.TOPICS.firstOrNull { it.id == id } }
-        when {
-            sector != null || topic != null -> {
-                item(key = "filtered-head") { FilteredHead(state, sector, topic, onBack = { openSector = null; openTopic = null }, vm = vm) }
-                val shown = stories.filter { s -> (sector == null || sector in s.sectors) && (topic == null || SffFeed.inTopic(s.cluster, topic)) }
-                if (shown.isEmpty()) item(key = "filtered-empty") { EmptyNote("Nothing here yet. New stories come in about every hour.") }
-                shown.forEachIndexed { i, s ->
-                    item(key = "f-" + s.id) {
-                        if (i == 0 && !s.lead.coverUrl.isNullOrBlank()) WideStory(s, open, { menuFor = s }) else ListStory(s, open, { menuFor = s })
-                    }
-                }
-            }
-            view == SffView.FOR_YOU -> forYou(state, stories, vm, open, onMenu = { menuFor = it })
-            view == SffView.LATEST -> {
-                val latest = stories.sortedByDescending { it.lead.publishedAt.takeIf { t -> t > 0 } ?: it.lead.firstSeenAt }
-                if (latest.isEmpty()) item(key = "latest-empty") { EmptyNote(if (state.sffLoading) "Gathering the news…" else "Pull the news in with the refresh button.") }
-                var lastDay: LocalDate? = null
-                for (s in latest) {
-                    val at = s.lead.publishedAt.takeIf { it > 0 } ?: s.lead.firstSeenAt
-                    val d = if (at > 0) java.time.Instant.ofEpochSecond(at).atZone(java.time.ZoneId.systemDefault()).toLocalDate() else null
-                    if (d != null && d != lastDay) {
-                        lastDay = d
-                        item(key = "day-$d") { SectionHead(dayLabel(d)) }
-                    }
-                    item(key = "l-" + s.id) { ListStory(s, open, { menuFor = s }) }
-                }
-            }
-            view == SffView.SCREEN -> {
-                // SFF on screen: films, series and adaptations, best first, with a big picture now and then.
-                val screen = stories.filter { SffFeed.isScreen(it.cluster) }
-                item(key = "screen-head") { SectionHead("Films and series") }
-                if (screen.isEmpty()) item(key = "screen-empty") {
-                    EmptyNote(if (state.sffLoading) "Gathering film and TV news…" else "No film or TV news yet. New stories come in about every hour.")
-                }
-                val unread = screen.filter { !it.read }
-                val seen = screen.filter { it.read }
-                unread.forEachIndexed { i, s ->
-                    item(key = "s-" + s.id) {
-                        when {
-                            i == 0 && !s.lead.coverUrl.isNullOrBlank() -> LeadStory(s, open) { menuFor = s }
-                            i % 6 == 3 && !s.lead.coverUrl.isNullOrBlank() -> WideStory(s, open, { menuFor = s })
-                            else -> ListStory(s, open, { menuFor = s })
+            val sector = openSector?.let { Sector.byId(it) }
+            val topic = openTopic?.let { id -> SffFeed.TOPICS.firstOrNull { it.id == id } }
+            when {
+                sector != null || topic != null -> {
+                    item(key = "filtered-head") { FilteredHead(state, sector, topic, onBack = { openSector = null; openTopic = null }, vm = vm) }
+                    val shown = stories.filter { s -> (sector == null || sector in s.sectors) && (topic == null || SffFeed.inTopic(s.cluster, topic)) }
+                    if (shown.isEmpty()) item(key = "filtered-empty") { EmptyNote("Nothing here yet. New stories come in about every hour.") }
+                    shown.forEachIndexed { i, s ->
+                        item(key = "f-" + s.id) {
+                            if (i == 0 && !s.lead.coverUrl.isNullOrBlank()) WideStory(s, open, { menuFor = s }) else ListStory(s, open, { menuFor = s })
                         }
                     }
                 }
-                if (seen.isNotEmpty()) {
-                    item(key = "screen-read") { SectionHead("Already read") }
-                    for (s in seen.take(20)) item(key = "sr-" + s.id) { ListStory(s, open, { menuFor = s }) }
+                view == SffView.FOR_YOU -> forYou(state, stories, vm, open, onMenu = { menuFor = it })
+                view == SffView.LATEST -> {
+                    val latest = stories.sortedByDescending { it.lead.publishedAt.takeIf { t -> t > 0 } ?: it.lead.firstSeenAt }
+                    if (latest.isEmpty()) item(key = "latest-empty") { EmptyNote(if (state.sffLoading) "Gathering the news…" else "Pull the news in with the refresh button.") }
+                    var lastDay: LocalDate? = null
+                    for (s in latest) {
+                        val at = s.lead.publishedAt.takeIf { it > 0 } ?: s.lead.firstSeenAt
+                        val d = if (at > 0) java.time.Instant.ofEpochSecond(at).atZone(java.time.ZoneId.systemDefault()).toLocalDate() else null
+                        if (d != null && d != lastDay) {
+                            lastDay = d
+                            item(key = "day-$d") { SectionHead(dayLabel(d)) }
+                        }
+                        item(key = "l-" + s.id) { ListStory(s, open, { menuFor = s }) }
+                    }
                 }
-            }
-            view == SffView.GENRES -> item(key = "genres") {
-                SffGenres(vm, state, stories, onSector = { openSector = it.id }, onTopic = { openTopic = it.id })
-            }
-            else -> item(key = "saved") {
-                SffSaved(
-                    vm, state,
-                    onOpenRead = { h ->
-                        val item = state.sffItems.firstOrNull { it.id == h.id } ?: state.sffSky.saved.firstOrNull { it.id == h.id }
-                            ?: SffFeedItem(id = h.id, category = "NEWS_AWARDS", source = h.source, title = h.title, url = h.url, coverUrl = h.coverUrl)
-                        reading = single(item, "From your history") to 0
-                    },
-                    onOpenItem = { item -> reading = single(item, "Saved") to 0 },
-                )
+                view == SffView.SCREEN -> {
+                    // SFF on screen: films, series and adaptations, best first, with a big picture now and then.
+                    val screen = stories.filter { SffFeed.isScreen(it.cluster) }
+                    item(key = "screen-head") { SectionHead("Films and series") }
+                    if (screen.isEmpty()) item(key = "screen-empty") {
+                        EmptyNote(if (state.sffLoading) "Gathering film and TV news…" else "No film or TV news yet. New stories come in about every hour.")
+                    }
+                    val unread = screen.filter { !it.read }
+                    val seen = screen.filter { it.read }
+                    unread.forEachIndexed { i, s ->
+                        item(key = "s-" + s.id) {
+                            when {
+                                i == 0 && !s.lead.coverUrl.isNullOrBlank() -> LeadStory(s, open) { menuFor = s }
+                                i % 6 == 3 && !s.lead.coverUrl.isNullOrBlank() -> WideStory(s, open, { menuFor = s })
+                                else -> ListStory(s, open, { menuFor = s })
+                            }
+                        }
+                    }
+                    if (seen.isNotEmpty()) {
+                        item(key = "screen-read") { SectionHead("Already read") }
+                        for (s in seen.take(20)) item(key = "sr-" + s.id) { ListStory(s, open, { menuFor = s }) }
+                    }
+                }
+                view == SffView.GENRES -> item(key = "genres") {
+                    SffGenres(vm, state, stories, onSector = { openSector = it.id }, onTopic = { openTopic = it.id })
+                }
+                else -> item(key = "saved") {
+                    SffSaved(
+                        vm, state,
+                        onOpenRead = { h ->
+                            val item = state.sffItems.firstOrNull { it.id == h.id } ?: state.sffSky.saved.firstOrNull { it.id == h.id }
+                                ?: SffFeedItem(id = h.id, category = "NEWS_AWARDS", source = h.source, title = h.title, url = h.url, coverUrl = h.coverUrl)
+                            reading = single(item, "From your history") to 0
+                        },
+                        onOpenItem = { item -> reading = single(item, "Saved") to 0 },
+                    )
+                }
             }
         }
     }

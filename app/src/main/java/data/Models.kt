@@ -236,7 +236,11 @@ data class SeriesRead(
  */
 data class Release(
     val key: String,
-    /** "book", "volume", "chapter", "issue" or "webnovel". */
+    /**
+     * "book", "volume", "chapter", "issue", "webnovel", "author" (a new book by an author you've read;
+     * [series] is then the author), or "sff" (an upcoming SFF book from Reactor's lists or the news,
+     * shown under Coming in SFF, never notified).
+     */
     val kind: String,
     val series: String,
     val title: String,
@@ -252,6 +256,20 @@ data class Release(
     val seenAt: Long = 0L,
     /** What you've been told: null, "soon" (a reminder before it's out) or "out". */
     val notified: String? = null,
+    /** The day it was due before its last move (a delay or an earlier date), to show "moved from …". */
+    val movedFrom: Long? = null,
+    /** You've looked at it ("Got it", or opened it): no longer marked new. */
+    val seen: Boolean = false,
+    /** "Not this one": kept so it isn't found again, never shown. */
+    val skipped: Boolean = false,
+    /** The price watch made for it (Discover › Deals), by you or on its release day. */
+    val priceWatch: String? = null,
+    /** For "sff": its genre as the chips name it ("Fantasy", "Science fiction"…), null for one from the news. */
+    val genre: String? = null,
+    /** For "sff": the publisher's few lines about it. */
+    val blurb: String? = null,
+    /** What Goodreads says of it (series or standalone, rating, pages…), and the translators Reactor names. */
+    val facts: ReleaseFacts? = null,
 ) {
     fun isOut(now: Long = System.currentTimeMillis() / 1000) = if (date == null) !announcedOnly else date <= now
 
@@ -265,6 +283,9 @@ data class Release(
         .put("number", number ?: JSONObject.NULL).put("date", date ?: JSONObject.NULL).put("source", source)
         .put("coverUrl", coverUrl ?: JSONObject.NULL).put("url", url ?: JSONObject.NULL).put("author", author ?: JSONObject.NULL)
         .put("seenAt", seenAt).put("notified", notified ?: JSONObject.NULL)
+        .put("movedFrom", movedFrom ?: JSONObject.NULL).put("seen", seen).put("skipped", skipped).put("priceWatch", priceWatch ?: JSONObject.NULL)
+        .put("genre", genre ?: JSONObject.NULL).put("blurb", blurb ?: JSONObject.NULL)
+        .put("facts", facts?.toJson() ?: JSONObject.NULL)
 
     companion object {
         /** A listing's stand-in title for a book not written or named yet. */
@@ -274,6 +295,57 @@ data class Release(
         fun fromJson(o: JSONObject) = Release(
             o.optString("key"), o.optString("kind", "book"), o.optString("series"), o.optString("title"), o.str("number"),
             o.long("date"), o.optString("source"), o.str("coverUrl"), o.str("url"), o.str("author"), o.optLong("seenAt"), o.str("notified"),
+            o.long("movedFrom"), o.optBoolean("seen", false), o.optBoolean("skipped", false), o.str("priceWatch"),
+            o.str("genre"), o.str("blurb"), o.optJSONObject("facts")?.let { ReleaseFacts.fromJson(it) },
+        )
+    }
+}
+
+/**
+ * A book's details from its Goodreads page (signed out, by its ISBN or Kindle id, else by a title
+ * search): whether it's in a series and which, its rating, pages, format, when it was first
+ * published (a translation's original is often years before), its genres, author and translators.
+ * [checkedAt] 0 means Goodreads hasn't been asked yet (what's here came from Reactor's list).
+ */
+data class ReleaseFacts(
+    val goodreadsId: String? = null,
+    val title: String? = null,
+    val series: String? = null,
+    val position: String? = null,
+    val rating: Double? = null,
+    val ratings: Int? = null,
+    val pages: Int? = null,
+    val format: String? = null,
+    val publisher: String? = null,
+    /** The year it first came out anywhere (the original of a translation). */
+    val firstYear: Int? = null,
+    val genres: List<String> = emptyList(),
+    val author: String? = null,
+    val translators: List<String> = emptyList(),
+    val cover: String? = null,
+    /** Goodreads was asked (found or not), when. */
+    val checkedAt: Long = 0L,
+    /** Goodreads was asked and didn't have it. */
+    val missing: Boolean = false,
+) {
+    /** In no series, as far as Goodreads knows (only said once Goodreads has been asked and found it). */
+    val standalone: Boolean get() = checkedAt > 0 && !missing && series == null
+
+    fun toJson(): JSONObject = JSONObject().put("goodreadsId", goodreadsId ?: JSONObject.NULL).put("title", title ?: JSONObject.NULL)
+        .put("series", series ?: JSONObject.NULL).put("position", position ?: JSONObject.NULL).put("rating", rating ?: JSONObject.NULL)
+        .put("ratings", ratings ?: JSONObject.NULL).put("pages", pages ?: JSONObject.NULL).put("format", format ?: JSONObject.NULL)
+        .put("publisher", publisher ?: JSONObject.NULL).put("firstYear", firstYear ?: JSONObject.NULL)
+        .put("genres", org.json.JSONArray(genres)).put("author", author ?: JSONObject.NULL).put("translators", org.json.JSONArray(translators))
+        .put("cover", cover ?: JSONObject.NULL).put("checkedAt", checkedAt).put("missing", missing)
+
+    companion object {
+        private fun strings(a: org.json.JSONArray?) = a?.let { (0 until it.length()).map { i -> it.optString(i) }.filter { s -> s.isNotBlank() } }.orEmpty()
+        fun fromJson(o: JSONObject) = ReleaseFacts(
+            o.str("goodreadsId"), o.str("title"), o.str("series"), o.str("position"),
+            o.opt("rating").let { if (it is Number) it.toDouble() else null }, o.opt("ratings").let { if (it is Number) it.toInt() else null },
+            o.opt("pages").let { if (it is Number) it.toInt() else null }, o.str("format"), o.str("publisher"),
+            o.opt("firstYear").let { if (it is Number) it.toInt() else null }, strings(o.optJSONArray("genres")), o.str("author"),
+            strings(o.optJSONArray("translators")), o.str("cover"), o.optLong("checkedAt"), o.optBoolean("missing", false),
         )
     }
 }
@@ -299,16 +371,38 @@ data class ReleaseSettings(
     /** Tell me when one's out; and this many days before (0: no reminder). */
     val notifyOut: Boolean = true,
     val remindDays: Int = 0,
+    /** New books (in a series or not) by authors you've finished a book of, from Hardcover. */
+    val authors: Boolean = true,
+    /** Track a release's price on Deals from the day it's out. */
+    val watchPrices: Boolean = true,
+    /** Coming in SFF: Reactor's monthly lists and books announced in the news and on socials. */
+    val sff: Boolean = true,
+    /** Which of those genres to show (as [io.github.prithirajn.readync.source.UpcomingSff.GENRES] names them). */
+    val sffGenres: Set<String> = setOf("Fantasy", "Science fiction", "Horror", "Young adult", "Romantasy", "Crossover", "LitRPG", "Manga", "Comics", "In the news"),
 ) {
     fun toJson(): JSONObject = JSONObject().put("enabled", enabled).put("novels", novels).put("manga", manga).put("comics", comics)
         .put("webNovels", webNovels).put("hardcover", hardcover).put("goodreads", goodreads).put("mangaDex", mangaDex)
         .put("which", which).put("inBetween", inBetween).put("aheadMonths", aheadMonths).put("notifyOut", notifyOut).put("remindDays", remindDays)
+        .put("authors", authors).put("watchPrices", watchPrices).put("sff", sff).put("sffGenres", org.json.JSONArray(sffGenres.toList())).put("sffOffered", org.json.JSONArray(LATER_GENRES.toList()))
 
     companion object {
+        /** Genres added after the first lists, each switched on once for saved settings. */
+        val LATER_GENRES = setOf("LitRPG", "Manga", "Comics")
+
         fun fromJson(o: JSONObject) = ReleaseSettings(
             o.optBoolean("enabled", true), o.optBoolean("novels", true), o.optBoolean("manga", true), o.optBoolean("comics", true),
             o.optBoolean("webNovels", true), o.optBoolean("hardcover", true), o.optBoolean("goodreads", true), o.optBoolean("mangaDex", true),
             o.optString("which", "reading"), o.optBoolean("inBetween", false), o.optInt("aheadMonths", 12), o.optBoolean("notifyOut", true), o.optInt("remindDays", 0),
+            o.optBoolean("authors", true), o.optBoolean("watchPrices", true), o.optBoolean("sff", true),
+            // Genres that came later (LitRPG 4.13.1, Manga and Comics 4.14.0): each switched on once for
+            // settings saved before it, then left as you set it.
+            o.optJSONArray("sffGenres")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }.toSet() }
+                ?.let { g ->
+                    val offered = o.optJSONArray("sffOffered")?.let { a -> (0 until a.length()).map { a.optString(it) }.toSet() }
+                        ?: if (o.optBoolean("litrpgOffered", false)) setOf("LitRPG") else emptySet()
+                    g + (LATER_GENRES - offered)
+                }
+                ?: setOf("Fantasy", "Science fiction", "Horror", "Young adult", "Romantasy", "Crossover", "LitRPG", "Manga", "Comics", "In the news"),
         )
     }
 }
@@ -1080,6 +1174,12 @@ data class ProgressAsk(val fraction: Double, val status: ReadStatus?, val update
  * One update this app sent a tracker for a book: progress from [from]% to [to]% (with the book's
  * page count, for pages), how many highlights went, and anything else ("Finished", "rated 4★").
  */
+/**
+ * Whether [b] came from tracker [id] itself (its library, or a reading history imported from it):
+ * such a book is that tracker's own, so it's never matched, sent to or asked about there.
+ */
+fun ownedByTracker(b: Book?, id: String): Boolean = b != null && (b.origin == id || b.origin == "history:$id")
+
 data class SendEvent(
     val at: Long,
     val from: Int? = null,
@@ -1345,8 +1445,11 @@ data class PriceListing(
     val pages: Int? = null,
     val edition: String? = null,
     val price: Double? = null,
+    /** Whether the shop has it to sell (null: not known). */
+    val inStock: Boolean? = null,
 ) {
     fun toJson(): org.json.JSONObject = org.json.JSONObject().put("s", store).put("u", url)
+        .put("in", inStock ?: org.json.JSONObject.NULL)
         .put("t", title ?: org.json.JSONObject.NULL).put("f", format ?: org.json.JSONObject.NULL)
         .put("pub", publisher ?: org.json.JSONObject.NULL).put("pg", pages ?: org.json.JSONObject.NULL)
         .put("e", edition ?: org.json.JSONObject.NULL).put("p", price ?: org.json.JSONObject.NULL)
@@ -1357,6 +1460,7 @@ data class PriceListing(
             if (o.isNull("t")) null else o.optString("t"), if (o.isNull("f")) null else o.optString("f"),
             if (o.isNull("pub")) null else o.optString("pub"), if (o.isNull("pg")) null else o.optInt("pg"),
             if (o.isNull("e")) null else o.optString("e"), if (o.isNull("p")) null else o.optDouble("p"),
+            if (!o.has("in") || o.isNull("in")) null else o.optBoolean("in"),
         )
     }
 }
@@ -1390,7 +1494,13 @@ data class PriceWatch(
         ?: title?.let { Book(document = document, title = it, author = author, percentage = 0.0, status = null, timestamp = since, coverUrl = cover, isbn = isbn) }
 
     /** The newest price at each store. */
-    val latest: List<PricePoint> get() = history.groupBy { it.store + "|" + (it.format ?: "") }.values.map { it.maxBy { p -> p.at } }
+    // Only each store's newest check counts: an older "not found" (no format) used to stay beside a later
+    // hardcover price as a second row, since it was kept apart by format. Within that check, one per
+    // format (Amazon's print and Kindle).
+    val latest: List<PricePoint> get() = history.groupBy { it.store }.values.flatMap { ps ->
+        val at = ps.maxOf { it.at }
+        ps.filter { it.at == at }.groupBy { it.format ?: "" }.values.map { it.last() }
+    }
     /** The cheapest in-stock price now, anywhere. */
     val best: PricePoint? get() = latest.filter { it.price != null && it.inStock }.minByOrNull { it.price!! }
     /** The lowest in-stock price ever seen. */
@@ -1637,6 +1747,8 @@ data class Snapshot(
     val muSent: Map<String, Int> = emptyMap(),
     /** AniList: the sign-in, when it last worked or what went wrong, its series for each series here, and the chapter last sent. */
     val anilist: AniListAccount? = null,
+    /** Your Metron API token (metron.cloud › your account), for upcoming comics and your pull list; kept sealed. */
+    val metronToken: String? = null,
     /** An AniList client id typed in but not signed in yet. */
     val anilistClientId: String? = null,
     val anilistOkAt: Long = 0L,

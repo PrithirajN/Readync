@@ -98,6 +98,113 @@ object Haptics {
     fun confirm(v: View) {
         if (Build.VERSION.SDK_INT >= 30) v.performHapticFeedback(HapticFeedbackConstants.CONFIRM) else tick(v)
     }
+
+    // ---- Granular: the vibrator's own primitives at a chosen strength ----
+    //
+    // The presets above are all one weight. These are the small effects the phone's motor can play
+    // (a tick, a low tick, a thud, a rise, a fall, a spin) at any strength from 0 to 1, so a drag can
+    // be felt getting tighter and a landing felt by how hard it lands. They play only when touch
+    // feedback is on in the phone's settings, at its touch strength, and fall back to the nearest
+    // preset on a phone whose motor can't play them (or before Android 11).
+
+    private var lastTexture = 0L
+
+    /** Touch feedback is on (the phone's own setting, and this view's). */
+    private fun allowed(v: View): Boolean =
+        v.isHapticFeedbackEnabled && runCatching {
+            android.provider.Settings.System.getInt(v.context.contentResolver, android.provider.Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) != 0
+        }.getOrDefault(true)
+
+    private fun vibrator(v: View): android.os.Vibrator? =
+        if (Build.VERSION.SDK_INT >= 31) (v.context.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager)?.defaultVibrator
+        else @Suppress("DEPRECATION") (v.context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator)
+
+    /**
+     * Plays [steps] (a primitive, its strength, and the wait before it in ms) as one effect, or the
+     * [fallback] preset when the phone can't. Returns whether anything played.
+     */
+    @android.annotation.SuppressLint("WrongConstant", "NewApi") // primitives by number; each is checked as supported first
+    private fun compose(v: View, fallback: Int, vararg steps: Triple<Int, Float, Int>): Boolean {
+        if (!allowed(v)) return false
+        if (Build.VERSION.SDK_INT >= 30) {
+            val vib = vibrator(v)
+            val ids = steps.map { it.first }.toIntArray()
+            if (vib != null && vib.hasVibrator() && runCatching { vib.areAllPrimitivesSupported(*ids) }.getOrDefault(false)) {
+                val c = android.os.VibrationEffect.startComposition()
+                for ((p, scale, delay) in steps) c.addPrimitive(p, scale.coerceIn(0f, 1f), delay)
+                val effect = c.compose()
+                runCatching {
+                    if (Build.VERSION.SDK_INT >= 33) vib.vibrate(effect, android.os.VibrationAttributes.createForUsage(android.os.VibrationAttributes.USAGE_TOUCH))
+                    else @Suppress("DEPRECATION") vib.vibrate(effect, android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_SONIFICATION).build())
+                }.onSuccess { return true }
+            }
+        }
+        return v.performHapticFeedback(fallback)
+    }
+
+    private const val P_CLICK = 1        // VibrationEffect.Composition.PRIMITIVE_CLICK
+    private const val P_THUD = 2         // PRIMITIVE_THUD (Android 12)
+    private const val P_SPIN = 3         // PRIMITIVE_SPIN (Android 12)
+    private const val P_QUICK_RISE = 4   // PRIMITIVE_QUICK_RISE
+    private const val P_SLOW_RISE = 5    // PRIMITIVE_SLOW_RISE
+    private const val P_QUICK_FALL = 6   // PRIMITIVE_QUICK_FALL
+    private const val P_TICK = 7         // PRIMITIVE_TICK
+    private const val P_LOW_TICK = 8     // PRIMITIVE_LOW_TICK (Android 12)
+
+    /**
+     * A grain of texture while dragging: a low tick at [strength] (0–1). Called often (each few dp
+     * of a drag), so it's spaced at least 22 ms apart and anything under a whisper is skipped.
+     */
+    fun texture(v: View, strength: Float) {
+        if (strength < 0.04f) return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastTexture < 22) return
+        lastTexture = now
+        compose(v, HapticFeedbackConstants.CLOCK_TICK, Triple(P_LOW_TICK, strength, 0))
+    }
+
+    /** One notch of a dial or a segmented control passing under the finger. */
+    fun detent(v: View) {
+        if (Build.VERSION.SDK_INT >= 34) { if (allowed(v)) v.performHapticFeedback(HapticFeedbackConstants.SEGMENT_TICK) }
+        else compose(v, HapticFeedbackConstants.CLOCK_TICK, Triple(P_TICK, 0.55f, 0))
+    }
+
+    /** Something landing: [strength] 0–1, a light card at 0.3, a book dropped at 0.9. */
+    fun thud(v: View, strength: Float = 0.7f) {
+        compose(v, HapticFeedbackConstants.CONTEXT_CLICK, Triple(P_THUD, strength, 0))
+    }
+
+    /** Tension building (a pull nearing its point): a quick rise at [strength]. */
+    fun rise(v: View, strength: Float = 0.5f) {
+        compose(v, HapticFeedbackConstants.CLOCK_TICK, Triple(P_QUICK_RISE, strength, 0))
+    }
+
+    /** Let go and springing back: a soft fall. */
+    fun fall(v: View, strength: Float = 0.5f) {
+        compose(v, HapticFeedbackConstants.CLOCK_TICK, Triple(P_QUICK_FALL, strength, 0))
+    }
+
+    /** A rubber stamp coming down: a thud, then the ink's little tick as it lifts. */
+    fun stamp(v: View) {
+        compose(v, HapticFeedbackConstants.CONTEXT_CLICK, Triple(P_THUD, 0.6f, 0), Triple(P_TICK, 0.35f, 45))
+    }
+
+    /** A chip or switch going on (a crisp rising click) or off (a softer falling one). */
+    fun flip(v: View, on: Boolean) {
+        if (on) compose(v, HapticFeedbackConstants.CLOCK_TICK, Triple(P_CLICK, 0.6f, 0), Triple(P_QUICK_RISE, 0.25f, 0))
+        else compose(v, HapticFeedbackConstants.CLOCK_TICK, Triple(P_QUICK_FALL, 0.35f, 0), Triple(P_LOW_TICK, 0.4f, 10))
+    }
+
+    /** A list flung into its top or bottom: a bump as hard as it hit ([strength] 0–1). */
+    fun bump(v: View, strength: Float) {
+        if (strength < 0.08f) return
+        compose(v, HapticFeedbackConstants.CLOCK_TICK, Triple(P_THUD, strength.coerceAtMost(0.6f), 0))
+    }
+
+    /** A thing done after a held gesture (a pull let go past its point): a rise into a firm click. */
+    fun done(v: View, strength: Float = 0.8f) {
+        compose(v, HapticFeedbackConstants.CONFIRM, Triple(P_QUICK_RISE, strength * 0.6f, 0), Triple(P_CLICK, strength, 30))
+    }
 }
 
 /** How a key looks: a plain light key, the orange signal key, or a quiet one with red writing. */
@@ -171,7 +278,7 @@ fun Key(
             .padding(bottom = ledge)
             // The second ink (or shadow): the key's own shape, nudged down and a touch across.
             .drawBehind {
-                drawRoundRect(ledgeColor, topLeft = Offset(misX.toPx(), ledge.toPx()), size = size, cornerRadius = cornerOf(shape, size, this))
+                drawShape(shape, ledgeColor, Offset(misX.toPx(), ledge.toPx()))
             }
             .offset(y = travel)
             .clip(shape)
@@ -190,12 +297,6 @@ fun Key(
         contentAlignment = Alignment.Center,
         content = content,
     )
-}
-
-private fun cornerOf(shape: Shape, size: Size, d: androidx.compose.ui.unit.Density): CornerRadius {
-    val outline = shape.createOutline(size, androidx.compose.ui.unit.LayoutDirection.Ltr, d)
-    return if (outline is androidx.compose.ui.graphics.Outline.Rounded) CornerRadius(outline.roundRect.topLeftCornerRadius.x, outline.roundRect.topLeftCornerRadius.y)
-    else CornerRadius.Zero
 }
 
 internal fun lerpColor(a: Color, b: Color, t: Float) = androidx.compose.ui.graphics.lerp(a, b, t)
@@ -221,8 +322,7 @@ fun Screen(modifier: Modifier = Modifier, content: @Composable ColumnScope.() ->
             .fillMaxWidth()
             // Printed a little off register over the section's second ink.
             .drawBehind {
-                val o = cornerOf(CpShapes.screen, size, this)
-                drawRoundRect(c.signalLedge.copy(alpha = 0.8f), topLeft = Offset(3.dp.toPx(), 4.dp.toPx()), size = size, cornerRadius = CornerRadius(maxOf(o.x, 16.dp.toPx())))
+                drawShape(CpShapes.screen, c.signalLedge.copy(alpha = 0.8f), Offset(3.dp.toPx(), 4.dp.toPx()))
             }
             .clip(CpShapes.screen)
             .background(c.screen)
@@ -258,7 +358,10 @@ fun RollingNumber(value: Int, style: TextStyle, color: Color, modifier: Modifier
     val animOn = LocalAnimationsOn.current
     LaunchedEffect(visible) {
         if (!visible) { seen = false; return@LaunchedEffect }
-        if (seen) return@LaunchedEffect
+        // Already counted while showing: just make sure it ends on the number. (It used to stay at 0
+        // for good when it was put away during the count's first moment, with "seen" saved but not
+        // "started": a finished book showed 0% under a full bar.)
+        if (seen) { started = true; return@LaunchedEffect }
         seen = true
         if (countUp && started && animOn) { started = false; kotlinx.coroutines.delay(16) }
         started = true
@@ -267,7 +370,7 @@ fun RollingNumber(value: Int, style: TextStyle, color: Color, modifier: Modifier
     val shown by animateIntAsState(target, tween(durationMillis = 900, easing = FastOutSlowInEasing), label = "count")
     // Plain figures: the count itself is the motion. (A rolling digit for each place, kept even at
     // rest, was most of the work of showing a row of numbers, every time it scrolled into view.)
-    Text(shown.toString(), style = style, color = color, modifier = modifier)
+    FigureText(shown.toString(), style, color, modifier)
 }
 
 /**
@@ -679,13 +782,14 @@ fun <T> Segmented(
             .padding(3.dp),
     ) {
         // The pill, drawn under the labels and slid between them.
+        val segShape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 13.dp, topEnd = 6.dp, bottomEnd = 13.dp, bottomStart = 6.dp)
         Box(
             Modifier
                 .fillMaxWidth(1f / options.size)
                 .fillMaxHeight()
                 .graphicsLayer { translationX = at * size.width }
-                .drawBehind { drawRoundRect(c.signalLedge, topLeft = Offset(1.5.dp.toPx(), 2.dp.toPx()), size = size, cornerRadius = CornerRadius(11.dp.toPx())) }
-                .clip(androidx.compose.foundation.shape.RoundedCornerShape(topStart = 13.dp, topEnd = 6.dp, bottomEnd = 13.dp, bottomStart = 6.dp))
+                .drawBehind { drawShape(segShape, c.signalLedge, Offset(1.5.dp.toPx(), 2.dp.toPx())) }
+                .clip(segShape)
                 .background(c.accent),
         )
         Row(Modifier.fillMaxSize()) {
@@ -698,7 +802,7 @@ fun <T> Segmented(
                         .fillMaxHeight()
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(11.dp))
                         .clickable(remember { MutableInteractionSource() }, indication = null, role = Role.RadioButton, onClickLabel = label(o)) {
-                            if (!on) { Haptics.tick(view); onPick(o) }
+                            if (!on) { Haptics.detent(view); onPick(o) }
                         },
                     horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,

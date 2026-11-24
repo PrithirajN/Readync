@@ -145,6 +145,7 @@ object ThreadsClient {
             "access_token" to token, "media_type" to "CAROUSEL", "children" to children.joinToString(","), "text" to text.take(MAX_TEXT),
         ).also { p -> topicTag(topic)?.let { p["topic_tag"] = it }; if (spoiler) p["is_spoiler_media"] = "true" }, 60_000).optString("id").takeIf { it.isNotBlank() } ?: throw ThreadsException("Threads didn't take the post")
         runCatching { waitReady(container, token) }
+        Socials.PublishMark.mark()
         return call("POST", "/v1.0/$userId/threads_publish", mapOf("creation_id" to container, "access_token" to token), 60_000)
             .optString("id").takeIf { it.isNotBlank() } ?: throw ThreadsException("Threads didn't publish the post")
     }
@@ -180,6 +181,7 @@ object ThreadsClient {
             // Not said to be ready in time: publishing usually works anyway; it says if not.
             if (!ready) Thread.sleep(5_000)
         }
+        Socials.PublishMark.mark()
         return call("POST", "/v1.0/$userId/threads_publish", mapOf("creation_id" to container, "access_token" to token), 60_000)
             .optString("id").takeIf { it.isNotBlank() } ?: throw ThreadsException("Threads didn't publish the post")
     }

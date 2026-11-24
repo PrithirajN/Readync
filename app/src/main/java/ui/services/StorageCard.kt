@@ -63,7 +63,7 @@ fun StorageCard(vm: AppViewModel, onAi: () -> Unit) {
             }
             row("On-device AI model", "ai", "The model the AI features run on. Usually the biggest thing here.", "Manage", onAi)()
             RowDivider()
-            row("Copies for quotes", "copies", "Books kept for the lines around your quotes (Catalogs › Copies for quotes).", "Remove all") {
+            row("Copies for quotes", "copies", "Books kept for the lines around your quotes (Discover › Catalogs › Copies for quotes).", "Remove all") {
                 scope.launch { withContext(Dispatchers.IO) { BookCopies.removeAll(context) }; said = "Removed the copies"; round++ }
             }()
             RowDivider()

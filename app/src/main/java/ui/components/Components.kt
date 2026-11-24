@@ -130,7 +130,24 @@ fun RegisteredText(text: String, style: androidx.compose.ui.text.TextStyle, modi
             translationX = (1.5f + 11f * k) * density; translationY = (1f + 7f * k) * density
             alpha = (if (c.isDark) 0.7f else 0.5f) * t.value.coerceIn(0f, 1f)
         })
-        Text(text, style = style, color = color)
+        FigureText(text, style, color)
+    }
+}
+
+/**
+ * Big figures in the display face, drawn once more as an outline over themselves: every stroke a
+ * little heavier, the hairlines most of all (at these sizes, through the grain, a 4's thin diagonal
+ * used to vanish and 43 read as 13). The outline is about 2.4% of the type size.
+ */
+@Composable
+fun FigureText(text: String, style: androidx.compose.ui.text.TextStyle, color: Color, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE) {
+    val px = with(androidx.compose.ui.platform.LocalDensity.current) { (if (style.fontSize.isSp) style.fontSize else 40.sp).toPx() }
+    Box(modifier) {
+        Text(text, style = style, color = color, maxLines = maxLines)
+        Text(
+            text, style = style.copy(drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = px * 0.024f, join = androidx.compose.ui.graphics.StrokeJoin.Round)),
+            color = color, maxLines = maxLines,
+        )
     }
 }
 
@@ -447,6 +464,7 @@ fun serviceColor(name: String): Color = when (name.lowercase().substringBefore('
     "fable" -> Color(0xFF9BC53D)
     "pagebound" -> Color(0xFFE0703B)
     "seekquel" -> Color(0xFF9A3D2A)
+    "librarything" -> Color(0xFF8B5E34)
     "readwise" -> Color(0xFFC9A227)
     "notion" -> Color(0xFF6E6E6B)
     "obsidian" -> Color(0xFF7C3AED)
@@ -479,7 +497,7 @@ fun ServiceTile(name: String, size: Dp = 36.dp, muted: Boolean = false) {
     // A paused service's stamp is printed faded into the paper (solid, so nothing shows through).
     val col by animateColorAsState(if (muted) androidx.compose.ui.graphics.lerp(serviceColor(name), c.track, 0.7f) else serviceColor(name), Motion.medium(), label = "tile")
     val ink by animateColorAsState(if (muted) c.quiet else Color.White, Motion.medium(), label = "tileInk")
-    val shape = RoundedCornerShape(topStart = size * 0.36f, topEnd = size * 0.14f, bottomEnd = size * 0.36f, bottomStart = size * 0.14f)
+    val shape = serviceTileShape(size)
     Box(
         Modifier
             .size(size)
@@ -519,3 +537,7 @@ fun VSpace(h: Int) = Spacer(Modifier.height(h.dp))
 
 @Composable
 fun HSpace(w: Int) = Spacer(Modifier.width(w.dp))
+
+/** A service tile's cut: so a ring drawn around one (stacked tiles) follows its corners. */
+internal fun serviceTileShape(size: androidx.compose.ui.unit.Dp) =
+    RoundedCornerShape(topStart = size * 0.36f, topEnd = size * 0.14f, bottomEnd = size * 0.36f, bottomStart = size * 0.14f)

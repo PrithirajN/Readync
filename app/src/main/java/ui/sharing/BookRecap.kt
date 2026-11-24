@@ -958,7 +958,7 @@ fun BookRecapSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () ->
                             val all = list ?: return@BigButton
                             if (posting) return@BigButton
                             if (!threadsOn) {
-                                said = when (QuoteCard.postToThreads(context, all.first(), caption)) { "app" -> "Opened in Threads (connect Threads under Services to post all of them at once)"; "web" -> "Threads opened in the browser"; else -> "Couldn't open Threads" }
+                                said = when (QuoteCard.postToThreads(context, all.first(), caption)) { "app" -> "Opened in Threads (connect Threads under Sync to post all of them at once)"; "web" -> "Threads opened in the browser"; else -> "Couldn't open Threads" }
                                 return@BigButton
                             }
                             posting = true; said = null

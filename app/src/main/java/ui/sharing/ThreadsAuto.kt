@@ -7,6 +7,7 @@ import io.github.prithirajn.readync.data.Snapshot
 import io.github.prithirajn.readync.data.Store
 import io.github.prithirajn.readync.sync.Highlights
 import io.github.prithirajn.readync.sync.KoHighlightSync
+import io.github.prithirajn.readync.sync.Socials
 import io.github.prithirajn.readync.sync.ThreadsClient
 import io.github.prithirajn.readync.sync.ThreadsWorker
 import java.util.concurrent.atomic.AtomicBoolean
@@ -300,6 +301,35 @@ object ThreadsAuto {
         return when { h < 5 -> "late-night"; h < 12 -> "this morning's"; h < 17 -> "this afternoon's"; h < 21 -> "this evening's"; else -> "tonight's" }
     }
 
+    /** A card as it would go up (a style picked as a post would pick it), for looking at before it does. */
+    fun preview(context: Context, s: Snapshot, item: Highlights.Item, book: Book, many: Boolean): Bitmap {
+        val styles = stylesFor(s, book)
+        val style = (styles.filter { it.key != s.threadsLastLook }.ifEmpty { styles }).random()
+        return picture(context, s, item, book, style, noteOnCard = many)
+    }
+
+    /** The words a waiting post would go up with (a session's are worded afresh each time). */
+    fun previewText(s: Snapshot, x: Session): String =
+        credited(s, if (x.items.size == 1) postText(x.items[0], x.book, s.threadsWithNote, picture = true) else sessionText(x))
+
+    /** Highlights taken out of what's waiting: never posted to Threads (or what follows it). */
+    fun leaveOut(store: Store, ids: Collection<String>) = store.update { it.copy(threadsSeen = it.threadsSeen + ids) }
+
+    /**
+     * The waiting post holding [firstId] put up now, whatever the schedule (your daily number and
+     * quiet hours aside). Null when it went up, else why not. Blocking; network.
+     */
+    fun postNow(context: Context, store: Store, firstId: String): String? {
+        val s = store.snapshot
+        val token = s.threadsToken ?: return "Connect Threads first."
+        val x = sessions(s).firstOrNull { se -> se.items.any { it.clip.id == firstId } } ?: return "That post isn't waiting any more."
+        if (!busy.compareAndSet(false, true)) return "Threads is posting already; try again in a moment."
+        return try { postSession(context, store, x, token) } finally {
+            busy.set(false)
+            runCatching { scheduleNext(context, store.snapshot, System.currentTimeMillis() / 1000) }
+        }
+    }
+
     /** A session post's words, worded a different way each time: {n} highlights, {when} the reading, {name}{by} the book. */
     internal fun sessionText(x: Session): String {
         val name = QuoteCard.shortTitle(x.book.displayTitle)
@@ -534,7 +564,7 @@ object ThreadsAuto {
             null
         } catch (e: Exception) {
             val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
-            if (signIn) "Threads needs a new token: paste one under Services \u203A Threads." else (e.message ?: "Couldn't post to Threads")
+            if (signIn) "Threads needs a new token: paste one under Sync \u203A Threads." else (e.message ?: "Couldn't post to Threads")
         }
     }
 
@@ -565,7 +595,7 @@ object ThreadsAuto {
             null
         } catch (e: Exception) {
             val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
-            if (signIn) "Threads needs a new token: paste one under Services \u203A Threads." else (e.message ?: "Couldn't post to Threads")
+            if (signIn) "Threads needs a new token: paste one under Sync \u203A Threads." else (e.message ?: "Couldn't post to Threads")
         }
     }
 
@@ -578,6 +608,7 @@ object ThreadsAuto {
         val st = store.snapshot
         val ids = x.items.map { it.clip.id }
         val styles = stylesFor(st, x.book)
+        Socials.PublishMark.reset()
         return try {
             val user = st.threadsUserId ?: return "Connect Threads first."
             startCapture()
@@ -626,9 +657,16 @@ object ThreadsAuto {
             val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
             val offline = io.github.prithirajn.readync.net.Http.isOffline(e)
             val problem = when {
-                signIn -> "Threads needs a new token: paste one under Services \u203A Threads."
+                signIn -> "Threads needs a new token: paste one under Sync \u203A Threads."
                 offline -> "Couldn't reach Threads (no connection); trying again on the next check"
                 else -> e.message ?: "Couldn't post to Threads"
+            }
+            // The publish request went out: it may well be up (the answer was lost), so never again.
+            if (Socials.PublishMark.wasSent) {
+                val at = System.currentTimeMillis() / 1000
+                store.update { s -> s.copy(threadsPosted = s.threadsPosted + ids.associateWith { at }, threadsFails = s.threadsFails - ids.toSet()) }
+                store.log(null, "Threads didn't answer after posting ${ids.size} highlight${if (ids.size == 1) "" else "s"} from \u201C${x.book.displayTitle}\u201D; counted as posted so it can't go up twice (check Threads)", error = true)
+                return "Threads didn't confirm the post; check your profile"
             }
             // No connection isn't Threads saying no: the highlights wait, never counted as a failed try.
             store.update { s -> s.copy(threadsFails = if (offline) s.threadsFails else s.threadsFails + ids.associateWith { (s.threadsFails[it] ?: 0) + 1 }, threadsError = problem) }
@@ -704,6 +742,7 @@ object ThreadsAuto {
                 // A style picked at random, never the one used last.
                 val styles = stylesFor(st, book)
                 var look = (styles.filter { it.key != st.threadsLastLook }.ifEmpty { styles }).random()
+                Socials.PublishMark.reset()
                 try {
                     startCapture()
                     // Always with its picture (never the words alone).
@@ -727,9 +766,15 @@ object ThreadsAuto {
                     val signIn = (e as? ThreadsClient.ThreadsException)?.signIn == true
                     val offline = io.github.prithirajn.readync.net.Http.isOffline(e)
                     problem = when {
-                        signIn -> "Threads needs a new token: paste one under Services › Threads."
+                        signIn -> "Threads needs a new token: paste one under Sync › Threads."
                         offline -> "Couldn't reach Threads (no connection); try again in a moment"
                         else -> e.message ?: "Couldn't post to Threads"
+                    }
+                    if (Socials.PublishMark.wasSent) {
+                        // It may be up already (only the answer was lost): never posted twice.
+                        store.update { x -> x.copy(threadsPosted = x.threadsPosted + (id to System.currentTimeMillis() / 1000), threadsFails = x.threadsFails - id) }
+                        store.log(null, "Threads didn't answer after posting a highlight from “${book.displayTitle}”; counted as posted so it can't go up twice (check Threads)", error = true)
+                        break
                     }
                     store.update { x -> x.copy(threadsFails = if (offline) x.threadsFails else x.threadsFails + (id to ((x.threadsFails[id] ?: 0) + 1)), threadsError = problem) }
                     store.log(null, "Threads: ${e.message}", error = true)

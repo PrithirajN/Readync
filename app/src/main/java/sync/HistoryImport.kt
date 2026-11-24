@@ -220,11 +220,20 @@ object HistoryImport {
             val title = at(cTitle) ?: continue
             var started = day(at(cStarted), zone)
             var finished = day(at(cFinished), zone)
-            // StoryGraph's "Dates Read": "2023/01/05-2023/01/20, 2024/03/01-2024/03/09"; the last read counts.
-            at(cDates)?.split(',')?.lastOrNull()?.trim()?.let { last ->
-                val parts = last.split(Regex("\\s*[-–]\\s*(?=\\d{4})"))
-                if (started == null) started = day(parts.firstOrNull(), zone)
-                if (finished == null && parts.size > 1) finished = day(parts.last(), zone)
+            // StoryGraph's "Dates Read": "2023/01/05-2023/01/20, 2024/03/01-2024/03/09"; the last read
+            // that makes sense counts. A lone date is a finish logged without a start (crosspoint-sync
+            // 3875310); a period whose start is after its finish, or that isn't dates, is skipped.
+            at(cDates)?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.mapNotNull { period ->
+                val lone = Regex("^\\d{4}[/-]\\d{1,2}[/-]\\d{1,2}$").matches(period)
+                val parts = if (lone) listOf("", period) else period.split(Regex("\\s*[-–]\\s*(?=\\d{4})"))
+                if (!lone && parts.size != 2) return@mapNotNull null
+                val s0 = parts[0].takeIf { it.isNotBlank() }?.let { day(it, zone) ?: return@mapNotNull null }
+                val f0 = parts[1].takeIf { it.isNotBlank() }?.let { day(it, zone) ?: return@mapNotNull null }
+                if (s0 != null && f0 != null && s0 > f0) return@mapNotNull null
+                s0 to f0
+            }?.lastOrNull()?.let { (s0, f0) ->
+                if (started == null) started = s0
+                if (finished == null) finished = f0
             }
             val status = statusOf(at(cStatus)) ?: when {
                 finished != null -> ReadStatus.FINISHED
@@ -483,7 +492,8 @@ object HistoryImport {
                 document = doc,
                 title = e.title,
                 author = e.author,
-                percentage = (e.fraction ?: if (finished) 1.0 else 0.0).coerceIn(0.0, 1.0),
+                // A finished book is all read, whatever progress the tracker kept (Seekquel keeps 0 for them).
+                percentage = if (finished) 1.0 else (e.fraction ?: 0.0).coerceIn(0.0, 1.0),
                 status = e.status ?: ReadStatus.FINISHED.takeIf { finished },
                 timestamp = e.updatedAt ?: e.finishedAt ?: e.startedAt ?: nowSec,
                 coverUrl = e.coverUrl,

@@ -118,7 +118,7 @@ fun ReadingTimerSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
                     }
                     Spacer(Modifier.height(16.dp))
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text(clock, style = CpType.screenNumber.copy(fontSize = 92.sp, lineHeight = 96.sp), color = if (running) c.screenText else c.screenDim)
+                        FigureText(clock, CpType.screenNumber.copy(fontSize = 92.sp, lineHeight = 96.sp), if (running) c.screenText else c.screenDim)
                     }
                     Spacer(Modifier.height(16.dp))
                     // A segment for every five minutes of the first hour.
@@ -140,7 +140,7 @@ fun ReadingTimerSheet(vm: AppViewModel, book: Book, onClose: () -> Unit) {
                         AnimatedContent(page, transitionSpec = {
                             val up = if (targetState > initialState) 1 else -1
                             (fadeIn(tween(140)) + androidx.compose.animation.slideInVertically { it / 2 * up }) togetherWith (fadeOut(tween(100)) + androidx.compose.animation.slideOutVertically { -it / 2 * up })
-                        }, label = "page") { p -> Text("$p", style = CpType.screenNumber.copy(fontSize = 56.sp, lineHeight = 60.sp), color = c.accentText) }
+                        }, label = "page") { p -> FigureText("$p", CpType.screenNumber.copy(fontSize = 56.sp, lineHeight = 60.sp), c.accentText) }
                     }
                     Key({ page++ ; Haptics.tick(view) }, Modifier.size(84.dp, 86.dp), kind = KeyKind.SIGNAL, shape = CircleShape, label = "Next page") { Text("+", style = CpType.pageTitle, color = c.onAccent) }
                 }

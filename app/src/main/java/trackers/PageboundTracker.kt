@@ -270,6 +270,9 @@ object PageboundTracker : Tracker {
             ?: ub.obj("review")?.idString("id")?.also { idSource = "the book's user_book › review" }
             ?: reviewIdIn(ub, userBookId)?.also { idSource = "the book's user_book (other fields)" }
             ?: fromUserBook?.let { o -> reviewIdIn(o.obj("user_book") ?: o, userBookId) }?.also { idSource = "GET user_books/{uuid} (other fields)" }
+        // None on the user book (Pagebound doesn't show it there): look among your own reviews first,
+        // rather than posting a new one and being told one exists ("User book has already been taken").
+        if (existingId == null) existingId = runCatching { mine(session, link, ubKey) }.getOrNull()?.also { idSource = "your reviews list" }
         // Where each try went and what came back, for the log when none is taken.
         val tried = ArrayList<String>()
         /** The review's other ids seen (its uuid beside its number, or the reverse). */
@@ -372,7 +375,9 @@ object PageboundTracker : Tracker {
         when (v) {
             is JSONObject -> {
                 val owner = v.opt("user_book_id")?.toString()?.toLongOrNull() ?: v.obj("user_book")?.long("id")
-                if (owner == userBookId && (v.has("overall_rating") || v.has("review"))) {
+                // A review has its ratings; a reading session also carries "review" (null) and the user
+                // book's id, and was taken for the review before (its id gave 404 on every edit).
+                if (owner == userBookId && v.has("overall_rating")) {
                     (v.idString("id") ?: v.str("uuid"))?.let { return it }
                 }
                 for (k in v.keys()) findIn(v.opt(k), userBookId, depth + 1)?.let { return it }
@@ -394,6 +399,10 @@ object PageboundTracker : Tracker {
 
     /** Looks up the review already on this user book: the user book itself, then the reviews lists. */
     private fun findReview(session: Session, link: Link, ubKey: String, userBookId: Long): String? {
+        // Your own reviews, as Pagebound lists them (GET /reviews?user_id=you, ten a page): the one for this
+        // book. Its reviews carry no user book id, and the user book itself doesn't show its review, so this
+        // is where an existing one is found (checked against the live site).
+        mine(session, link, ubKey)?.let { return it }
         val paths = listOfNotNull(
             "/api/v1/user_books/${Http.enc(ubKey)}",
             "/api/v1/user_books/${Http.enc(ubKey)}/review",
@@ -414,6 +423,31 @@ object PageboundTracker : Tracker {
                 else -> null
             }
             if (id != null) return id
+        }
+        return null
+    }
+
+    /** This book's review among yours: your user id from the user book, then your reviews page by page. */
+    private fun mine(session: Session, link: Link, ubKey: String): String? {
+        val bookId = link.externalId?.toLongOrNull() ?: return null
+        // GET /user_books/{uuid} carries "user" (you), as the site's own answer showed.
+        val me = runCatching {
+            JSONObject(request(session, "GET", "/api/v1/user_books/${Http.enc(ubKey)}").body).let { o -> (o.obj("user_book") ?: o).let { ub -> ub.obj("user")?.long("id") ?: ub.long("user_id") } }
+        }.getOrNull() ?: return null
+        var page = 1
+        var pages = 1
+        while (page <= pages && page <= 60) {
+            val r = runCatching { request(session, "GET", "/api/v1/reviews?user_id=$me&page=$page") }.getOrNull() ?: return null
+            if (!r.ok) return null
+            val o = runCatching { JSONObject(r.body) }.getOrNull() ?: return null
+            pages = o.optInt("total_pages", 1)
+            val list = o.optJSONArray("reviews") ?: return null
+            for (i in 0 until list.length()) {
+                val rv = list.optJSONObject(i) ?: continue
+                val b = rv.opt("book_id")?.toString()?.toLongOrNull() ?: rv.obj("book")?.long("id")
+                if (b == bookId && rv.optLong("user_id", me) == me) return rv.idString("id") ?: rv.str("uuid")
+            }
+            page++
         }
         return null
     }

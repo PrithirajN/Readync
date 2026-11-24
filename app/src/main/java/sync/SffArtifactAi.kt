@@ -170,12 +170,14 @@ object SffArtifactAi {
         sigA: Pair<Set<String>, Set<String>>,
         b: SffFeedItem,
         sigB: Pair<Set<String>, Set<String>>,
+        baseA: String,
+        baseB: String,
     ): Boolean {
         val (entA, tokA) = sigA
         val (entB, tokB) = sigB
 
-        // 1. Exact same book title
-        if (Matcher.baseTitle(a.title) == Matcher.baseTitle(b.title) && Matcher.baseTitle(a.title).length >= 5) return true
+        // 1. Exact same book title (each headline's base worked out once, not once per comparison)
+        if (baseA == baseB && baseA.length >= 5) return true
 
         // 2. Shared specific quoted title or series or SFF anchor entity + at least 1 shared content token
         val sharedSpecificEntities = entA.intersect(entB).filter {
@@ -217,6 +219,7 @@ object SffArtifactAi {
         if (visible.isEmpty()) return emptyList()
 
         val signatures = visible.associateWith { extractSignature(it) }
+        val bases = visible.associateWith { Matcher.baseTitle(it.title) }
         val rawClusters = ArrayList<MutableList<SffFeedItem>>()
 
         for (item in visible) {
@@ -224,7 +227,7 @@ object SffArtifactAi {
             val matchCluster = rawClusters.firstOrNull { group ->
                 // Check against the cluster's lead and first 2 members
                 group.take(3).any { existing ->
-                    shouldClubTogether(item, sig, existing, signatures[existing]!!)
+                    shouldClubTogether(item, sig, existing, signatures[existing]!!, bases.getValue(item), bases.getValue(existing))
                 }
             }
             if (matchCluster != null && matchCluster.size < 8) {

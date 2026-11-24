@@ -56,8 +56,9 @@ internal fun ServicesMasthead(
     label: String,
     lastLine: String,
     running: Boolean,
-    next: List<Triple<String, String, String>>,
+    next: List<UpcomingPosts.Upcoming>,
     modifier: Modifier = Modifier,
+    onOpenPost: (UpcomingPosts.Upcoming) -> Unit = {},
 ) {
     val c = Cp.colors
     val on = lights.count { it.second > 0 }
@@ -79,13 +80,30 @@ internal fun ServicesMasthead(
         RunningBand(running)
         if (next.isNotEmpty()) {
             Text("next up", style = CpType.eyebrow, color = c.accentText, modifier = Modifier.padding(top = 20.dp, bottom = 6.dp))
-            next.forEach { (whenAt, where, what) ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
-                    Column(Modifier.width(104.dp)) {
-                        Text(whenAt, fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = c.text, maxLines = 1)
-                        Text(where, style = CpType.mono, color = c.accentText, maxLines = 1)
+            val now = System.currentTimeMillis() / 1000
+            next.forEachIndexed { k, u ->
+                // Each a slip you can open: the passage itself, a look at it, and what you can change.
+                Row(
+                    Modifier.fillMaxWidth().staggerIn(k)
+                        .bouncyClickable(RoundedCornerShape(8.dp), pressedScale = 0.985f, onClickLabel = "Open the post to ${u.where}") { onOpenPost(u) }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(Modifier.width(124.dp).padding(end = 8.dp)) {
+                        Text(UpcomingPosts.whenText(u, now), fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 15.sp, lineHeight = 18.sp, color = c.text, maxLines = 2)
+                        Text(u.where, style = CpType.mono, color = c.accentText, maxLines = 2)
                     }
-                    Text(what, style = CpType.small, color = c.textMid, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Column(Modifier.weight(1f)) {
+                        Text(u.what, style = CpType.small, color = c.textMid, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        u.snippet?.trim()?.takeIf { it.isNotBlank() }?.let { q ->
+                            Row(Modifier.padding(top = 4.dp)) {
+                                Box(Modifier.padding(top = 3.dp).width(2.dp).height(28.dp).background(c.accent.copy(alpha = 0.7f)))
+                                Spacer(Modifier.width(8.dp))
+                                Text("“" + q.removeSurrounding("“", "”") + "”", style = CpType.small.copy(fontStyle = FontStyle.Italic), color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                    Text("›", fontFamily = Display, fontSize = 22.sp, color = c.faint, modifier = Modifier.padding(start = 6.dp))
                 }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(c.text.copy(alpha = 0.1f)))
             }
@@ -103,10 +121,7 @@ private fun ServiceTag(name: String, state: Int, modifier: Modifier = Modifier) 
             .clip(shape)
             .background(if (state == 2) c.error.copy(alpha = 0.16f) else c.surface.copy(alpha = 0.8f))
             .drawBehind {
-                drawRoundRect(
-                    (if (state == 2) c.error else c.text).copy(alpha = if (state == 2) 0.7f else 0.14f),
-                    cornerRadius = CornerRadius(9.dp.toPx()), style = androidx.compose.ui.graphics.drawscope.Stroke(1.2.dp.toPx()),
-                )
+                drawShape(shape, (if (state == 2) c.error else c.text).copy(alpha = if (state == 2) 0.7f else 0.14f), stroke = 1.2.dp.toPx())
             }
             .padding(start = 9.dp, end = 11.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -141,7 +156,7 @@ private fun NeedStamp(count: Int, modifier: Modifier) {
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(count.toString(), fontFamily = Display, fontWeight = FontWeight.Black, fontSize = 26.sp, lineHeight = 26.sp, color = c.onAccent)
+        FigureText(count.toString(), CpType.screenNumber.copy(fontSize = 26.sp, lineHeight = 26.sp), c.onAccent)
         Text("need you", style = CpType.mono, color = c.onAccent)
     }
 }

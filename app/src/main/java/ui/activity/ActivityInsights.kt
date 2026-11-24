@@ -61,9 +61,8 @@ internal fun LazyListScope.activityInsights(vm: AppViewModel, state: Snapshot, d
     if (data == null) return
     // Today, this week and your streak on the device's screen, first.
     item(key = "today", contentType = "today") { DebugTimed("today") { Box(Modifier.riseIn(0)) { TodayPanel(data) } } }
-    item(key = "needs", contentType = "needs") { DebugTimed("needs") { NeedsCard(state, data.needs) } }
     // The things made from your reading: Wrapped, today's review, the shelf poster.
-    item(key = "tools", contentType = "tools") { DebugTimed("tools") { Box(Modifier.riseIn(1)) { ReadingToolsRow(vm, state, data.reviewLeft, onReviewClosed) } } }
+    item(key = "tools", contentType = "tools") { DebugTimed("tools") { androidx.compose.foundation.layout.Column(Modifier.riseIn(1)) { ReadingToolsRow(vm, state, data.reviewLeft, onReviewClosed) } } }
     // How you read (the Library already lists what you're reading).
     data.rhythm?.let { r -> item(key = "rhythm", contentType = "rhythm") { DebugTimed("rhythm") { RhythmCard(r) } } }
     item(key = "heat", contentType = "heat") { DebugTimed("heat") { HeatmapCard(state, data) } }
@@ -73,9 +72,10 @@ internal fun LazyListScope.activityInsights(vm: AppViewModel, state: Snapshot, d
 // ---- What needs you ----
 
 @Composable
-private fun NeedsCard(state: Snapshot, needs: List<Insights.Need>) {
+internal fun NeedsCard(state: Snapshot, needs: List<Insights.Need>, quietWhenEmpty: Boolean = false) {
     val c = Cp.colors
     if (needs.isEmpty()) {
+        if (quietWhenEmpty) return
         Row(
             Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp).fillMaxWidth()
                 .clip(CpShapes.card).background(c.accentTint).padding(horizontal = 14.dp, vertical = 10.dp),
@@ -98,8 +98,13 @@ private fun NeedsCard(state: Snapshot, needs: List<Insights.Need>) {
                     is Insights.Need.Source -> Quad(R.drawable.lucide_triangle_alert, "${n.name} isn't answering", n.detail, true)
                     is Insights.Need.Matches -> Quad(
                         R.drawable.lucide_search,
-                        "${n.documents.size} book${if (n.documents.size == 1) "" else "s"} need${if (n.documents.size == 1) "s" else ""} a match picked or confirmed",
-                        n.documents.take(2).mapNotNull { state.books[it]?.displayTitle }.joinToString(", ") + if (n.documents.size > 2) " and more" else "",
+                        // Which trackers want it, so you know where to look.
+                        state.links.values.filter { it.document in n.documents && (it.externalId == null || !it.confirmed) && it.source != io.github.prithirajn.readync.data.LinkSource.NONE && !io.github.prithirajn.readync.data.ownedByTracker(state.books[it.document], it.service) }
+                            .mapNotNull { Trackers.byId(it.service)?.name }.distinct().sorted().let { names ->
+                                "${n.documents.size} book${if (n.documents.size == 1) "" else "s"} need${if (n.documents.size == 1) "s" else ""} a match on " +
+                                    (if (names.size <= 2) names.joinToString(" and ") else names.dropLast(1).joinToString(", ") + " and " + names.last()).ifEmpty { "a tracker" }
+                            },
+                        io.github.prithirajn.readync.sync.Health.titles(state, n.documents),
                         false,
                     )
                     is Insights.Need.Positions -> Quad(
@@ -122,7 +127,9 @@ private fun NeedsCard(state: Snapshot, needs: List<Insights.Need>) {
                         .fillMaxWidth()
                         .bouncyClickable(RectangleShape, pressedScale = 0.99f, role = Role.Button, onClickLabel = title) {
                             when (n) {
-                                is Insights.Need.SignIn, is Insights.Need.Source -> AppActions.pending.value = AppAction.Services
+                                is Insights.Need.SignIn -> AppActions.pending.value = AppAction.Services
+                                // Straight to that source's own page in Sync, where Sign in is.
+                                is Insights.Need.Source -> AppActions.pending.value = n.page?.let { AppAction.ServicePage(it) } ?: AppAction.Services
                                 is Insights.Need.Matches -> openBook(n.documents.first())
                                 is Insights.Need.Positions -> openBook(n.documents.first())
                                 is Insights.Need.Rate -> AppActions.pending.value = AppAction.Rate(n.documents.first())

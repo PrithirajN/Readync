@@ -8,6 +8,7 @@ import io.github.prithirajn.readync.net.AuthException
 import io.github.prithirajn.readync.net.Http
 import io.github.prithirajn.readync.net.ServiceException
 import io.github.prithirajn.readync.net.SkipException
+import io.github.prithirajn.readync.net.ReviewTextNotTaken
 import io.github.prithirajn.readync.source.Clipping
 import io.github.prithirajn.readync.util.arr
 import io.github.prithirajn.readync.util.idString
@@ -32,12 +33,84 @@ import java.util.Locale
 object HardcoverTracker : Tracker {
     override val id = "hardcover"
     override val name = "Hardcover"
-    override val signInKind = SignInKind.TOKEN
+    /**
+     * Readync's own Hardcover OAuth client, for signing in with a code instead of pasting a key
+     * (device authorization, as ShelfSync 1.5.0 does). Hardcover gives each app its own client id;
+     * until Readync has one registered, this is empty and you paste a key as before.
+     */
+    const val OAUTH_CLIENT_ID = ""
+    private const val OAUTH = "https://api.hardcover.app/oauth2"
+    /** Only what Readync uses (see the change guard): the catalogue, your library and reviews, your journal. */
+    private const val OAUTH_SCOPES = "read:me read:catalog read:library read:journal write:library write:reviews"
+
+    override val signInKind = if (OAUTH_CLIENT_ID.isBlank()) SignInKind.TOKEN else SignInKind.DEVICE_CODE
+    override val pairingHelp = "Open hardcover.app/link, sign in to Hardcover, and enter this code."
+
+    private fun oauthForm(path: String, vararg fields: Pair<String, String>) = Http.request(
+        "POST", "$OAUTH/$path",
+        mapOf("Content-Type" to "application/x-www-form-urlencoded", "Accept" to "application/json"),
+        fields.joinToString("&") { (k, v) -> Http.enc(k) + "=" + Http.enc(v) },
+    )
+
+    override fun beginDeviceLink(): DeviceLink {
+        val r = oauthForm("device", "client_id" to OAUTH_CLIENT_ID, "scope" to OAUTH_SCOPES)
+        val o = jsonOrNull(r.body)
+        val code = o?.str("device_code") ?: throw ServiceException("Hardcover didn't start the sign-in" + (o?.str("error_description")?.let { ": $it" } ?: " (HTTP ${r.code})"))
+        return DeviceLink(
+            deviceCode = code,
+            userCode = o.str("user_code") ?: throw ServiceException("Hardcover gave no code"),
+            verificationUri = o.str("verification_uri_complete") ?: o.str("verification_uri") ?: "https://hardcover.app/link",
+            intervalSeconds = o.int("interval") ?: 5,
+            expiresInSeconds = o.int("expires_in") ?: 600,
+        )
+    }
+
+    override fun pollDeviceLink(deviceCode: String): DevicePoll {
+        val r = oauthForm("token", "grant_type" to "urn:ietf:params:oauth:grant-type:device_code", "device_code" to deviceCode, "client_id" to OAUTH_CLIENT_ID)
+        val o = jsonOrNull(r.body) ?: JSONObject()
+        val access = o.str("access_token")
+        if (r.ok && access != null) {
+            val data = gql(access, "query { me { id username } }", JSONObject())
+            val me = me(data) ?: return DevicePoll.Failed("Hardcover didn't say who you are")
+            val session = Session(null)
+            session.put("token", access)
+            o.str("refresh_token")?.let { session.put("refresh", it) }
+            session.put("expires", System.currentTimeMillis() / 1000 + (o.optLong("expires_in", 3600)))
+            session.put("userId", me.idString("id"))
+            return DevicePoll.Linked(SignInResult(session.encode(), me.str("username") ?: "Hardcover"))
+        }
+        return when (o.str("error")) {
+            "authorization_pending", "slow_down" -> DevicePoll.Pending
+            "access_denied" -> DevicePoll.Failed("You said no on Hardcover")
+            "expired_token" -> DevicePoll.Failed("The code ran out; start again")
+            else -> DevicePoll.Failed(o.str("error_description") ?: "Hardcover didn't finish the sign-in (HTTP ${r.code})")
+        }
+    }
+
+    /** The session's token, renewed first when it's an OAuth one about to run out. */
+    private fun accessToken(session: Session): String {
+        val token = session.data.str("token") ?: throw AuthException("Sign in to Hardcover again")
+        val refresh = session.data.str("refresh") ?: return token
+        if (session.data.optLong("expires", 0) - 60 > System.currentTimeMillis() / 1000) return token
+        val r = oauthForm("token", "grant_type" to "refresh_token", "refresh_token" to refresh, "client_id" to OAUTH_CLIENT_ID)
+        val o = jsonOrNull(r.body)
+        val access = o?.str("access_token")
+        if (access == null) {
+            if (r.code in 400..401) throw AuthException("Hardcover's sign-in ran out; sign in again")
+            throw io.github.prithirajn.readync.net.BusyException("Hardcover's sign-in couldn't be renewed (HTTP ${r.code}); will try again")
+        }
+        session.put("token", access)
+        o.str("refresh_token")?.let { session.put("refresh", it) }
+        session.put("expires", System.currentTimeMillis() / 1000 + o.optLong("expires_in", 3600))
+        return access
+    }
     override val privacy = PrivacySupport.PER_UPDATE_FLAG
     override val readsProgress = true
     override val statuses = ReadStatus.entries.toSet()
-    override val tokenHelp = "Copy your API token from hardcover.app/account/api and paste it here."
-    override val tokenUrl = "https://hardcover.app/account/api"
+    // Hardcover's keys carry scopes (keys made since August 2026). This opens its new-key form with
+    // what Readync uses already ticked, "write:reviews" included, so written reviews go too.
+    override val tokenHelp = "Make a key on Hardcover (the page opens with only what Readync needs ticked: reading the catalogue, your library, journal and profile, and writing your library and reviews), then paste it here."
+    override val tokenUrl = "https://hardcover.app/account/api/keys/new?scope=read%3Acatalog%20read%3Ajournal%20read%3Alibrary%20read%3Ame%20write%3Alibrary%20write%3Areviews"
     override val tokenPlaceholder = "Bearer eyJ…"
     override val tokenNote = "The token is stored encrypted on this phone. You can revoke it on hardcover.app any time."
     override val privacyNote =
@@ -58,9 +131,64 @@ object HardcoverTracker : Tracker {
     private val statusById = statusIds.entries.associate { (k, v) -> v to k }
 
     private fun gql(session: Session, query: String, variables: JSONObject = JSONObject()): JSONObject =
-        gql(session.data.str("token") ?: throw AuthException("Sign in to Hardcover again"), query, variables)
+        gql(accessToken(session), query, variables)
+
+    /**
+     * Your Hardcover key may allow far more than Readync needs (all scopes, say). So every change
+     * Readync sends is checked here first, and anything outside this list is never sent, whatever
+     * the key allows: your shelf entry (status, rating, review), its reads (progress and dates),
+     * and the journal quotes Readync itself posts. Nothing is deleted except a quote Readync posted
+     * and you removed; your lists, goals, follows, other reads and everything else are left alone.
+     */
+    private val ALLOWED_CHANGES = setOf(
+        "insert_user_book", "update_user_book",
+        "insert_user_book_read", "update_user_book_read",
+        "insert_reading_journal", "update_reading_journal", "delete_reading_journal",
+    )
+    /** What a shelf entry may have changed: its shelf, your stars, your review. */
+    private val ALLOWED_BOOK_FIELDS = setOf("status_id", "rating", "review_slate")
+
+    /** Set only while you add a book to Hardcover's catalogue yourself (its one extra change). */
+    private val addingBook = ThreadLocal<String?>()
+
+    /** The top-level fields a mutation asks for (its changes), in order. */
+    internal fun changesIn(query: String): List<String> {
+        val start = query.indexOf('{').takeIf { it >= 0 } ?: return emptyList()
+        val out = ArrayList<String>()
+        var depth = 0; var paren = 0; var i = start
+        while (i < query.length) {
+            val ch = query[i]
+            when {
+                ch == '{' -> depth++
+                ch == '}' -> depth--
+                ch == '(' -> paren++
+                ch == ')' -> paren--
+                depth == 1 && paren == 0 && (ch.isLetter() || ch == '_') -> {
+                    val m = Regex("[A-Za-z_][A-Za-z0-9_]*").find(query, i)!!
+                    out += m.value; i = m.range.last
+                }
+            }
+            i++
+        }
+        return out
+    }
+
+    private fun guard(query: String) {
+        if (!query.trimStart().startsWith("mutation")) return
+        for (c in changesIn(query)) {
+            val ok = c in ALLOWED_CHANGES || (c == addingBook.get())
+            if (!ok) throw ServiceException("Readync doesn't make that change on Hardcover ($c)")
+        }
+        // A shelf entry: only its shelf, stars and review.
+        Regex("update_user_book\\s*\\([^)]*object:\\s*\\{([^}]*)\\}").findAll(query).forEach { m ->
+            val keys = Regex("([a-z_]+)\\s*:").findAll(m.groupValues[1]).map { it.groupValues[1] }.toSet()
+            val extra = keys - ALLOWED_BOOK_FIELDS
+            if (extra.isNotEmpty()) throw ServiceException("Readync doesn't change ${extra.joinToString()} on Hardcover")
+        }
+    }
 
     private fun gql(token: String, query: String, variables: JSONObject): JSONObject {
+        guard(query)
         val bearer = if (token.startsWith("Bearer ")) token else "Bearer $token"
         val r = Http.retryGateway {
             Http.request(
@@ -340,6 +468,34 @@ object HardcoverTracker : Tracker {
                 !Regex("""(?i)single\s+issue""").containsMatchIn(o.str("name").orEmpty())
         }.maxByOrNull { it.arr("book_series")?.length() ?: 0 } ?: return emptyList()
         return parseSeriesBooks(best)
+    }
+
+    /** A book by an author: its Hardcover id, title, release day, cover, and its series and number when it's in one. */
+    data class AuthorBook(val id: String, val title: String, val releaseDate: Long?, val coverUrl: String?, val series: String?, val position: Double?, val readers: Int)
+
+    /**
+     * The books [name] wrote (not illustrated or translated) that come out on or after [fromDay]
+     * ("2026-11-08"): the author's next books, in a series or not. One per title, the edition the
+     * most readers have, so a book's translations and reprints don't come back as more news.
+     */
+    fun authorBooks(session: Session, name: String, fromDay: String): List<AuthorBook> {
+        // Hardcover's documented "books by author" form (books → contributions → author), which stays
+        // within its query-depth limit. The day is a plain literal, checked first.
+        val day = fromDay.takeIf { Regex("""\d{4}-\d{2}-\d{2}""").matches(it) } ?: return emptyList()
+        val q = """query (${"$"}n: String!) { books(where: {contributions: {author: {name: {_eq: ${"$"}n}}, contribution: {_is_null: true}}, release_date: {_gte: "$day"}}, order_by: {release_date: asc}, limit: 40) { id title release_date cached_image users_count book_series(limit: 1) { position series { name } } } }"""
+        val all = gql(session, q, JSONObject().put("n", name)).arr("books")?.objects().orEmpty()
+            .mapNotNull { b ->
+                val title = b.str("title") ?: return@mapNotNull null
+                val released = b.str("release_date")?.let { d -> runCatching { java.time.LocalDate.parse(d.take(10)).atTime(9, 0).atZone(java.time.ZoneId.systemDefault()).toEpochSecond() }.getOrNull() }
+                val cover = b.opt("cached_image")?.let { v -> if (v is JSONObject) v.str("url") else v.toString().takeIf { it.startsWith("http") } }
+                val bs = b.arr("book_series")?.objects()?.firstOrNull()
+                AuthorBook(b.optString("id"), title, released, cover, bs?.obj("series")?.str("name"), bs?.opt("position")?.toString()?.toDoubleOrNull(), b.optInt("users_count", 0))
+            }
+        return all.filter { !Regex("""(?i)\b(box(ed)? set|omnibus|collection|books? \d+\s*[-–]\s*\d+)\b""").containsMatchIn(it.title) }
+            .filter { io.github.prithirajn.readync.sync.Matcher.latinShare(it.title) >= 0.8 }
+            .groupBy { io.github.prithirajn.readync.sync.Matcher.baseTitle(it.title) }
+            .map { (_, eds) -> eds.maxWith(compareBy<AuthorBook>({ it.readers }, { if (it.releaseDate != null) 1 else 0 })) }
+            .sortedBy { it.releaseDate ?: Long.MAX_VALUE }
     }
 
     internal fun parseSeriesBooks(series: JSONObject): List<SeriesBook> {
@@ -715,6 +871,36 @@ object HardcoverTracker : Tracker {
 
     private fun today(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
+    /**
+     * Read again: the shelf goes back to Currently reading and a new read starts today, so progress
+     * has a read to go to. The finished read, its days and everything else stay as they are.
+     */
+    override fun startReread(session: Session, link: Link) {
+        val id = bookId(link)
+        val c = ctx(session, id)
+        val ub = c.userBook ?: return setStatus(session, link, ReadStatus.READING)
+        val ubId = ub.long("id") ?: throw ServiceException("Hardcover didn't give the shelf entry")
+        if (ub.int("status_id") != 2) {
+            val data = gql(
+                session,
+                """mutation (${"$"}id: Int!, ${"$"}s: Int!) { update_user_book(id: ${"$"}id, object: { status_id: ${"$"}s }) { error user_book { id } } }""",
+                JSONObject().put("id", ubId).put("s", 2),
+            )
+            data.obj("update_user_book")?.str("error")?.let { throw ServiceException("Hardcover: $it") }
+        }
+        // A new open read, unless one is already open (started on Hardcover itself).
+        if (c.openReads.isEmpty()) {
+            val read = JSONObject().put("started_at", today())
+            c.edition?.first?.let { read.put("edition_id", it) }
+            val data = gql(
+                session,
+                """mutation (${"$"}id: Int!, ${"$"}r: DatesReadInput!) { insert_user_book_read(user_book_id: ${"$"}id, user_book_read: ${"$"}r) { error id } }""",
+                JSONObject().put("id", ubId).put("r", read),
+            )
+            data.obj("insert_user_book_read")?.str("error")?.let { throw ServiceException("Hardcover: $it") }
+        }
+    }
+
     override fun setStatus(session: Session, link: Link, status: ReadStatus) {
         val id = bookId(link)
         val target = statusIds[status] ?: return
@@ -819,28 +1005,39 @@ object HardcoverTracker : Tracker {
             vars.put("review", slate(Markdown.toPlain(text)) ?: JSONObject.NULL)
         }
         if (fields.isEmpty()) return
-        val data = gql(
+        fun send(d: List<String>, f: List<String>, v: JSONObject) = gql(
             session,
-            "mutation (${"$"}id: Int!, ${decl.joinToString(", ")}) { update_user_book(id: ${"$"}id, object: { ${fields.joinToString(", ")} }) { error user_book { id } } }",
-            vars,
+            "mutation (${"$"}id: Int!, ${d.joinToString(", ")}) { update_user_book(id: ${"$"}id, object: { ${f.joinToString(", ")} }) { error user_book { id } } }",
+            v,
         )
+        val data = try {
+            send(decl, fields, vars)
+        } catch (e: ServiceException) {
+            // "insufficient_scope": Hardcover's API keys may not write review text. The rating still goes
+            // on its own, and the review is said plainly to need adding on Hardcover itself.
+            if (text == null || e.message?.contains("insufficient_scope") != true) throw e
+            if (rating != null) {
+                val v = JSONObject().put("id", id).put("rating", vars.opt("rating"))
+                val res = send(listOf("${"$"}rating: numeric"), listOf("rating: ${"$"}rating"), v).obj("update_user_book")
+                res?.str("error")?.let { throw ServiceException("Hardcover: $it") }
+            }
+            throw ReviewTextNotTaken(rating != null, "Your Hardcover key can't write reviews. Make a new key with \"write:reviews\" (Sync › Trackers › Hardcover › Sign in again opens the form ready) and the review goes")
+        }
         val res = data.obj("update_user_book")
         res?.str("error")?.let { throw ServiceException("Hardcover: $it") }
         if (res?.obj("user_book")?.long("id") == null) throw ServiceException("Hardcover didn't confirm the review")
     }
 
-    /** Hardcover keeps reviews as a Slate document: one paragraph per blank-line-separated block. */
-    private fun slate(text: String): JSONObject? {
+    /**
+     * Hardcover keeps reviews as Slate: a list of paragraphs, one per blank-line-separated block
+     * (the shape hardcover-mcp writes and checked against the live API).
+     */
+    private fun slate(text: String): JSONArray? {
         val paras = text.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
         if (paras.isEmpty()) return null
-        val children = JSONArray()
-        for (p in paras) {
-            children.put(
-                JSONObject().put("data", JSONObject()).put("type", "paragraph").put("object", "block")
-                    .put("children", JSONArray().put(JSONObject().put("text", p).put("object", "text")))
-            )
-        }
-        return JSONObject().put("document", JSONObject().put("object", "document").put("children", children))
+        val out = JSONArray()
+        for (p in paras) out.put(JSONObject().put("type", "p").put("children", JSONArray().put(JSONObject().put("text", p))))
+        return out
     }
 
     override fun setDates(session: Session, link: Link, started: java.time.LocalDate?, finished: java.time.LocalDate?) {
@@ -926,15 +1123,9 @@ object HardcoverTracker : Tracker {
         val total = edition.second
         // Round up, so Hardcover's own rounding shows the same percentage as CrossPoint.
         val pages = Math.ceil(percent.coerceIn(0, 100) * total / 100.0).toInt().coerceIn(0, total)
+        // Only the newest open read is written; an older duplicate (Hardcover's own auto-created
+        // read) is left as it is: Readync deletes no read.
         writeRead(session, c.openReads.firstOrNull(), c.userBook?.long("id"), edition, pages, finishedAt = null)
-        // An older duplicate open read (a race with Hardcover's own auto-created read) is removed.
-        for (dup in c.openReads.drop(1)) {
-            dup.long("id")?.let { dupId ->
-                runCatching {
-                    gql(session, """mutation (${"$"}id: Int!) { delete_user_book_read(id: ${"$"}id) { id } }""", JSONObject().put("id", dupId))
-                }
-            }
-        }
     }
 
     /** Each highlight becomes a "quote" reading-journal entry, dated when it was made. */
@@ -1030,11 +1221,15 @@ object HardcoverTracker : Tracker {
             out.firstOrNull { it.str("name") == "errors" }?.let { add("errors") }
             out.firstOrNull { it.str("name") == "error" }?.let { add("error") }
         }.ifEmpty { listOf("__typename") }
-        val res = gql(
-            session,
-            "mutation (${"$"}o: $inputName!) { ${m.str("name")}(${arg.str("name")}: ${"$"}o) { ${pick.joinToString(" ")} } }",
-            JSONObject().put("o", obj),
-        ).obj(m.str("name")!!)
+        // The one change outside the usual list, allowed only for this call, which you asked for.
+        addingBook.set(m.str("name"))
+        val res = try {
+            gql(
+                session,
+                "mutation (${"$"}o: $inputName!) { ${m.str("name")}(${arg.str("name")}: ${"$"}o) { ${pick.joinToString(" ")} } }",
+                JSONObject().put("o", obj),
+            ).obj(m.str("name")!!)
+        } finally { addingBook.remove() }
         val id = res?.obj("book")?.idString("id") ?: res?.idString("book_id") ?: res?.idString("id")
             ?: throw ServiceException("Hardcover didn't add the book" + (res?.opt("errors")?.toString()?.take(160)?.let { ": $it" } ?: res?.str("error")?.let { ": $it" } ?: ""))
         return RemoteBook(id, details.title, details.author, coverUrl = details.coverUrl, pages = details.pages, year = details.year)
@@ -1102,6 +1297,19 @@ object HardcoverTracker : Tracker {
             throw ServiceException("Hardcover didn't save the quote" + (err?.let { ": $it" } ?: ""))
         }
         return id
+    }
+
+    override val checksHighlights = true
+
+    /** The book's quotes in your Hardcover reading journal, to look a passage up in before sending it again. */
+    override fun existingHighlightTexts(session: Session, link: Link): String? {
+        val data = gql(
+            session,
+            """query (${"$"}b: Int!) { me { reading_journals(where: { book_id: { _eq: ${"$"}b }, event: { _eq: "quote" } }, limit: 1000) { entry } } }""",
+            JSONObject().put("b", bookId(link)),
+        )
+        val rows = me(data)?.arr("reading_journals")?.objects() ?: return null
+        return rows.joinToString("\n") { it.str("entry").orEmpty() }
     }
 
     /** Journal quotes can be edited: a resend replaces the quote's text (else posts a new one). */

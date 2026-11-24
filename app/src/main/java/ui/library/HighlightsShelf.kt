@@ -5,6 +5,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -104,6 +112,8 @@ fun DailyHighlightCard(
     /** Highlights waiting to be checked before sending: while there are any, the card asks for them instead. */
     toCheck: List<Highlights.Item> = emptyList(),
     onCheck: () -> Unit = {},
+    /** The "All N" way to every highlight (left out on the Highlights tab itself). */
+    showAll: Boolean = true,
 ) {
     val c = Cp.colors
     if (toCheck.isNotEmpty()) { ToCheckCard(state, toCheck, onCheck, modifier); return }
@@ -158,8 +168,8 @@ fun DailyHighlightCard(
                             )
                         }
                         HSpace(8)
-                        // Where all your highlights open (they're not a shelf tab).
-                        Row(
+                        // Where all your highlights open.
+                        if (showAll) Row(
                             Modifier
                                 .clip(CpShapes.pill)
                                 .background(c.accentTint)
@@ -236,22 +246,7 @@ fun LazyListScope.highlightShelf(
     onShare: (Highlights.Item) -> Unit,
 ) {
     if (books.size > 1) {
-        item(key = "clip-filter") {
-            Row(
-                Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilterPill("All", total, bookFilter == null) { onFilter(null) }
-                for ((doc, n) in books) {
-                    val title = state.books[doc]?.displayTitle ?: continue
-                    FilterPill(if (title.length > 26) title.take(24).trimEnd() + "\u2026" else title, n, bookFilter == doc) {
-                        onFilter(if (bookFilter == doc) null else doc)
-                    }
-                }
-            }
-        }
+        item(key = "clip-filter") { BookPicker(state, books, total, bookFilter, onFilter) }
     }
     if (shown.isEmpty()) {
         item(key = "clip-empty") {
@@ -280,26 +275,121 @@ fun LazyListScope.highlightShelf(
             item(key = "clip-book-${h.clip.document}-${h.clip.id}") {
                 val c = Cp.colors
                 val b = state.books[h.clip.document]
+                val ink = rememberBookInk(b?.coverUrl)
+                val count = books.firstOrNull { it.first == h.clip.document }?.second
+                // The book as a band of its own ink: cover, title, how many passages.
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .padding(start = 10.dp, end = 10.dp, top = 12.dp)
-                        .bouncyClickable(CpShapes.control, pressedScale = 0.98f, role = Role.Button, onClickLabel = "Open the book") { onOpenBook(h.clip.document) }
-                        .padding(6.dp),
+                        .padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 2.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(ink.copy(alpha = 0.13f))
+                        .bouncyClickable(RoundedCornerShape(14.dp), pressedScale = 0.98f, role = Role.Button, onClickLabel = "Open the book") { onOpenBook(h.clip.document) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    BookCover(b?.coverUrl, b?.displayTitle ?: "", 32.dp, 48.dp)
-                    HSpace(12)
-                    Column(Modifier.weight(1f)) {
-                        Text(b?.displayTitle ?: "", style = CpType.bodyStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        b?.author?.let { Quiet(it, maxLines = 1) }
+                    Box(Modifier.drawBehind { drawRoundRect(ink, topLeft = Offset(3.dp.toPx(), 3.dp.toPx()), size = size, cornerRadius = CornerRadius(4.dp.toPx())) }) {
+                        BookCover(b?.coverUrl, b?.displayTitle ?: "", 34.dp, 51.dp)
                     }
-                    LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(16.dp), c.faint)
+                    HSpace(14)
+                    Column(Modifier.weight(1f)) {
+                        Text(b?.displayTitle ?: "", fontFamily = io.github.prithirajn.readync.ui.theme.DisplaySmall, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            listOfNotNull(b?.author, count?.let { "$it passage${if (it == 1) "" else "s"}" }).joinToString(" · "),
+                            style = CpType.small.copy(fontStyle = FontStyle.Italic), color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(16.dp), c.quiet)
                 }
             }
         }
         item(key = "clip-${h.clip.id}") {
-            HighlightRow(h, onOpen = { onOpen(h) }, onShare = { onShare(h) })
+            HighlightRow(h, state.books[h.clip.document]?.coverUrl, onOpen = { onOpen(h) }, onShare = { onShare(h) })
+        }
+    }
+}
+
+/**
+ * Which book's highlights: one line saying what's shown, opening a grid of covers (each with its
+ * count) to pick from, instead of a long row of title pills.
+ */
+@Composable
+private fun BookPicker(state: Snapshot, books: List<Pair<String, Int>>, total: Int, bookFilter: String?, onFilter: (String?) -> Unit) {
+    val c = Cp.colors
+    var open by remember { mutableStateOf(false) }
+    val picked = bookFilter?.let { state.books[it] }
+    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 4.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(CpShapes.control)
+                .background(c.divider)
+                .bouncyClickable(CpShapes.control, pressedScale = 0.98f, role = Role.Button, onClickLabel = "Choose a book") { open = !open }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (picked != null) {
+                BookCover(picked.coverUrl, picked.displayTitle, 22.dp, 33.dp)
+                HSpace(10)
+                Column(Modifier.weight(1f)) {
+                    Text(picked.displayTitle, style = CpType.label, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${books.firstOrNull { it.first == bookFilter }?.second ?: 0} of $total highlights", style = CpType.small, color = c.quiet)
+                }
+                Box(
+                    Modifier.clip(CpShapes.pill).bouncyClickable(CpShapes.pill, pressedScale = 0.9f, role = Role.Button, onClickLabel = "Show every book") { onFilter(null); open = false }.padding(6.dp),
+                ) { LucideIcon(R.drawable.lucide_x, Modifier.size(16.dp), c.quiet) }
+            } else {
+                // The newest few covers fanned out, then what's shown.
+                Box(Modifier.size(width = (22 + 12 * (books.size.coerceAtMost(4) - 1)).dp, height = 33.dp)) {
+                    books.take(4).forEachIndexed { i, (doc, _) ->
+                        val b = state.books[doc]
+                        Box(Modifier.padding(start = (12 * i).dp)) { BookCover(b?.coverUrl, b?.displayTitle ?: "", 22.dp, 33.dp) }
+                    }
+                }
+                HSpace(10)
+                Column(Modifier.weight(1f)) {
+                    Text("All books", style = CpType.label, color = c.text)
+                    Text("$total highlights from ${books.size} books · tap to pick one", style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            HSpace(6)
+            LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(16.dp).graphicsLayer { rotationZ = if (open) -90f else 90f }, c.quiet)
+        }
+        androidx.compose.animation.AnimatedVisibility(open) {
+            // A wall of covers, four across, each with its count.
+            Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                for (row in books.chunked(4)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        for ((doc, n) in row) {
+                            val b = state.books[doc]
+                            val on = doc == bookFilter
+                            Column(
+                                Modifier.weight(1f)
+                                    .bouncyClickable(RoundedCornerShape(8.dp), pressedScale = 0.94f, role = Role.Tab, onClickLabel = b?.displayTitle ?: "Book") {
+                                        onFilter(if (on) null else doc); open = false
+                                    },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box {
+                                    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth().aspectRatio(2f / 3f)) {
+                                        BookCover(b?.coverUrl, b?.displayTitle ?: "", maxWidth, maxHeight)
+                                    }
+                                    Text(
+                                        n.toString(), style = CpType.small, color = if (on) c.onAccent else c.text,
+                                        modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).clip(CpShapes.pill)
+                                            .background(if (on) c.accent else c.page.copy(alpha = 0.85f)).padding(horizontal = 6.dp, vertical = 1.dp),
+                                    )
+                                }
+                                Text(
+                                    b?.displayTitle?.let { QuoteCard.shortTitle(it) } ?: "", style = CpType.small, color = if (on) c.accentText else c.textMid,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp),
+                                )
+                            }
+                        }
+                        repeat(4 - row.size) { Box(Modifier.weight(1f)) }
+                    }
+                }
+            }
         }
     }
 }
@@ -321,31 +411,58 @@ private fun FilterPill(label: String, count: Int, on: Boolean, onClick: () -> Un
     }
 }
 
+/**
+ * One passage, set like a pull quote: a large opening mark in the book's ink, the words in the
+ * serif at reading size, any note of yours under a thin rule, and where it is (chapter, place, day)
+ * as a quiet printed line. An edited passage keeps a filled mark.
+ */
 @Composable
-private fun HighlightRow(item: Highlights.Item, onOpen: () -> Unit, onShare: () -> Unit) {
+private fun HighlightRow(item: Highlights.Item, coverUrl: String?, onOpen: () -> Unit, onShare: () -> Unit) {
     val c = Cp.colors
+    val ink = rememberBookInk(coverUrl)
     Row(
         Modifier
             .fillMaxWidth()
             .bouncyClickable(RectangleShape, pressedScale = 0.99f, role = Role.Button, onClickLabel = "Edit highlight", onClick = onOpen)
-            .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+            .padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 10.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        Box(Modifier.size(width = 3.dp, height = 40.dp).background(if (item.edited) c.accent else c.accentRing, CpShapes.pill))
-        HSpace(12)
+        Text(
+            "\u201C", fontFamily = io.github.prithirajn.readync.ui.theme.Display, fontWeight = FontWeight.Black, fontSize = 40.sp, lineHeight = 40.sp,
+            color = if (item.edited) ink else ink.copy(alpha = 0.75f), modifier = Modifier.padding(top = 0.dp).size(width = 22.dp, height = 34.dp),
+        )
+        HSpace(8)
         Column(Modifier.weight(1f)) {
-            Text(item.clip.text, style = CpType.body.copy(fontFamily = CpType.section.fontFamily), color = c.text, maxLines = 6, overflow = TextOverflow.Ellipsis)
+            Text(
+                item.clip.text.trim().removePrefix("\u2018").removePrefix("\u201C").removeSuffix("\u2019").removeSuffix("\u201D"),
+                style = CpType.body.copy(fontFamily = CpType.section.fontFamily, fontSize = CpType.body.fontSize * 1.08f, lineHeight = CpType.body.lineHeight * 1.12f),
+                color = c.text, maxLines = 7, overflow = TextOverflow.Ellipsis,
+            )
             item.clip.note?.let {
-                VSpace(4)
-                Text("Note: $it", style = CpType.small, color = c.textMid, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                VSpace(6)
+                Row(verticalAlignment = Alignment.Top) {
+                    Box(Modifier.padding(top = 3.dp).size(width = 2.dp, height = 14.dp).background(ink.copy(alpha = 0.6f)))
+                    HSpace(8)
+                    Text(it, style = CpType.small.copy(fontStyle = FontStyle.Italic), color = c.textMid, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
             }
-            VSpace(4)
-            val where = listOfNotNull(
-                item.clip.chapter?.takeIf { it.isNotBlank() },
-                HighlightPosition.label(item.clip),
-                java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(item.clip.createdAt * 1000)),
-            ).joinToString(" · ")
-            Quiet(where, color = c.faint, maxLines = 1)
+            VSpace(6)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                item.clip.chapter?.takeIf { it.isNotBlank() }?.let { ch ->
+                    Text(
+                        ch, style = CpType.mono.copy(fontSize = 11.sp), color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false).clip(RoundedCornerShape(5.dp)).background(ink.copy(alpha = 0.14f)).padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                    HSpace(8)
+                }
+                Text(
+                    listOfNotNull(
+                        HighlightPosition.label(item.clip),
+                        java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(item.clip.createdAt * 1000)),
+                    ).joinToString(" · "),
+                    style = CpType.small, color = c.faint, maxLines = 1,
+                )
+            }
         }
         Box(
             Modifier

@@ -73,7 +73,7 @@ import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FlowSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
+internal fun FlowSheet(title: String, onClose: () -> Unit, content: @Composable () -> Unit) {
     val c = Cp.colors
     GuardedSheet(
         dragHandle = { SheetGrip() },
@@ -381,7 +381,7 @@ fun CompareSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: () -> U
             return@FlowSheet
         }
         if (list.isEmpty()) {
-            Quiet("Link a tracker under Services first.")
+            Quiet("Link a tracker under Sync first.")
             return@FlowSheet
         }
         CpCard {
@@ -585,7 +585,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
         Quiet(
             when {
                 already != null -> "You already have this highlight, so it isn't added again. Its book photos get the real page around it."
-                takers.isEmpty() -> "Turn on Send highlights for a tracker under Services to send it; it's kept here meanwhile."
+                takers.isEmpty() -> "Turn on Send highlights for a tracker under Sync to send it; it's kept here meanwhile."
                 else -> "Goes to ${takers.joinToString(", ") { it.name }} on the next sync."
             },
             color = c.faint,
@@ -637,6 +637,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
             onPageText = { studioPage = it },
             plain = io.github.prithirajn.readync.trackers.quoted(base.text) + "\n\n— " + book.displayTitle + (book.author?.let { ", $it" } ?: ""),
             onClose = { studio = null },
+            coverUrl = book.coverUrl,
         )
     }
 }
@@ -899,7 +900,7 @@ private fun HighlightCard(item: Highlights.Item, modifier: Modifier, onOpen: () 
                     item.resending.isNotEmpty() -> Chip("Sending again", color = c.accentText)
                     item.sentTo.isEmpty() -> Chip("Not sent yet", color = c.accentText)
                     else -> Row(horizontalArrangement = Arrangement.spacedBy((-5).dp)) {
-                        for (id in item.sentTo.take(6)) Box(Modifier.border(1.5.dp, c.surface, RoundedCornerShape(7.dp))) { ServiceTile(Trackers.byId(id)?.name ?: id, 20.dp) }
+                        for (id in item.sentTo.take(6)) Box(Modifier.border(1.5.dp, c.surface, serviceTileShape(20.dp))) { ServiceTile(Trackers.byId(id)?.name ?: id, 20.dp) }
                     }
                 }
             }
@@ -924,6 +925,7 @@ private fun highlightLine(item: Highlights.Item): String {
 }
 
 /** Edit a highlight's text and note, and send it again: replacing the earlier entry where the tracker allows. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item, onClose: () -> Unit) {
     val c = Cp.colors
@@ -934,6 +936,12 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
     var error by remember { mutableStateOf<String?>(null) }
     val targets = remember(state.sentClippings, state.services) { vm.resendTargets(item.clip.id) }
     val postTo = remember(state.sentClippings, state.resend, state.services) { vm.postTargets(item.clip.id) }
+    val firstTo = remember(state.sentClippings, state.resend, state.services, state.books) { vm.firstSendTargets(item.clip.id) }
+    val heldTo = remember(state.sentClippings, state.resend, state.services, state.books) { vm.heldSendTargets(item.clip.id) }
+    // Sending one highlight from a held book: the tracker picked, then its match there shown to confirm.
+    var heldPick by remember { mutableStateOf<io.github.prithirajn.readync.trackers.Tracker?>(null) }
+    var heldMatch by remember { mutableStateOf<io.github.prithirajn.readync.data.Link?>(null) }
+    var finding by remember { mutableStateOf(false) }
     val changed = text.trim() != item.clip.text || (note.trim().ifEmpty { null }) != item.clip.note
     var deleting by remember { mutableStateOf(false) }
     var alsoCrossPoint by remember { mutableStateOf(true) }
@@ -996,7 +1004,53 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
             }
         } else if (item.sentTo.isEmpty()) {
             VSpace(10)
-            Quiet("Not sent yet. It goes out as you leave it, on the next sync, to trackers with Send highlights on.", color = c.faint)
+            // What's really holding it back, rather than a promise it'll go on the next sync.
+            Quiet(remember(state.sentClippings, state.resend, state.services, state.clipChecked, state.links, state.books) { vm.whyNotSent(item.clip.id) }, color = c.faint)
+            if (heldTo.isNotEmpty()) {
+                VSpace(12)
+                Text("Or send just this highlight (the book stays unsent)", style = CpType.small, color = c.textMid)
+                VSpace(6)
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    heldTo.forEach { t ->
+                        PillButton(if (finding && heldPick == t) "Finding it…" else t.name, {
+                            if (finding) return@PillButton
+                            heldPick = t; heldMatch = null; error = null; finding = true
+                            vm.findMatchFor(t, item.clip.document) { l, e ->
+                                finding = false; heldMatch = l; if (l == null) error = e
+                                // Matched there before (and confirmed): nothing to ask, it just goes.
+                                if (l != null && l.confirmed) {
+                                    busy = true
+                                    vm.editHighlight(item.clip.id, text, note, resend = false) { e1 ->
+                                        if (e1 != null) { busy = false; error = e1 } else vm.sendHeldHighlight(t, item.clip.id) { e2 -> busy = false; if (e2 == null) onClose() else error = e2 }
+                                    }
+                                }
+                            }
+                        }, outlined = heldPick != t)
+                    }
+                }
+                val t = heldPick; val m = heldMatch
+                if (t != null && m != null) {
+                    VSpace(10)
+                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surface).padding(12.dp)) {
+                        Text("On ${t.name}: “${m.title ?: "?"}”" + (m.author?.let { " · $it" } ?: ""), style = CpType.bodyStrong, color = c.text)
+                        Quiet(if (m.confirmed) "Already matched." else "Is that the book? Sending confirms this match (nothing else of the book is sent).", color = c.faint)
+                        VSpace(8)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            PillButton("Send it to ${t.name}", {
+                                busy = true; error = null
+                                vm.editHighlight(item.clip.id, text, note, resend = false) { e ->
+                                    if (e != null) { busy = false; error = e } else vm.sendHeldHighlight(t, item.clip.id) { e2 -> busy = false; if (e2 == null) onClose() else error = e2 }
+                                }
+                            }, outlined = false)
+                            PillButton("Not this one", { heldPick = null; heldMatch = null; error = "Fix the match from the book's ${t.name} card (Change match), then send." })
+                        }
+                    }
+                }
+            }
+            if (item.clip.id !in state.clipChecked && state.checkHighlights) {
+                VSpace(6)
+                CheckChip(state, item.clip.id) { m -> vm.markHighlights(listOf(item.clip.id), m, send = true) }
+            }
         }
         error?.let { VSpace(8); Text(it, style = CpType.small, color = c.errorText) }
         VSpace(16)
@@ -1007,10 +1061,33 @@ fun EditHighlightSheet(vm: AppViewModel, state: Snapshot, item: Highlights.Item,
             }, busy = busy, enabled = text.isNotBlank())
             VSpace(8)
         }
-        BigButton(if (targets.isNotEmpty()) "Save without sending" else "Save", {
+        if (targets.isEmpty() && firstTo.isNotEmpty()) {
+            fun send(only: io.github.prithirajn.readync.trackers.Tracker?) {
+                busy = true; error = null
+                vm.editHighlight(item.clip.id, text, note, resend = false) { e ->
+                    if (e != null) { busy = false; error = e } else vm.sendFirstTime(item.clip.id, only) { e2 -> busy = false; if (e2 == null) onClose() else error = e2 }
+                }
+            }
+            if (firstTo.size > 1) {
+                // One tracker, or all of them.
+                Text("Send just this highlight to", style = CpType.small, color = c.textMid)
+                VSpace(6)
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    firstTo.forEach { t -> PillButton(t.name, { if (!busy) send(t) }, outlined = false) }
+                }
+                VSpace(10)
+            }
+            BigButton(
+                if (firstTo.size == 1) (if (changed) "Save & send to ${firstTo[0].name}" else "Send to ${firstTo[0].name}")
+                else (if (changed) "Save & send to all ${firstTo.size}" else "Send to all ${firstTo.size} trackers"),
+                { send(firstTo.singleOrNull()) }, busy = busy, enabled = text.isNotBlank(),
+            )
+            VSpace(8)
+        }
+        BigButton(if (targets.isNotEmpty() || firstTo.isNotEmpty()) "Save without sending" else "Save", {
             busy = true; error = null
             vm.editHighlight(item.clip.id, text, note, resend = false) { e -> busy = false; if (e == null) onClose() else error = e }
-        }, filled = targets.isEmpty(), busy = busy, enabled = text.isNotBlank() && changed)
+        }, filled = targets.isEmpty() && firstTo.isEmpty(), busy = busy, enabled = text.isNotBlank() && changed)
         VSpace(12)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PillButton("Share", { sharing = true }, outlined = true)

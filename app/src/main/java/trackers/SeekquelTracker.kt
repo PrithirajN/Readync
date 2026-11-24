@@ -32,6 +32,7 @@ import java.util.TimeZone
  */
 object SeekquelTracker : Tracker {
     override val id = "seekquel"
+    override val highlightsKeyedById = true
     override val name = "Seekquel"
     override val signInKind = SignInKind.DEVICE_CODE
     override val privacy = PrivacySupport.PRIVATE_ONLY

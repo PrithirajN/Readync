@@ -76,6 +76,13 @@ import io.github.prithirajn.readync.ui.theme.Cp
 import io.github.prithirajn.readync.ui.theme.CpShapes
 import io.github.prithirajn.readync.ui.theme.CpType
 
+/**
+ * When you last read [book] (unix seconds): the day you finished it for a finished book, since a
+ * later rating or a tracker touching the record isn't reading; otherwise its last update.
+ */
+fun lastReadAt(book: Book): Long =
+    book.finishedAt?.takeIf { book.status == ReadStatus.FINISHED && it > 0 } ?: book.timestamp
+
 fun ago(millis: Long): String {
     if (millis <= 0) return "never"
     val s = (System.currentTimeMillis() - millis) / 1000
@@ -198,6 +205,8 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
         },
     ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    // Pull the page down past its top to sync now (as the ribbon button does).
+    val pullSync = rememberPullToAct { if (!state.running) vm.syncNow() }
     // The Library button in the bottom bar: back to the Reading shelf at the top, from wherever you were.
     LaunchedEffect(home) {
         if (home == 0) return@LaunchedEffect
@@ -206,326 +215,338 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
         tab = ReadStatus.READING
         listState.animateScrollToItem(0)
     }
-    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp + TabBarSpace)) {
-        item {
-            TabHeader("your library", greeting()) {
-                // With an on-device model: ask about your reading.
-                if (aiReady) IconCircleButton(R.drawable.lucide_sparkles, "Ask about your reading", { asking = true }, tint = c.textMid)
-                IconCircleButton(R.drawable.lucide_search, "Search", { searching = !searching; if (!searching) query = "" }, tint = if (searching) c.accentText else c.textMid)
-                // a physical book: added from Hardcover or Seekquel, updated by photo or page.
-                IconCircleButton(R.drawable.lucide_plus, "Add a book", { addQuery = ""; adding = true }, tint = c.textMid)
-                IconCircleButton(R.drawable.ic_ribbon_sync, if (state.running) "Syncing" else "Sync now", { vm.syncNow() }, busy = state.running)
-            }
-        }
-        // Today's front page: the book you're reading now, printed big.
-        if (!searching && !clipsShelf && tab == ReadStatus.READING) {
-            currentBook(state)?.let { now ->
-                item(key = "today") {
-                    TodayEdition(state, now, Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp))
+    PullFrame(pullSync, state.running, "Pull to sync", "Let go to sync", "Syncing…") { pm ->
+        LazyColumn(pm.fillMaxSize().edgeBump().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp + TabBarSpace)) {
+            item {
+                TabHeader("your library", greeting()) {
+                    // With an on-device model: ask about your reading.
+                    if (aiReady) IconCircleButton(R.drawable.lucide_sparkles, "Ask about your reading", { asking = true }, tint = c.textMid)
+                    IconCircleButton(R.drawable.lucide_search, "Search", { searching = !searching; if (!searching) query = "" }, tint = if (searching) c.accentText else c.textMid)
+                    // a physical book: added from Hardcover or Seekquel, updated by photo or page.
+                    IconCircleButton(R.drawable.lucide_plus, "Add a book", { addQuery = ""; adding = true }, tint = c.textMid)
+                    IconCircleButton(R.drawable.ic_ribbon_sync, if (state.running) "Syncing" else "Sync now", { vm.syncNow() }, busy = state.running)
                 }
             }
-        }
-        if (searching) {
-            item(key = "search") {
-                Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem()) {
-                    Box(contentAlignment = Alignment.CenterEnd) {
-                        CpTextField(
-                            query, { query = it },
-                            if (clipsShelf) "Search highlights" else "Search your library",
-                            placeholder = if (clipsShelf) "A word, a note, a book or an author" else "Title or author",
-                        )
-                        if (query.isNotEmpty()) {
-                            Box(
-                                Modifier
-                                    .padding(top = 22.dp, end = 12.dp)
-                                    .size(28.dp)
-                                    .clip(androidx.compose.foundation.shape.CircleShape)
-                                    .clickable { query = "" },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                LucideIcon(R.drawable.lucide_x, Modifier.size(16.dp), c.quiet)
+            // Today's front page: the book you're reading now, printed big.
+            if (!searching && !clipsShelf && tab == ReadStatus.READING) {
+                currentBook(state)?.let { now ->
+                    item(key = "today") {
+                        TodayEdition(state, now, Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp))
+                    }
+                }
+            }
+            if (searching) {
+                item(key = "search") {
+                    Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem()) {
+                        Box(contentAlignment = Alignment.CenterEnd) {
+                            CpTextField(
+                                query, { query = it },
+                                if (clipsShelf) "Search highlights" else "Search your library",
+                                placeholder = if (clipsShelf) "A word, a note, a book or an author" else "Title or author",
+                            )
+                            if (query.isNotEmpty()) {
+                                Box(
+                                    Modifier
+                                        .padding(top = 22.dp, end = 12.dp)
+                                        .size(28.dp)
+                                        .clip(androidx.compose.foundation.shape.CircleShape)
+                                        .clickable { query = "" },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    LucideIcon(R.drawable.lucide_x, Modifier.size(16.dp), c.quiet)
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        toRate?.let { b ->
-            item(key = "rate-${b.document}") {
-                FinishPromptCard(
-                    b,
-                    onRate = { rating = b.document },
-                    onDismiss = { vm.dismissFinish(b.document) },
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
-                )
-            }
-        }
-        // Physical books you've started on the reader: one prompt each.
-        for ((m, cDoc) in state.handoffs) {
-            val pb = state.books[m] ?: continue
-            val rb = state.books[cDoc] ?: continue
-            item(key = "handoff-$m") {
-                HandoffCard(
-                    pb, rb,
-                    onContinue = { vm.continueOnReader(m) },
-                    onKeep = { vm.keepBothCopies(m) },
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
-                )
-            }
-        }
-        // Seekquel's position differs for these books: one prompt each.
-        val asks = state.progressAsks.entries.mapNotNull { (d, a) -> state.books[d]?.let { it to a } }
-            .sortedByDescending { it.first.timestamp }
-        for ((b, ask) in asks.take(3)) {
-            item(key = "ask-${b.document}") {
-                SeekquelProgressCard(
-                    b, ask,
-                    onUse = { vm.acceptSeekquelProgress(b.document) },
-                    onKeep = { vm.denySeekquelProgress(b.document) },
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
-                    kosyncOn = state.kosync != null,
-                    onMoveBack = { vm.moveBackProgress(b.document) },
-                    onAlways = { all -> vm.trustSource(if (all) null else b.document, ask.source) },
-                )
-            }
-        }
-        // Books that look like one another: Join or Keep apart (never joined by themselves).
-        val samePairs = io.github.prithirajn.readync.sync.SameBook.pairs(state)
-        for (m in samePairs.take(2)) {
-            item(key = "same-${m.key}") {
-                SameBookCard(
-                    m,
-                    onJoin = { vm.joinSameBook(m.keep.document, m.other.document) },
-                    onApart = { vm.keepBooksApart(m.keep.document, m.other.document) },
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
-                )
-            }
-        }
-        // Books not going to your trackers yet: one prompt, again only when more come in.
-        val waitingBooks = io.github.prithirajn.readync.sync.SameBook.waiting(state)
-        if (waitingBooks.size > state.waitingSeen) {
-            item(key = "waiting-books") {
-                WaitingBooksCard(
-                    waitingBooks,
-                    onTurnOn = { vm.turnOnWaiting() },
-                    onLater = { vm.dismissWaiting() },
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
-                )
-            }
-        }
-        // Finished books a source says you're reading again: one prompt each.
-        for ((b, ask) in state.rereadAsks.entries.mapNotNull { (d, a) -> state.books[d]?.let { it to a } }.sortedByDescending { it.second.updatedAt }.take(3)) {
-            item(key = "reread-${b.document}") {
-                RereadAskCard(
-                    b, ask,
-                    onYes = { vm.rereadYes(b.document) },
-                    onNo = { vm.rereadNo(b.document) },
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
-                )
-            }
-        }
-        // Read in KOReader, highlights not set up: offered once (until "Not now" or set up).
-        if (state.koSeenAt > 0 && !state.koNudgeOff && io.github.prithirajn.readync.sync.KoreaderDevice.highlightsMissing(state)) {
-            item(key = "ko-nudge") {
-                KoreaderNudgeCard(
-                    onSetUp = { vm.openKoHighlights() },
-                    onLater = { vm.dismissKoNudge() },
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
-                )
-            }
-        }
-        // Several waiting: answer them all at once.
-        if (asks.size >= 2) {
-            item(key = "ask-all") {
-                Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp).animateItem(), verticalAlignment = Alignment.CenterVertically) {
-                    Quiet("${asks.size} books with a different position:", Modifier.weight(1f), color = Cp.colors.faint)
-                    PillButton("Keep all", { vm.keepAllPositions() })
-                    HSpace(8)
-                    PillButton("Update all", { vm.updateAllPositions() }, outlined = false)
+            // What needs you, in one place: trackers to sign in to again, sources not answering, books
+            // needing a match (rating and positions have their own cards below), and highlights to check.
+            if (!searching) {
+                val needs = io.github.prithirajn.readync.sync.Insights.needs(state).filter {
+                    it is io.github.prithirajn.readync.sync.Insights.Need.SignIn || it is io.github.prithirajn.readync.sync.Insights.Need.Source || it is io.github.prithirajn.readync.sync.Insights.Need.Matches
+                }
+                if (needs.isNotEmpty()) item(key = "needs") { Box(Modifier.animateItem()) { NeedsCard(state, needs, quietWhenEmpty = true) } }
+                if (toCheck.isNotEmpty()) item(key = "to-check") {
+                    Row(
+                        Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).fillMaxWidth().clip(CpShapes.card).background(c.accentTint)
+                            .bouncyClickable(CpShapes.card, pressedScale = 0.98f, onClickLabel = "Check highlights") { checkingHighlights = true }
+                            .padding(horizontal = 16.dp, vertical = 12.dp).animateItem(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        LucideIcon(R.drawable.lucide_highlighter, Modifier.size(16.dp), c.accentText)
+                        HSpace(10)
+                        Text("${toCheck.size} highlight${if (toCheck.size == 1) "" else "s"} to check before ${if (toCheck.size == 1) "it goes" else "they go"} out", style = CpType.label, color = c.accentText, modifier = Modifier.weight(1f))
+                        LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(16.dp), c.accentText)
+                    }
                 }
             }
-        }
-        if (asks.size > 3) {
-            item(key = "ask-more") {
-                Quiet("${asks.size - 3} more books have a different position elsewhere; it's shown on each book.",
-                    Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp).animateItem(), color = Cp.colors.faint)
+            toRate?.let { b ->
+                item(key = "rate-${b.document}") {
+                    FinishPromptCard(
+                        b,
+                        onRate = { rating = b.document },
+                        onDismiss = { vm.dismissFinish(b.document) },
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                    )
+                }
             }
-        }
-        if (all.isNotEmpty()) {
-            item {
-                // This month only: pages read and books finished since the 1st (reading is what's open now).
-                Ledger(
-                    reading = counts[ReadStatus.READING] ?: 0,
-                    pages = pages?.let { Shelves.pagesThisMonth(state, today) },
-                    today = today,
-                    finished = Shelves.finishedThisMonth(all),
-                    month = Shelves.monthName(),
-                    streak = Shelves.streak(state, today),
-                    readToday = (today ?: 0) > 0,
-                    modifier = Modifier.padding(top = 24.dp),
-                )
+            // Physical books you've started on the reader: one prompt each.
+            for ((m, cDoc) in state.handoffs) {
+                val pb = state.books[m] ?: continue
+                val rb = state.books[cDoc] ?: continue
+                item(key = "handoff-$m") {
+                    HandoffCard(
+                        pb, rb,
+                        onContinue = { vm.continueOnReader(m) },
+                        onKeep = { vm.keepBothCopies(m) },
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                    )
+                }
             }
-            if (allClips.isNotEmpty() && !clipsShelf && !searching) {
-                item(key = "daily") {
-                    DailyHighlightCard(
-                        state, allClips,
+            // Seekquel's position differs for these books: one prompt each.
+            val asks = state.progressAsks.entries.mapNotNull { (d, a) -> state.books[d]?.let { it to a } }
+                .sortedByDescending { it.first.timestamp }
+            for ((b, ask) in asks.take(3)) {
+                item(key = "ask-${b.document}") {
+                    SeekquelProgressCard(
+                        b, ask,
+                        onUse = { vm.acceptSeekquelProgress(b.document) },
+                        onKeep = { vm.denySeekquelProgress(b.document) },
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                        kosyncOn = state.kosync != null,
+                        onMoveBack = { vm.moveBackProgress(b.document) },
+                        onAlways = { all -> vm.trustSource(if (all) null else b.document, ask.source) },
+                    )
+                }
+            }
+            // Books that look like one another: Join or Keep apart (never joined by themselves).
+            val samePairs = io.github.prithirajn.readync.sync.SameBook.pairs(state)
+            for (m in samePairs.take(2)) {
+                item(key = "same-${m.key}") {
+                    SameBookCard(
+                        m,
+                        onJoin = { vm.joinSameBook(m.keep.document, m.other.document) },
+                        onApart = { vm.keepBooksApart(m.keep.document, m.other.document) },
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                    )
+                }
+            }
+            // Books not going to your trackers yet: one prompt, again only when more come in.
+            val waitingBooks = io.github.prithirajn.readync.sync.SameBook.waiting(state)
+            if (waitingBooks.size > state.waitingSeen) {
+                item(key = "waiting-books") {
+                    WaitingBooksCard(
+                        waitingBooks,
+                        onTurnOn = { vm.turnOnWaiting() },
+                        onLater = { vm.dismissWaiting() },
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                    )
+                }
+            }
+            // Finished books a source says you're reading again: one prompt each.
+            for ((b, ask) in state.rereadAsks.entries.mapNotNull { (d, a) -> state.books[d]?.let { it to a } }.sortedByDescending { it.second.updatedAt }.take(3)) {
+                item(key = "reread-${b.document}") {
+                    RereadAskCard(
+                        b, ask,
+                        onYes = { vm.rereadYes(b.document) },
+                        onNo = { vm.rereadNo(b.document) },
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                    )
+                }
+            }
+            // Read in KOReader, highlights not set up: offered once (until "Not now" or set up).
+            if (state.koSeenAt > 0 && !state.koNudgeOff && io.github.prithirajn.readync.sync.KoreaderDevice.highlightsMissing(state)) {
+                item(key = "ko-nudge") {
+                    KoreaderNudgeCard(
+                        onSetUp = { vm.openKoHighlights() },
+                        onLater = { vm.dismissKoNudge() },
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
+                    )
+                }
+            }
+            // Several waiting: answer them all at once.
+            if (asks.size >= 2) {
+                item(key = "ask-all") {
+                    Row(Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp).animateItem(), verticalAlignment = Alignment.CenterVertically) {
+                        Quiet("${asks.size} books with a different position:", Modifier.weight(1f), color = Cp.colors.faint)
+                        PillButton("Keep all", { vm.keepAllPositions() })
+                        HSpace(8)
+                        PillButton("Update all", { vm.updateAllPositions() }, outlined = false)
+                    }
+                }
+            }
+            if (asks.size > 3) {
+                item(key = "ask-more") {
+                    Quiet("${asks.size - 3} more books have a different position elsewhere; it's shown on each book.",
+                        Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp).animateItem(), color = Cp.colors.faint)
+                }
+            }
+            if (all.isNotEmpty()) {
+                item {
+                    // This month only: pages read and books finished since the 1st (reading is what's open now).
+                    Ledger(
+                        reading = counts[ReadStatus.READING] ?: 0,
+                        pages = pages?.let { Shelves.pagesThisMonth(state, today) },
+                        today = today,
+                        finished = Shelves.finishedThisMonth(all),
+                        month = Shelves.monthName(),
+                        // Days in a row with pages read (the same count as Stats).
+                        streak = runCatching { Shelves.streak(state, today) }.getOrDefault(0),
+                        readToday = (today ?: 0) > 0,
+                        modifier = Modifier.padding(top = 24.dp),
+                    )
+                }
+            }
+            dupe?.let { d ->
+                item(key = "dupe") {
+                    Row(
+                        Modifier
+                            .padding(start = 16.dp, end = 16.dp, top = 12.dp)
+                            .fillMaxWidth()
+                            .bouncyClickable(CpShapes.card, pressedScale = 0.98f) { open = d.document }
+                            .background(c.accentTint)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        LucideIcon(R.drawable.lucide_merge, Modifier.size(16.dp), c.accentText)
+                        HSpace(10)
+                        Text(
+                            "\u201C${d.displayTitle}\u201D appears more than once. Open it and use \u22EF \u2192 Merge a duplicate to keep progress together.",
+                            style = CpType.small,
+                            color = c.accentText,
+                            modifier = Modifier.weight(1f),
+                        )
+                        HSpace(6)
+                        LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(16.dp), c.accentText)
+                    }
+                }
+            }
+            if (!anyLinked && all.isNotEmpty()) {
+                item {
+                    CpCard(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("No trackers linked yet", style = CpType.bodyStrong, color = c.text)
+                            Quiet("Link Hardcover, Goodreads, StoryGraph, Fable, Pagebound or Seekquel under Sync to start syncing.")
+                        }
+                    }
+                }
+            }
+            if (all.isEmpty()) {
+                item {
+                    Centered {
+                        if (state.running) CircularProgressIndicator(Modifier.size(24.dp), color = c.faint)
+                        else Quiet("No books yet. Read on your CrossPoint with sync turned on, then sync.")
+                    }
+                }
+            } else {
+                item {
+                    // Highlights are opened from the Highlight of the day card ("All N"), not a shelf tab.
+                    IndexHeading(
+                        if (state.running) state.syncStep?.let { "Syncing \u00B7 $it…" } ?: "Syncing…"
+                        else "${all.size} book${if (all.size == 1) "" else "s"} · synced ${ago(state.lastRun)}",
+                        grid = grid, onGrid = { grid = it },
+                    )
+                    ShelfStamps(tab, counts, highlightsOn = clipsShelf) { tab = it; clipsShelf = false }
+                }
+                if (clipsShelf) {
+                    item(key = "clip-title") {
+                        Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 4.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            LucideIcon(R.drawable.lucide_highlighter, Modifier.size(16.dp), c.accentText)
+                            HSpace(8)
+                            Text("Your highlights", style = CpType.bodyStrong, color = c.text, modifier = Modifier.weight(1f))
+                            PillButton("Back to books", { clipsShelf = false; clipBook = null })
+                        }
+                    }
+                    item(key = "clip-head") {
+                        Row(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Quiet(
+                                if (query.isNotBlank()) "${shownClips.size} match${if (shownClips.size == 1) "" else "es"}"
+                                else "${allClips.size} from ${clipBooks.size} book${if (clipBooks.size == 1) "" else "s"}",
+                                Modifier.weight(1f),
+                                color = if (query.isNotBlank()) c.accentText else c.quiet,
+                            )
+                            if (allClips.isNotEmpty()) Row(
+                                Modifier
+                                    .bouncyClickable(CpShapes.pill, pressedScale = 0.92f, role = Role.Button, onClickLabel = "Export all highlights") { exportHighlights(listContext, state, allClips) }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                LucideIcon(R.drawable.lucide_upload, Modifier.size(14.dp), c.quiet)
+                                HSpace(6)
+                                Text("Export", style = CpType.small, color = c.textMid)
+                            }
+                        }
+                    }
+                    highlightShelf(
+                        state, shownClips, clipBooks, allClips.size, clipBook, query,
+                        onFilter = { clipBook = it },
                         onOpenBook = { open = it },
                         onOpen = { editingClip = it },
                         onShare = { sharingClip = it },
-                        onSeeAll = { clipsShelf = true; clipBook = null },
-                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).animateItem(),
-                        toCheck = toCheck,
-                        onCheck = { checkingHighlights = true },
                     )
-                }
-            }
-        }
-        dupe?.let { d ->
-            item(key = "dupe") {
-                Row(
-                    Modifier
-                        .padding(start = 16.dp, end = 16.dp, top = 12.dp)
-                        .fillMaxWidth()
-                        .bouncyClickable(CpShapes.card, pressedScale = 0.98f) { open = d.document }
-                        .background(c.accentTint)
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    LucideIcon(R.drawable.lucide_merge, Modifier.size(16.dp), c.accentText)
-                    HSpace(10)
-                    Text(
-                        "\u201C${d.displayTitle}\u201D appears more than once. Open it and use \u22EF \u2192 Merge a duplicate to keep progress together.",
-                        style = CpType.small,
-                        color = c.accentText,
-                        modifier = Modifier.weight(1f),
-                    )
-                    HSpace(6)
-                    LucideIcon(R.drawable.lucide_chevron_right, Modifier.size(16.dp), c.accentText)
-                }
-            }
-        }
-        if (!anyLinked && all.isNotEmpty()) {
-            item {
-                CpCard(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("No trackers linked yet", style = CpType.bodyStrong, color = c.text)
-                        Quiet("Link Hardcover, Goodreads, StoryGraph, Fable, Pagebound or Seekquel under Services to start syncing.")
-                    }
-                }
-            }
-        }
-        if (all.isEmpty()) {
-            item {
-                Centered {
-                    if (state.running) CircularProgressIndicator(Modifier.size(24.dp), color = c.faint)
-                    else Quiet("No books yet. Read on your CrossPoint with sync turned on, then sync.")
-                }
-            }
-        } else {
-            item {
-                // Highlights are opened from the Highlight of the day card ("All N"), not a shelf tab.
-                IndexHeading(
-                    if (state.running) state.syncStep?.let { "Syncing \u00B7 $it…" } ?: "Syncing…"
-                    else "${all.size} book${if (all.size == 1) "" else "s"} · synced ${ago(state.lastRun)}",
-                    grid = grid, onGrid = { grid = it },
-                )
-                ShelfStamps(tab, counts, highlightsOn = clipsShelf) { tab = it; clipsShelf = false }
-            }
-            if (clipsShelf) {
-                item(key = "clip-title") {
-                    Row(Modifier.padding(start = 16.dp, end = 12.dp, top = 4.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        LucideIcon(R.drawable.lucide_highlighter, Modifier.size(16.dp), c.accentText)
-                        HSpace(8)
-                        Text("Your highlights", style = CpType.bodyStrong, color = c.text, modifier = Modifier.weight(1f))
-                        PillButton("Back to books", { clipsShelf = false; clipBook = null })
-                    }
-                }
-                item(key = "clip-head") {
+                } else {
+                item(key = "sort") {
+                    // Sort: one tap cycles Recent → Title → Author → Progress.
                     Row(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Quiet(
-                            if (query.isNotBlank()) "${shownClips.size} match${if (shownClips.size == 1) "" else "es"}"
-                            else "${allClips.size} from ${clipBooks.size} book${if (clipBooks.size == 1) "" else "s"}",
-                            Modifier.weight(1f),
-                            color = if (query.isNotBlank()) c.accentText else c.quiet,
-                        )
-                        if (allClips.isNotEmpty()) Row(
+                        if (query.isNotBlank()) {
+                            Quiet("${shown.size} match${if (shown.size == 1) "" else "es"} in ${tab.label}", Modifier.weight(1f), color = c.accentText)
+                        } else {
+                            Box(Modifier.weight(1f))
+                        }
+                        Row(
                             Modifier
-                                .bouncyClickable(CpShapes.pill, pressedScale = 0.92f, role = Role.Button, onClickLabel = "Export all highlights") { exportHighlights(listContext, state, allClips) }
+                                .bouncyClickable(CpShapes.pill, pressedScale = 0.92f) {
+                                    sort = Shelves.Sort.entries[(sort.ordinal + 1) % Shelves.Sort.entries.size]
+                                }
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            LucideIcon(R.drawable.lucide_upload, Modifier.size(14.dp), c.quiet)
+                            LucideIcon(R.drawable.lucide_arrow_up_down, Modifier.size(14.dp), c.quiet)
                             HSpace(6)
-                            Text("Export", style = CpType.small, color = c.textMid)
+                            Text(sort.label, style = CpType.small, color = c.textMid)
                         }
                     }
                 }
-                highlightShelf(
-                    state, shownClips, clipBooks, allClips.size, clipBook, query,
-                    onFilter = { clipBook = it },
-                    onOpenBook = { open = it },
-                    onOpen = { editingClip = it },
-                    onShare = { sharingClip = it },
-                )
-            } else {
-            item(key = "sort") {
-                // Sort: one tap cycles Recent → Title → Author → Progress.
-                Row(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (query.isNotBlank()) {
-                        Quiet("${shown.size} match${if (shown.size == 1) "" else "es"} in ${tab.label}", Modifier.weight(1f), color = c.accentText)
-                    } else {
-                        Box(Modifier.weight(1f))
-                    }
-                    Row(
-                        Modifier
-                            .bouncyClickable(CpShapes.pill, pressedScale = 0.92f) {
-                                sort = Shelves.Sort.entries[(sort.ordinal + 1) % Shelves.Sort.entries.size]
-                            }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        LucideIcon(R.drawable.lucide_arrow_up_down, Modifier.size(14.dp), c.quiet)
-                        HSpace(6)
-                        Text(sort.label, style = CpType.small, color = c.textMid)
+                if (shown.isEmpty()) {
+                    item(key = if (query.isNotBlank()) "empty-search" else "empty-${tab.name}") {
+                        if (query.isNotBlank()) {
+                            SearchEmpty(
+                                query = query,
+                                shelf = tab.label,
+                                onClear = { query = "" },
+                                modifier = Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = null, fadeOutSpec = Motion.fast()),
+                            )
+                        } else {
+                            TabEmpty(tab, Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = null, fadeOutSpec = Motion.fast()))
+                        }
                     }
                 }
-            }
-            if (shown.isEmpty()) {
-                item(key = if (query.isNotBlank()) "empty-search" else "empty-${tab.name}") {
-                    if (query.isNotBlank()) {
-                        SearchEmpty(
-                            query = query,
-                            shelf = tab.label,
-                            onClear = { query = "" },
-                            modifier = Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = null, fadeOutSpec = Motion.fast()),
-                        )
-                    } else {
-                        TabEmpty(tab, Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = null, fadeOutSpec = Motion.fast()))
+                if (grid) {
+                    items(shown.chunked(3), key = { row -> "row-" + row.first().document }) { row ->
+                        CoverRow(row, Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = Motion.springy(), fadeOutSpec = Motion.fast())) { open = it }
+                    }
+                } else {
+                    items(shown, key = { it.document }) { book ->
+                        // New books fade in, and rows glide when a sync reorders them.
+                        val originName = book.origin?.let { originLabel(it) }
+                        val where = when {
+                            ManualBooks.isManual(book) -> "physical book"
+                            originName != null -> "from $originName"
+                            else -> null
+                        }
+                        IndexRow(
+                            book,
+                            status = book.status?.label ?: "Reading",
+                            lastRead = ago(lastReadAt(book) * 1000),
+                            where = where,
+                            held = book.held,
+                            place = book.place?.takeIf { book.status != ReadStatus.FINISHED },
+                            modifier = Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = Motion.springy(), fadeOutSpec = Motion.fast()),
+                        ) { open = book.document }
                     }
                 }
-            }
-            if (grid) {
-                items(shown.chunked(3), key = { row -> "row-" + row.first().document }) { row ->
-                    CoverRow(row, Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = Motion.springy(), fadeOutSpec = Motion.fast())) { open = it }
                 }
-            } else {
-                items(shown, key = { it.document }) { book ->
-                    // New books fade in, and rows glide when a sync reorders them.
-                    val originName = book.origin?.let { originLabel(it) }
-                    val where = when {
-                        ManualBooks.isManual(book) -> "physical book"
-                        originName != null -> "from $originName"
-                        else -> null
-                    }
-                    IndexRow(
-                        book,
-                        meta = "${book.percent}% · ${book.status?.label ?: "Reading"} · ${ago(book.timestamp * 1000)}" + (where?.let { " · $it" } ?: ""),
-                        held = book.held,
-                        place = book.place?.takeIf { book.status != ReadStatus.FINISHED },
-                        modifier = Modifier.animateItem(fadeInSpec = Motion.medium(), placementSpec = Motion.springy(), fadeOutSpec = Motion.fast()),
-                    ) { open = book.document }
-                }
-            }
             }
         }
     }
@@ -778,7 +799,7 @@ private fun BookRow(book: Book, state: Snapshot, linked: List<Tracker>, modifier
                 else -> null
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AnimatedQuiet("${book.percent}% · ${book.status?.label ?: "Reading"} · ${ago(book.timestamp * 1000)}" + (where?.let { " · $it" } ?: ""), Modifier.weight(1f))
+                AnimatedQuiet("${book.percent}% · ${book.status?.label ?: "Reading"} · ${ago(lastReadAt(book) * 1000)}" + (where?.let { " · $it" } ?: ""), Modifier.weight(1f))
             }
             val targets = if (book.held) emptyList() else linked.filter { it.id != book.origin }
             if (book.held) {
@@ -1135,7 +1156,7 @@ private fun BookSheet(
                 }
                 VSpace(20)
                 if (linked.isEmpty() && !book.held) {
-                    Quiet(if (state.services.values.any { it.linked }) "Every tracker is paused under Services." else "Link a tracker under Services first.")
+                    Quiet(if (state.services.values.any { it.linked }) "Every tracker is paused under Sync." else "Link a tracker under Sync first.")
                 }
                 // Several first matches to check: confirm them together once you've looked.
                 val unconfirmed = linked.filter { t -> state.link(t.id, book.document)?.let { it.externalId != null && !it.confirmed && it.source != LinkSource.NONE } == true }
@@ -1188,6 +1209,36 @@ private fun BookSheet(
                                             } else if (history.size > 1) {
                                                 Quiet("${history.size - 1} earlier · tap to see", color = c.faint)
                                             }
+                                        }
+                                        if (open) {
+                                    // Under the sent history: this book's highlights sent here again (cleared there, a read redone).
+                                    val sentHere = remember(state.sentClippings, state.resend, t.id, book.document) { vm.sentHighlightCount(t, book.document) }
+                                    if (link?.externalId != null && link.source != LinkSource.NONE && sentHere > 0) {
+                                        var asked by remember(t.id) { mutableStateOf(false) }
+                                        var said by remember(t.id) { mutableStateOf<String?>(null) }
+                                        VSpace(6)
+                                        if (!asked) {
+                                            Text(
+                                                "Send its $sentHere highlight${if (sentHere == 1) "" else "s"} to ${t.name} again",
+                                                style = CpType.small, color = c.accentText,
+                                                modifier = Modifier.bouncyClickable(CpShapes.control, onClickLabel = "Send the highlights again") { asked = true }.padding(vertical = 6.dp),
+                                            )
+                                        } else {
+                                            Quiet(
+                                                "For when they were removed on ${t.name}. " + when {
+                                                    t.highlightsKeyedById || (t.updatesHighlights && !t.checksHighlights) -> "Each replaces its own entry there, so nothing is doubled."
+                                                    else -> "${t.name} is checked first: only the ones it doesn't have any more go, each at its own place in the book" + (if (t.id == "storygraph") ", dated the day you highlighted it" else "") + ". Ones still there are left alone."
+                                                },
+                                                color = c.textMid,
+                                            )
+                                            VSpace(6)
+                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                PillButton("Send again", { vm.resendBookHighlights(t, book.document) { r -> said = r ?: "Going with this sync"; asked = false } }, outlined = false)
+                                                PillButton("Cancel", { asked = false })
+                                            }
+                                        }
+                                        said?.let { Quiet(it, color = c.faint) }
+                                    }
                                         }
                                     }
                                 }
@@ -1512,13 +1563,12 @@ private fun BookStamp(icon: Int, label: String, modifier: Modifier = Modifier, f
             .height(66.dp)
             .graphicsLayer { scaleX = 1f - 0.05f * ink; scaleY = 1f - 0.05f * ink }
             .drawBehind {
-                if (filled) drawRoundRect(c.signalLedge, topLeft = androidx.compose.ui.geometry.Offset(2.5.dp.toPx(), 3.dp.toPx()), size = size, cornerRadius = androidx.compose.ui.geometry.CornerRadius(14.dp.toPx()))
+                if (filled) drawShape(shape, c.signalLedge, androidx.compose.ui.geometry.Offset(2.5.dp.toPx(), 3.dp.toPx()))
             }
             .clip(shape)
             .background(if (filled) c.accent else c.accentTint.copy(alpha = 0.25f + 0.75f * ink))
             .drawBehind {
-                if (!filled) drawRoundRect(c.text.copy(alpha = 0.22f * (1f - ink)), cornerRadius = androidx.compose.ui.geometry.CornerRadius(14.dp.toPx()),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+                if (!filled) drawShape(shape, c.text.copy(alpha = 0.22f * (1f - ink)), stroke = 1.5.dp.toPx())
             }
             .clickable(source, indication = null, role = androidx.compose.ui.semantics.Role.Button, onClickLabel = label) { Haptics.tick(view); onClick() },
         horizontalAlignment = Alignment.CenterHorizontally,

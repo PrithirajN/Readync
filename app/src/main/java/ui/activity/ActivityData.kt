@@ -36,6 +36,8 @@ internal class ActivityData(
     val heatStart: LocalDate,
     val heat: Map<LocalDate, Int>,
     val heatLevels: List<Int>,
+    /** Every day's pages ever ("2026-08-01" → 23), for looking further back than [heat]. */
+    val allDays: Map<String, Int>,
     val year: Insights.Year,
     val issues: List<LibraryChecks.Issue>,
     val collectionLine: String,
@@ -79,13 +81,14 @@ internal class ActivityData(
                 heatStart = start,
                 heat = heat,
                 heatLevels = levels,
+                allDays = all,
                 year = Insights.year(s, today),
                 issues = runCatching { LibraryChecks.run(s) }.getOrDefault(emptyList()),
                 collectionLine = if (CollectionHooks.available) runCatching { CollectionHooks.summary(s) }.getOrDefault("") else "",
                 reviewLeft = runCatching { DailyReview.left(context, s) }.getOrDefault(0),
                 gut = gut,
-                releasesOut = s.releases.values.filter { it.isOut(now) }.sortedByDescending { it.date ?: it.seenAt },
-                releasesComing = s.releases.values.filter { !it.isOut(now) }.sortedBy { it.date ?: Long.MAX_VALUE },
+                releasesOut = s.releases.values.filter { !it.skipped && it.kind != "sff" && it.isOut(now) }.sortedByDescending { it.date ?: it.seenAt },
+                releasesComing = s.releases.values.filter { !it.skipped && it.kind != "sff" && !it.isOut(now) }.sortedBy { it.date ?: Long.MAX_VALUE },
             )
         }
     }

@@ -14,6 +14,11 @@ object ProPosts {
     fun summary(s: Snapshot, id: String): String = ""
     fun tick(context: Context, store: Store) {}
     fun upcoming(context: Context, s: Snapshot, now: Long): List<UpcomingPosts.Upcoming> = emptyList()
+    fun skip(store: Store, ref: UpcomingPosts.Ref.Pro) {}
+    fun leaveOut(store: Store, id: String) {}
+    fun postNow(context: Context, store: Store, ref: UpcomingPosts.Ref.Pro): String? = null
+    fun preview(context: Context, s: Snapshot, ref: UpcomingPosts.Ref.Pro): List<ByteArray> = emptyList()
+    fun switchedOff(s: Snapshot): List<String> = emptyList()
     @Composable
     fun Page(vm: AppViewModel, state: Snapshot, id: String) {}
 }

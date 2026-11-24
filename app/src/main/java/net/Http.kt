@@ -79,6 +79,9 @@ class BusyException(message: String, val retryAfterSec: Long? = null) : Exceptio
  */
 class SkipException(message: String) : Exception(message)
 
+/** A review whose rating went but whose written text the service won't take from an app at all. */
+class ReviewTextNotTaken(val ratingSent: Boolean, message: String) : Exception(message)
+
 /**
  * Clears a site's bot check (Amazon's WAF on Goodreads, Cloudflare on StoryGraph) as a browser
  * would: given the page, the saved cookies and the user agent, it loads the page unseen, lets the

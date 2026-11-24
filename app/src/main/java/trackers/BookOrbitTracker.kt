@@ -24,11 +24,13 @@ import org.json.JSONObject
  * kept per EPUB file there. CrossPoint books also send KOReader's exact place, which BookOrbit
  * keeps for its KOReader devices. A finished book is marked Read.
  *
- * Signed in with your BookOrbit username and password once; only the refresh token it gives (as
- * a "native" app) is kept, renewed as it's used.
+ * Signed in with a BookOrbit API key (BookOrbit 3.8+, sent as X-Api-Key: no password kept, no
+ * sign-in to renew), or with your username and password once, keeping only the refresh token it
+ * gives (as a "native" app), renewed as it's used. (After crosspoint-sync d2475d9.)
  */
 object BookOrbitTracker : Tracker {
     override val id = "bookorbit"
+    override val highlightsKeyedById = true
     override val name = "BookOrbit"
     override val signInKind = SignInKind.SERVER
     override val beta = true
@@ -45,10 +47,10 @@ object BookOrbitTracker : Tracker {
     override val bringsPositions = true
     override val serverLogin = ServerLogin(
         serverPlaceholder = "https://books.example.com",
-        userLabel = "Username",
-        secretLabel = "Password",
-        help = "Your BookOrbit server's address and your BookOrbit sign-in.",
-        keptNote = "Your password is used once to sign in. Only BookOrbit's sign-in token is kept, encrypted on this phone.",
+        userLabel = "Username (leave empty with an API key)",
+        secretLabel = "API key or password",
+        help = "Your BookOrbit server's address, then an API key (BookOrbit 3.8+: Settings › API keys) with the username left empty, or your username and password.",
+        keptNote = "An API key is kept encrypted on this phone. A password is used once to sign in; only BookOrbit's sign-in token is kept.",
     )
 
     private fun api(session: Session) = (session.data.str("server") ?: throw AuthException("Link BookOrbit again")) + "/api/v1"
@@ -64,6 +66,16 @@ object BookOrbitTracker : Tracker {
 
     override fun signInWithServer(server: String, user: String, secret: String): SignInResult {
         val b = serverBase(server)
+        if (user.isBlank()) {
+            // An API key: checked against the account it belongs to, and kept as it is.
+            val key = secret.trim()
+            val r = Http.request("GET", "$b/api/v1/auth/me", json + ("X-Api-Key" to key))
+            if (r.code == 401 || r.code == 403) throw ServiceException("BookOrbit didn't accept that API key (keys need BookOrbit 3.8 or newer)")
+            if (!r.ok) throw ServiceException("The server answered HTTP ${r.code}; is that your BookOrbit address?")
+            val me = jsonOrNull(r.body)?.str("username") ?: throw ServiceException("BookOrbit gave no account for that key")
+            val s = Session(JSONObject().put("server", b).put("key", key).put("user", me).toString())
+            return SignInResult(s.encode(), "$me @ ${b.removePrefix("https://").removePrefix("http://")} (API key)")
+        }
         val s = Session(JSONObject().put("server", b).toString())
         val body = JSONObject().put("username", user).put("password", secret).put("clientKind", "native").put("deviceLabel", "Readync")
         var r = Http.request("POST", "$b/api/v1/auth/login", json, body.toString())
@@ -84,12 +96,15 @@ object BookOrbitTracker : Tracker {
         val refresh = session.data.str("refresh") ?: throw AuthException("Sign in to BookOrbit again")
         val r = Http.request("POST", api(session) + "/auth/refresh", json, JSONObject().put("refreshToken", refresh).toString())
         if (r.code in 400..403) throw AuthException("BookOrbit's sign-in expired. Link it again.")
-        checkAnswer(r, name)
+        check(r)
         keep(session, jsonOrNull(r.body) ?: throw ServiceException("BookOrbit gave no sign-in token"))
         return session.data.str("access")!!
     }
 
     private fun call(session: Session, method: String, path: String, body: Any? = null): HttpResponse {
+        session.data.str("key")?.let { key ->
+            return Http.request(method, api(session) + path, json + ("X-Api-Key" to key), body?.toString(), timeoutMs = 30_000)
+        }
         val r = Http.request(method, api(session) + path, json + ("Authorization" to "Bearer ${token(session)}"), body?.toString(), timeoutMs = 30_000)
         if (r.code != 401) return r
         // A token cut short on the server: renewed once.
@@ -97,12 +112,24 @@ object BookOrbitTracker : Tracker {
         return Http.request(method, api(session) + path, json + ("Authorization" to "Bearer ${token(session)}"), body?.toString(), timeoutMs = 30_000)
     }
 
+    /**
+     * BookOrbit's answer checked. A 401 is the sign-in; a 403 only when BookOrbit tags it as the API
+     * key's (errorCode API_KEY…): a plain 403 is one library or book this account can't see, so it
+     * fails that book alone instead of asking you to sign in again. (crosspoint-sync 6d2ce2f.)
+     */
+    private fun check(r: HttpResponse) {
+        if (r.code == 403 && jsonOrNull(r.body)?.str("errorCode")?.startsWith("API_KEY") != true) {
+            throw ServiceException("BookOrbit: no access to this book for your account")
+        }
+        checkAnswer(r, name)
+    }
+
     /** A 404 that means the server has no such route (an older BookOrbit), not a missing book. */
     private fun noRoute(r: HttpResponse) = r.code == 404 && (jsonOrNull(r.body)?.str("message")?.startsWith("Cannot ") == true)
 
     override fun search(session: Session, title: String, author: String?): List<RemoteBook> {
         val r = call(session, "GET", "/books/search?q=${Http.enc(title.take(500))}&limit=20")
-        checkAnswer(r, name)
+        check(r)
         return (jsonArrayOrNull(r.body)?.objects() ?: emptyList()).filter { b ->
             val formats = b.arr("formats")
             formats == null || formats.length() == 0 || (0 until formats.length()).any { formats.optString(it).equals("epub", true) }
@@ -121,7 +148,7 @@ object BookOrbitTracker : Tracker {
         files.str(bookId)?.let { return it }
         val r = call(session, "GET", "/books/${Http.enc(bookId)}")
         if (r.code == 404) return null
-        checkAnswer(r, name)
+        check(r)
         val epubs = jsonOrNull(r.body)?.arr("files")?.objects()?.filter { it.str("format").equals("epub", true) && it.idString("id") != null }.orEmpty()
         val chosen = (epubs.firstOrNull { it.str("role") == "primary" } ?: epubs.firstOrNull())?.idString("id") ?: return null
         session.put("files", files.put(bookId, chosen))
@@ -134,10 +161,10 @@ object BookOrbitTracker : Tracker {
         val row: JSONObject? = if (noRoute(r)) {
             val old = call(session, "GET", "/books/files/${Http.enc(file)}/progress")
             if (old.code == 404) return null
-            checkAnswer(old, name)
+            check(old)
             jsonOrNull(old.body)
         } else {
-            checkAnswer(r, name)
+            check(r)
             jsonOrNull(r.body)?.arr("items")?.optJSONObject(0)?.let { e ->
                 JSONObject().put("percentage", e.opt("percentage")).put("updatedAt", e.opt("updatedAt")).put("textUpdatedAt", e.obj("text")?.opt("updatedAt"))
             }
@@ -148,15 +175,31 @@ object BookOrbitTracker : Tracker {
         return p to at
     }
 
+    /**
+     * The book's file and its progress. Merging duplicates in BookOrbit deletes one copy's file, so a
+     * remembered file that's gone is looked up again from the book once (crosspoint-sync 6d2ce2f).
+     */
+    private fun fileWithProgress(session: Session, link: Link): Pair<String, Pair<Double, Long>?>? {
+        val file = fileId(session, link) ?: return null
+        val first = runCatching { fileProgress(session, file) }
+        val gone = first.exceptionOrNull()?.message?.contains("404") == true
+        if (!gone) return file to first.getOrThrow()
+        val bookId = link.externalId ?: return null
+        session.put("files", (session.data.optJSONObject("files") ?: JSONObject()).apply { remove(bookId) })
+        val again = fileId(session, link) ?: return null
+        if (again == file) first.getOrThrow()
+        return again to fileProgress(session, again)
+    }
+
     override fun state(session: Session, link: Link): RemoteState {
-        val file = fileId(session, link) ?: return RemoteState(null, null)
-        val (p, _) = fileProgress(session, file) ?: return RemoteState(null, null)
+        val (_, got) = fileWithProgress(session, link) ?: return RemoteState(null, null)
+        val (p, _) = got ?: return RemoteState(null, null)
         return RemoteState(if (p >= 0.999) ReadStatus.FINISHED else ReadStatus.READING, pct(p))
     }
 
     override fun position(session: Session, link: Link): RemotePosition? {
-        val file = fileId(session, link) ?: return null
-        val (p, at) = fileProgress(session, file) ?: return null
+        val (_, got) = fileWithProgress(session, link) ?: return null
+        val (p, at) = got ?: return null
         if (at <= 0) return null
         return RemotePosition(p, p >= 0.999, at)
     }
@@ -175,7 +218,7 @@ object BookOrbitTracker : Tracker {
             exact?.let { old.put("koreaderProgress", it.first) }
             r = call(session, "POST", "/books/files/${Http.enc(file)}/progress", old)
         }
-        checkAnswer(r, name)
+        check(r)
     }
 
     override fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility) = put(session, link, percent)
@@ -202,7 +245,7 @@ object BookOrbitTracker : Tracker {
         }
         val path = "/books/${Http.enc(bookId)}/annotations"
         val listed = call(session, "GET", path)
-        checkAnswer(listed, name)
+        check(listed)
         val note = clip.note?.trim()?.takeIf { it.isNotEmpty() }
         val existing = jsonArrayOrNull(listed.body)?.objects().orEmpty()
         val same = existing.firstOrNull { it.idString("id") == previousId && previousId != null }
@@ -211,7 +254,7 @@ object BookOrbitTracker : Tracker {
         if (same != null) {
             val id = same.idString("id")
             if (id != null && (same.str("note") ?: null) != note) {
-                checkAnswer(call(session, "PATCH", "$path/${Http.enc(id)}", JSONObject().put("note", note ?: JSONObject.NULL)), name)
+                check(call(session, "PATCH", "$path/${Http.enc(id)}", JSONObject().put("note", note ?: JSONObject.NULL)))
             }
             return id
         }
@@ -219,7 +262,7 @@ object BookOrbitTracker : Tracker {
         note?.let { body.put("note", it) }
         clip.chapter?.takeIf { it.isNotBlank() }?.let { body.put("chapterTitle", it.take(500)) }
         val r = call(session, "POST", path, body)
-        checkAnswer(r, name)
+        check(r)
         return jsonOrNull(r.body)?.idString("id")
     }
 
@@ -228,7 +271,7 @@ object BookOrbitTracker : Tracker {
         when (status) {
             ReadStatus.FINISHED -> {
                 put(session, link, 100)
-                checkAnswer(call(session, "PATCH", "/books/${Http.enc(bookId)}/status", JSONObject().put("status", "read")), name)
+                check(call(session, "PATCH", "/books/${Http.enc(bookId)}/status", JSONObject().put("status", "read")))
             }
             // Reading follows from the position sent next (BookOrbit's other status names aren't known here).
             else -> Unit

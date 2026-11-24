@@ -8,19 +8,60 @@ import java.text.Normalizer
  * matches here the same way it does on the server.
  */
 object Matcher {
-    private val marks = Regex("\\p{M}+")
-    private val nonWord = Regex("[^\\p{L}\\p{N}\\s]")
     private val spaces = Regex("\\s+")
     private val subtitle = Regex("\\s*[:—-]\\s.*$")
     private val seriesSuffix = Regex("\\s*\\((?:[^)]*\\b(?:book|vol|volume|part|no)\\b[^)]*)\\)\\s*$", RegexOption.IGNORE_CASE)
 
-    /** Fold diacritics, lowercase, drop punctuation, collapse whitespace. */
+    /**
+     * Fold diacritics, lowercase, drop punctuation, collapse whitespace. Done by hand, a character
+     * at a time, not with regular expressions: it runs thousands of times a minute (the News
+     * clustering compares every pair of headlines), and Android's regex engine crashed the whole
+     * app in native code under that load (a null pointer in ICU's matcher, 12 Nov). Same result as
+     * the old `\p{M}` / `[^\p{L}\p{N}\s]` / `\s+` version.
+     */
     fun normalizeText(s: String): String {
-        var t = Normalizer.normalize(s, Normalizer.Form.NFKD)
-        t = marks.replace(t, "").lowercase()
-        t = nonWord.replace(t, " ")
-        return spaces.replace(t, " ").trim()
+        val d = Normalizer.normalize(s, Normalizer.Form.NFKD)
+        val out = StringBuilder(d.length)
+        var gap = false
+        var i = 0
+        while (i < d.length) {
+            val cp = d.codePointAt(i)
+            i += Character.charCount(cp)
+            if (isMark(cp)) continue
+            if (!isWordChar(cp)) { gap = true; continue }
+            if (gap && out.isNotEmpty()) out.append(' ')
+            gap = false
+            if (cp < 128) out.append(Character.toLowerCase(cp.toChar()))
+            else {
+                // Lowercasing can itself add a mark (İ → i + dot); the old version turned that into a space.
+                val low = String(Character.toChars(cp)).lowercase()
+                var j = 0
+                while (j < low.length) {
+                    val c2 = low.codePointAt(j); j += Character.charCount(c2)
+                    if (isWordChar(c2) && !isMark(c2)) { if (gap && out.isNotEmpty()) out.append(' '); gap = false; out.appendCodePoint(c2) } else gap = true
+                }
+            }
+        }
+        return out.toString()
     }
+
+    private fun isMark(cp: Int): Boolean = when (Character.getType(cp)) {
+        Character.NON_SPACING_MARK.toInt(), Character.ENCLOSING_MARK.toInt(), Character.COMBINING_SPACING_MARK.toInt() -> true
+        else -> false
+    }
+
+    private fun isWordChar(cp: Int): Boolean = Character.isLetter(cp) || when (Character.getType(cp)) {
+        Character.DECIMAL_DIGIT_NUMBER.toInt(), Character.LETTER_NUMBER.toInt(), Character.OTHER_NUMBER.toInt() -> true
+        else -> false
+    }
+
+    private val volumeLabel = Regex("(?i)\\b(?:volume|vol\\.?|v\\.|book|tome|part|no\\.)\\s*(?=\\d)")
+
+    /**
+     * The base title with its volume word made one: "Witch Hat Atelier, Volume 1" and "Witch Hat
+     * Atelier, Vol. 1" (one library listing the same book twice) both "witch hat atelier vol 1".
+     */
+    fun bookKey(title: String): String = baseTitle(volumeLabel.replace(title, "vol "))
 
     /** Strip a subtitle after a colon or dash, and a trailing "(Series, Book 2)". */
     fun coreTitle(title: String): String = seriesSuffix.replace(subtitle.replace(title, ""), "").trim()
@@ -92,8 +133,8 @@ object Matcher {
      * and the same author when both have one.
      */
     fun sameBook(titleA: String, authorA: String?, titleB: String, authorB: String?): Boolean {
-        val a = baseTitle(titleA)
-        val b = baseTitle(titleB)
+        val a = bookKey(titleA)
+        val b = bookKey(titleB)
         if (a.isEmpty() || b.isEmpty() || a != b) return false
         // Volume 3 of a manga isn't volume 1, though their titles match once trimmed.
         if (differentVolumes(titleA, titleB)) return false
@@ -129,7 +170,7 @@ object Matcher {
     }
 
     /** Jaccard overlap of the two strings' word sets. */
-    private fun overlap(a: String, b: String): Double {
+    internal fun overlap(a: String, b: String): Double {
         val sa = a.split(' ').filter { it.isNotEmpty() }.toSet()
         val sb = b.split(' ').filter { it.isNotEmpty() }.toSet()
         if (sa.isEmpty() || sb.isEmpty()) return 0.0

@@ -144,7 +144,7 @@ private fun RubricSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) 
     val c = Cp.colors
     var custom by remember { mutableStateOf("") }
     PlainSheet("Rating rubric", onClose) {
-        Quiet("Score books from 1 to 10 on up to eight things you choose, on each finished book's page. Its average sits beside your stars, and the Activity tab shows where the two disagree.")
+        Quiet("Score books from 1 to 10 on up to eight things you choose, on each finished book's page. Its average sits beside your stars, and the Stats tab shows where the two disagree.")
         VSpace(12)
         Text("Scoring on", style = CpType.label, color = c.text)
         VSpace(6)

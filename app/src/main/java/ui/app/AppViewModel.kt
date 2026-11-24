@@ -268,7 +268,119 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val svc = store.snapshot.service(t.id)
         // A highlight posted by hand (Fable) is still updated there when you edit it.
         svc.linked && svc.enabled && (svc.highlights || store.snapshot.clipRemote["${t.id}|$clipId"] != null) &&
-            "${t.id}|$clipId" in store.snapshot.sentClippings
+            Highlights.reallySent(store.snapshot, "${t.id}|$clipId")
+    }
+
+    /**
+     * Trackers this highlight won't go to by itself, though they take highlights and the book is
+     * matched there: one from a tracker's history, or made before Send highlights was turned on for
+     * that tracker (only newer ones go on their own). Never really sent there and not queued.
+     */
+    fun firstSendTargets(clipId: String): List<Tracker> {
+        val s = store.snapshot
+        val clip = Highlights.all(s).firstOrNull { it.clip.id == clipId }?.clip ?: return emptyList()
+        if (io.github.prithirajn.readync.sync.KoHighlightSync.isNote(clipId)) return emptyList()
+        val book = s.books[clip.document]
+        if (book?.held == true) return emptyList()
+        val origin = book?.origin?.removePrefix("history:")
+        return Trackers.all.filter { t ->
+            val k = "${t.id}|$clipId"
+            val svc = s.service(t.id)
+            t.id != origin && svc.linked && svc.enabled && svc.highlights && s.link(t.id, clip.document)?.confirmed == true &&
+                !Highlights.reallySent(s, k) && k !in s.resend &&
+                (clipId.startsWith("hist-") || k in s.sentClippings || clip.createdAt < svc.highlightsSince)
+        }
+    }
+
+    /**
+     * Trackers one highlight of a held book (from a tracker's history) can be sent to by hand: any
+     * that takes highlights, not the book's own, public-post ones with updates set to Everyone. The
+     * book itself isn't sent.
+     */
+    fun heldSendTargets(clipId: String): List<Tracker> {
+        val s = store.snapshot
+        val clip = Highlights.all(s).firstOrNull { it.clip.id == clipId }?.clip ?: return emptyList()
+        val book = s.books[clip.document] ?: return emptyList()
+        if (!book.held || io.github.prithirajn.readync.sync.KoHighlightSync.isNote(clipId)) return emptyList()
+        val origin = book.origin?.removePrefix("history:")
+        return Trackers.all.filter { t ->
+            val svc = s.service(t.id)
+            val k = "${t.id}|$clipId"
+            t.id != origin && t.highlights != io.github.prithirajn.readync.trackers.HighlightSupport.NONE && svc.linked && svc.enabled && !svc.needsReauth &&
+                (t.highlights != io.github.prithirajn.readync.trackers.HighlightSupport.PUBLIC_POST || svc.visibility == Visibility.PUBLIC || t.highlightsIgnoreVisibility) &&
+                !Highlights.reallySent(s, k) && k !in s.resend
+        }
+    }
+
+    /** The book's match on [tracker] for sending one highlight: [done] gets it (title, author, confirmed) or why not. */
+    fun findMatchFor(tracker: Tracker, document: String, done: (io.github.prithirajn.readync.data.Link?, String?) -> Unit) {
+        viewModelScope.launch {
+            val r = io { runCatching { SyncEngine(store).matchOnly(tracker, document) } }
+            done(r.getOrNull(), r.exceptionOrNull()?.message ?: if (r.getOrNull() == null) "Couldn't find the book on ${tracker.name}" else null)
+        }
+    }
+
+    /** This highlight sent to [tracker] alone, its match there confirmed; the held book itself isn't sent. */
+    fun sendHeldHighlight(tracker: Tracker, clipId: String, done: (String?) -> Unit) {
+        val doc = Highlights.all(store.snapshot).firstOrNull { it.clip.id == clipId }?.clip?.document ?: return done("Not found")
+        val k = "${tracker.id}|$clipId"
+        edit("Sending it to ${tracker.name}", done, syncAfter = true) {
+            store.snapshot.link(tracker.id, doc)?.let { if (!it.confirmed) store.putLink(it.copy(confirmed = true)) }
+            store.update { s -> s.copy(sentClippings = s.sentClippings - k, resend = s.resend + k, clipFails = s.clipFails - k) }
+        }
+    }
+
+    /** Why a never-sent highlight hasn't gone: waiting for your check, older than Send highlights, or held with its book. */
+    fun whyNotSent(clipId: String): String {
+        val s = store.snapshot
+        val clip = Highlights.all(s).firstOrNull { it.clip.id == clipId }?.clip ?: return ""
+        if (s.books[clip.document]?.held == true) return "Not sent yet. It goes with the book when you tap Send to my trackers on its page."
+        if (clipId in io.github.prithirajn.readync.sync.SpoilerCheck.waiting(s)) return "Not sent yet: Check highlights before sending is on, so it waits until you mark it Fine to send (or Spoiler)."
+        val first = firstSendTargets(clipId)
+        if (first.isNotEmpty()) {
+            val names = first.joinToString(", ") { it.name }
+            return if (clipId.startsWith("hist-")) "Not sent yet: it came from a tracker's history, so it doesn't go by itself to $names."
+            else "Not sent yet: it was made before you turned on Send highlights for $names, and only newer ones go by themselves."
+        }
+        val on = Trackers.all.filter { s.service(it.id).let { v -> v.linked && v.enabled && v.highlights } }
+        if (on.isEmpty()) return "Not sent yet: no tracker has Send highlights on (Sync › Trackers)."
+        if (on.none { s.link(it.id, clip.document)?.confirmed == true }) return "Not sent yet: the book isn't matched on ${on.joinToString(", ") { it.name }} yet."
+        return "Not sent yet. It goes out as you leave it, on the next sync, to trackers with Send highlights on."
+    }
+
+    /** Highlights made before Send highlights was turned on for [tracker] and never sent there, on matched books. */
+    fun earlierUnsent(tracker: Tracker): List<String> {
+        val s = store.snapshot
+        val svc = s.service(tracker.id)
+        if (!svc.linked || !svc.highlights) return emptyList()
+        return Highlights.all(s).map { it.clip }.filter { c ->
+            val k = "${tracker.id}|${c.id}"
+            !io.github.prithirajn.readync.sync.KoHighlightSync.isNote(c.id) && c.createdAt < svc.highlightsSince &&
+                s.books[c.document]?.let { it.held != true && it.origin?.removePrefix("history:") != tracker.id } == true &&
+                s.link(tracker.id, c.document)?.confirmed == true && !Highlights.reallySent(s, k) && k !in s.resend && k !in s.sentClippings
+        }.map { "${tracker.id}|${it.id}" }
+    }
+
+    /** Sends [earlierUnsent] to [tracker], each at its own place in its book. */
+    fun sendEarlier(tracker: Tracker) {
+        val keys = earlierUnsent(tracker)
+        if (keys.isEmpty()) return
+        edit("Sending ${keys.size} earlier highlight${if (keys.size == 1) "" else "s"} to ${tracker.name}", {}, syncAfter = true) {
+            store.update { s -> s.copy(resend = s.resend + keys, clipFails = s.clipFails - keys.toSet()) }
+        }
+    }
+
+    /** A highlight that was never sent (one from a tracker's history): sent now to [firstSendTargets]. */
+    fun sendFirstTime(clipId: String, only: Tracker? = null, done: (String?) -> Unit) {
+        val doc = Highlights.all(store.snapshot).firstOrNull { it.clip.id == clipId }?.clip?.document ?: return done("Not found")
+        if (only != null) {
+            // Just this one highlight, to just this tracker.
+            val k = "${only.id}|$clipId"
+            return edit("Sending it to ${only.name}", done, syncAfter = true) {
+                store.update { s -> s.copy(sentClippings = s.sentClippings - k, resend = s.resend + k, clipFails = s.clipFails - k) }
+            }
+        }
+        edit("Sending it to your trackers", done, syncAfter = true) { Highlights.queueNeverSent(store, doc, clipId) }
     }
 
     /** Saves your text and note; with [resend], sends it again, replacing the earlier entry where it can. */
@@ -339,15 +451,64 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Trackers this highlight can be posted to by hand: linked, taking highlights as posts others
      * see (Fable), with "Send highlights" off and this highlight not sent there yet.
      */
-    fun postTargets(clipId: String): List<Tracker> = Trackers.all.filter { t ->
-        val svc = store.snapshot.service(t.id)
-        t.highlightsIgnoreVisibility && svc.linked && svc.enabled && !svc.needsReauth && !svc.highlights &&
-            "${t.id}|$clipId" !in store.snapshot.sentClippings && "${t.id}|$clipId" !in store.snapshot.resend
+    /**
+     * Trackers with Send highlights off that this one highlight can still be posted to by hand:
+     * any that takes highlights (Pagebound, Fable, Hardcover…), the book matched there, and for
+     * ones that only post publicly, your updates there set to Everyone.
+     */
+    fun postTargets(clipId: String): List<Tracker> {
+        val s = store.snapshot
+        val doc = Highlights.all(s).firstOrNull { it.clip.id == clipId }?.clip?.document
+        if (io.github.prithirajn.readync.sync.KoHighlightSync.isNote(clipId)) return emptyList()
+        return Trackers.all.filter { t ->
+            val svc = s.service(t.id)
+            val k = "${t.id}|$clipId"
+            t.highlights != io.github.prithirajn.readync.trackers.HighlightSupport.NONE && svc.linked && svc.enabled && !svc.needsReauth && !svc.highlights &&
+                (t.highlights != io.github.prithirajn.readync.trackers.HighlightSupport.PUBLIC_POST || svc.visibility == Visibility.PUBLIC || t.highlightsIgnoreVisibility) &&
+                (doc == null || s.link(t.id, doc)?.let { it.confirmed && it.externalId != null } == true) &&
+                s.books[doc]?.origin?.removePrefix("history:") != t.id &&
+                !Highlights.reallySent(s, k) && k !in s.resend
+        }
     }
 
+    /**
+     * This book's highlights that went to [tracker] and can safely go again: ones it keeps under
+     * Readync's id, ones whose entry Readync can rewrite in place, and, where the tracker can be
+     * read back (StoryGraph, Hardcover), the rest, checked against what's there before sending.
+     * Trackers that can't do any of these (Goodreads, Micro.blog) get none, so nothing doubles.
+     */
+    private fun safeToResend(tracker: Tracker, document: String): List<String> {
+        val s = store.snapshot
+        val ids = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips)
+            .filter { it.document == document }.map { it.id }.toSet()
+        return ids.map { "${tracker.id}|$it" }.filter { k ->
+            Highlights.reallySent(s, k) && (tracker.highlightsKeyedById || tracker.checksHighlights || (tracker.updatesHighlights && s.clipRemote[k] != null))
+        }
+    }
+
+    /** How many of this book's highlights could go to [tracker] again (see [safeToResend]). */
+    fun sentHighlightCount(tracker: Tracker, document: String): Int = safeToResend(tracker, document).size
+
+    /**
+     * This book's highlights go to [tracker] again (for when they were removed there, say by redoing
+     * the read on StoryGraph): replaced in place where the tracker allows, else only the ones it
+     * doesn't have any more. Each keeps its place in the book and, on StoryGraph, its day.
+     */
+    fun resendBookHighlights(tracker: Tracker, document: String, done: (String?) -> Unit) =
+        edit("Checking ${tracker.name} and sending what's missing", done, syncAfter = true) {
+            val keys = safeToResend(tracker, document)
+            store.update { s -> s.copy(resend = s.resend + keys, clipFails = s.clipFails - keys.toSet()) }
+        }
+
     /** Posts one highlight to [tracker] now (it goes out with this sync). */
-    fun postHighlight(tracker: Tracker, clipId: String, done: (String?) -> Unit) =
-        edit("Posting to ${tracker.name}", done, syncAfter = true) { Highlights.resend(store, clipId, listOf(tracker.id)) }
+    fun postHighlight(tracker: Tracker, clipId: String, done: (String?) -> Unit) {
+        val k = "${tracker.id}|$clipId"
+        // A history highlight marked "sent" only so it wouldn't go by itself is let go of that mark first.
+        edit("Posting to ${tracker.name}", done, syncAfter = true) {
+            store.update { s -> s.copy(sentClippings = if (Highlights.reallySent(s, k)) s.sentClippings else s.sentClippings - k) }
+            Highlights.resend(store, clipId, listOf(tracker.id))
+        }
+    }
 
     /**
      * Trackers a book's highlights could still go to, with how many each hasn't had: linked and
@@ -394,8 +555,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val codes = withContext(Dispatchers.IO) { PageScanner.barcodes(getApplication(), uri) }
+                // The barcode first; else an ISBN printed as text on the photo (the copyright page, say).
                 val isbn = codes.firstNotNullOfOrNull { Isbn.fromBarcode(it) }
-                done(isbn, if (isbn == null) (if (codes.isEmpty()) "No barcode found. Get closer, with the barcode flat and lit." else "That barcode isn't a book's ISBN.") else null)
+                    ?: withContext(Dispatchers.IO) { PageScanner.read(getApplication(), uri) }.joinToString("\n") { it.text }.let { Isbn.fromText(it) }
+                done(isbn, if (isbn == null) (if (codes.isEmpty()) "No barcode or ISBN found. Get closer, with it flat and lit." else "That barcode isn't a book's ISBN, and no ISBN was written near it.") else null)
             } catch (e: Exception) {
                 done(null, e.message ?: "Couldn't read the photo")
             } finally {
@@ -575,7 +738,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val (source, entries, byAi) = historyEntries(bytes)
                     if (entries.isEmpty()) throw IllegalStateException(
                         if (aiReady()) "No books found in that file: not even the on-device AI could tell which column is the title"
-                        else "No books found in that file. If it's a CSV with unusual column names, set up the on-device AI (Services › On-device AI) and it can work them out",
+                        else "No books found in that file. If it's a CSV with unusual column names, set up the on-device AI (the gear on Sync › On-device AI) and it can work them out",
                     )
                     io.github.prithirajn.readync.sync.HistoryImport.plan(store.snapshot, source, entries).copy(columnsByAi = byAi)
                 }
@@ -1152,8 +1315,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val svc = store.snapshot.service(t.id)
         return when {
             !t.addsBooks -> "${t.name} doesn't let apps add books"
-            !svc.linked -> "Link ${t.name} under Services first"
-            svc.needsReauth -> "Sign in to ${t.name} again under Services first"
+            !svc.linked -> "Link ${t.name} under Sync first"
+            svc.needsReauth -> "Sign in to ${t.name} again under Sync first"
             else -> null
         }
     }
@@ -1556,7 +1719,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** What KOSync holds for a document ID (position, device, when), to check it's the right book before linking. */
     fun kosyncPeek(id: String, done: (io.github.prithirajn.readync.source.KosyncProgress?, String?) -> Unit) {
-        val account = store.snapshot.kosync ?: return done(null, "Add your KOSync server under Services first")
+        val account = store.snapshot.kosync ?: return done(null, "Add your KOSync server under Sync first")
         viewModelScope.launch {
             try {
                 val p = io { KosyncClient(account).progress(id.trim().lowercase()) }
@@ -1846,7 +2009,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Volumes numbered from 1 in order: the ones before are kept whole, so this one keeps its number.
         if (before.size + 1 != vn.toInt()) {
             // Gaps in what's known before it: fill them at the usual size so the numbering holds.
-            return done("Set the volumes before this one first (under Services \u2192 Manga & comics)")
+            return done("Set the volumes before this one first (under Sync \u2192 Manga & comics)")
         }
         setComicVolumes(key, ranges.map { (a, b) -> a to b }, done)
     }
@@ -2192,7 +2355,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 document, since = System.currentTimeMillis() / 1000, title = b.displayTitle, author = b.author, isbn = b.isbn, cover = b.coverUrl,
             )))
         }
-        notify(if (already) "Already tracking its price" else "Tracking its price", "On Catalogs › Deals")
+        notify(if (already) "Already tracking its price" else "Tracking its price", "On Discover › Deals")
         if (!already) checkPrice(document)
     }
 
@@ -2201,10 +2364,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * bookshop): tracked, as [io.github.prithirajn.readync.source.BookPrices.track] says. [done]
      * gets what happened, to say.
      */
+    /**
+     * A store page tracked: [done] is told as soon as the page is read and the book is tracked there
+     * (so the sheet can close); the other stores are then looked at in the background, shown on Deals
+     * while they are (ShareJobs' "price:fill:<key>").
+     */
     fun trackFromLink(url: String, target: Double?, done: (String, Boolean) -> Unit) {
         viewModelScope.launch {
-            val r = io { io.github.prithirajn.readync.source.BookPrices.track(store, url, target) }
+            val bp = io.github.prithirajn.readync.source.BookPrices
+            val r = io { bp.trackPage(store, url, target) }
             done(r.message, r.ok)
+            val key = r.document ?: return@launch
+            if (!r.ok) return@launch
+            val job = "price:fill:$key"
+            val shops = bp.shops.joinToString(", ") { it.name }
+            io.github.prithirajn.readync.sync.ShareJobs.progress(job, "Looking for “${r.title ?: "it"}” at $shops")
+            try {
+                io { runCatching { bp.lookElsewhere(store, key) } }
+                io.github.prithirajn.readync.sync.ShareJobs.lastPrice.value = r
+            } finally {
+                io.github.prithirajn.readync.sync.ShareJobs.running.value = io.github.prithirajn.readync.sync.ShareJobs.running.value - job
+            }
         }
     }
 
@@ -2215,6 +2395,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun importWishList(url: String, done: (String, Boolean) -> Unit) {
         viewModelScope.launch {
+            val newKeys = java.util.concurrent.atomic.AtomicReference<List<String>>(emptyList())
             val r = io {
                 runCatching {
                     val items = io.github.prithirajn.readync.source.BookPrices.wishList(url.trim())
@@ -2239,11 +2420,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         s.copy(priceWatch = watch)
                     }
+                    // The new ones, to look up at Bookswagon and Atlantic Books once the sheet is down.
+                    newKeys.set(store.snapshot.priceWatch.values.filter { w -> w.links.size == 1 && w.history.size <= 1 && items.any { i -> w.links["amazon"]?.contains(i.asin) == true } }.map { it.document })
                     ("Added $added book${if (added == 1) "" else "s"} from the wish list" + (if (had > 0) " ($had already tracked)" else "") +
-                        ". Bookswagon and Atlantic Books are looked up over the next syncs.") to true
+                        ". Bookswagon and Atlantic Books are being looked up now, on Deals.") to true
                 }.getOrElse { (it.message ?: "Couldn't read that list") to false }
             }
             done(r.first, r.second)
+            // Then, with the sheet down, each new book looked for at the other shops, shown on Deals.
+            val keys = newKeys.get()
+            if (keys.isEmpty()) return@launch
+            val jobs = io.github.prithirajn.readync.sync.ShareJobs
+            val all = "price:wishlist"
+            try {
+                for ((n, k) in keys.withIndex()) {
+                    jobs.progress(all, "Looking up the wish list's books at Bookswagon and Atlantic Books (${n + 1} of ${keys.size})")
+                    jobs.progress("price:fill:$k", "")
+                    try { io { runCatching { io.github.prithirajn.readync.source.BookPrices.lookElsewhere(store, k) } } }
+                    finally { jobs.running.value = jobs.running.value - "price:fill:$k" }
+                }
+            } finally {
+                jobs.running.value = jobs.running.value - all
+            }
         }
     }
 
@@ -2270,7 +2468,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Looks at the stores for this book now. [done] gets what went wrong, if nothing was found. */
     fun checkPrice(document: String, done: (String?) -> Unit = {}) {
         viewModelScope.launch {
-            io { runCatching { io.github.prithirajn.readync.source.BookPrices.refresh(store, force = document) } }
+            // Shown on Deals while it looks (the book's row, and the line at the top).
+            val jobs = io.github.prithirajn.readync.sync.ShareJobs
+            val job = "price:fill:$document"
+            val title = store.snapshot.priceWatch[document]?.title ?: store.snapshot.books[document]?.displayTitle
+            jobs.progress(job, "Looking up “${title ?: "it"}” at the shops")
+            try {
+                io { runCatching { io.github.prithirajn.readync.source.BookPrices.refresh(store, force = document) } }
+            } finally {
+                jobs.running.value = jobs.running.value - job
+            }
             done(store.snapshot.priceWatch[document]?.error)
         }
     }
@@ -2450,6 +2657,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- New & upcoming ----
 
+    /** Saves (or with null, forgets) your Metron API token, after checking Metron takes it; [done] says whether it did. */
+    fun setMetronToken(token: String?, done: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val t = token?.trim()?.ifBlank { null }
+            val ok = t == null || io { io.github.prithirajn.readync.source.UpcomingSff.metronTokenWorks(t) }
+            if (ok) io {
+                store.update { it.copy(metronToken = t, releasesChecked = it.releasesChecked - "metron:pull" - "sff:comics", extras = it.extras - "metron.refused") }
+                if (t == null) store.update { st -> st.copy(releases = st.releases.filterKeys { !it.startsWith("metron:") }) }
+            }
+            done(ok)
+        }
+    }
+
     fun setReleaseSettings(change: (io.github.prithirajn.readync.data.ReleaseSettings) -> io.github.prithirajn.readync.data.ReleaseSettings) {
         viewModelScope.launch { io { store.update { it.copy(releaseSettings = change(it.releaseSettings)) }; io.github.prithirajn.readync.sync.Releases.tidy(store) } }
     }
@@ -2466,8 +2686,71 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * When you last looked at Releases (unix seconds), and marks now: what was found after the
+     * earlier time is shown as new. Null the first time, so nothing already listed shows as new.
+     */
+    fun releasesLooked(): Long? {
+        val before = store.snapshot.extras["releases.lookedAt"]?.toLongOrNull()
+        val now = System.currentTimeMillis() / 1000
+        viewModelScope.launch { io { store.update { it.copy(extras = it.extras + ("releases.lookedAt" to now.toString())) } } }
+        return before
+    }
+
+    /** No longer marked new ("Got it", or opened); null marks every release seen. */
+    fun releaseSeen(key: String?) {
+        viewModelScope.launch {
+            io {
+                store.update { s ->
+                    val changed = s.releases.filter { (k, r) -> (key == null || k == key) && !r.seen }.mapValues { it.value.copy(seen = true) }
+                    if (changed.isEmpty()) s else s.copy(releases = s.releases + changed)
+                }
+            }
+        }
+    }
+
+    /** "Not this one": this release isn't shown (or found again); the rest of its series still is. */
+    fun skipRelease(key: String) {
+        val r = store.snapshot.releases[key] ?: return
+        viewModelScope.launch {
+            io { store.update { s -> s.releases[key]?.let { s.copy(releases = s.releases + (key to it.copy(skipped = true, seen = true))) } ?: s } }
+            notify("Not shown", "${r.title} won't show in Releases again.")
+        }
+    }
+
+    /**
+     * A release onto your Want to Read. It stays in Releases (and its day is still followed) until
+     * you start it.
+     */
+    fun wantRelease(r: io.github.prithirajn.readync.data.Release) {
+        addFromCatalog(r.title, r.author, r.coverUrl) { }
+        releaseSeen(r.key)
+    }
+
+    /** A release's price watched on Discover › Deals, looked up now. */
+    fun watchReleasePrice(r: io.github.prithirajn.readync.data.Release) {
+        viewModelScope.launch {
+            val had = store.snapshot.releases[r.key]?.priceWatch?.takeIf { it in store.snapshot.priceWatch }
+            if (had != null) { notify("Already tracking its price", "On Discover › Deals"); return@launch }
+            var key = ""
+            io { store.update { s -> io.github.prithirajn.readync.sync.Releases.watchPrice(s, r).also { key = it.second }.first } }
+            notify("Tracking its price", "On Discover › Deals")
+            io { runCatching { io.github.prithirajn.readync.source.BookPrices.refresh(store, force = key) } }
+        }
+    }
+
+    /** A Coming in SFF book filled in from Goodreads now (it's been pulled off its shelf before its turn). */
+    fun enrichRelease(key: String) {
+        val r = store.snapshot.releases[key] ?: return
+        if (r.facts?.checkedAt?.let { it > 0 } == true) return
+        viewModelScope.launch {
+            val f = io { io.github.prithirajn.readync.sync.Releases.factsFor(r) } ?: return@launch
+            io { store.update { s -> s.releases[key]?.let { s.copy(releases = s.releases + (key to it.copy(facts = f))) } ?: s } }
+        }
+    }
+
     fun unhideReleaseSeries(base: String) {
-        viewModelScope.launch { io { store.update { it.copy(releasesHidden = it.releasesHidden - base, releasesChecked = it.releasesChecked - ("series:$base")) } } }
+        viewModelScope.launch { io { store.update { it.copy(releasesHidden = it.releasesHidden - base, releasesChecked = it.releasesChecked - ("series:$base") - ("author:$base")) } } }
     }
 
     /** Looks at every series again now, instead of waiting for its daily turn. */
@@ -2803,6 +3086,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- Posts on their way (Sync › Sharing's "next up") ----
+
+    /** A coming post put up now (X: opened with it, one tap to post). [done] gets what to say. */
+    fun postUpcomingNow(ref: io.github.prithirajn.readync.ui.UpcomingPosts.Ref, done: (String) -> Unit) {
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val said = when (ref) {
+                is io.github.prithirajn.readync.ui.UpcomingPosts.Ref.X -> io.github.prithirajn.readync.sync.XQueue.open(app, java.io.File(ref.path))
+                is io.github.prithirajn.readync.ui.UpcomingPosts.Ref.Threads ->
+                    io { runCatching { ThreadsAuto.postNow(app, store, ref.ids.first()) }.getOrElse { it.message ?: "Couldn't post" } } ?: "Posted to Threads"
+                is io.github.prithirajn.readync.ui.UpcomingPosts.Ref.Pro ->
+                    io { runCatching { io.github.prithirajn.readync.ui.ProPosts.postNow(app, store, ref) }.getOrElse { it.message ?: "Couldn't post" } } ?: "Posted"
+            }
+            done(said)
+        }
+    }
+
+    /** A coming post taken out of the queue without posting. */
+    fun skipUpcoming(ref: io.github.prithirajn.readync.ui.UpcomingPosts.Ref) {
+        when (ref) {
+            is io.github.prithirajn.readync.ui.UpcomingPosts.Ref.X -> io.github.prithirajn.readync.sync.XQueue.remove(java.io.File(ref.path))
+            is io.github.prithirajn.readync.ui.UpcomingPosts.Ref.Threads -> ThreadsAuto.leaveOut(store, ref.ids)
+            is io.github.prithirajn.readync.ui.UpcomingPosts.Ref.Pro -> io.github.prithirajn.readync.ui.ProPosts.skip(store, ref)
+        }
+        // The lists that show what's coming read the store; a change there redraws them.
+        store.update { it.copy(extras = it.extras + ("posts.changed" to System.currentTimeMillis().toString())) }
+    }
+
+    /** One highlight left out of a coming post; the rest still go. */
+    fun leaveOutOfUpcoming(ref: io.github.prithirajn.readync.ui.UpcomingPosts.Ref, id: String) {
+        when (ref) {
+            is io.github.prithirajn.readync.ui.UpcomingPosts.Ref.Threads -> ThreadsAuto.leaveOut(store, listOf(id))
+            is io.github.prithirajn.readync.ui.UpcomingPosts.Ref.Pro -> io.github.prithirajn.readync.ui.ProPosts.leaveOut(store, id)
+            else -> {}
+        }
+        store.update { it.copy(extras = it.extras + ("posts.changed" to System.currentTimeMillis().toString())) }
+    }
+
+    /** New words for a post waiting for X. */
+    fun editXPost(path: String, text: String) {
+        io.github.prithirajn.readync.sync.XQueue.edit(java.io.File(path), text)
+        store.update { it.copy(extras = it.extras + ("posts.changed" to System.currentTimeMillis().toString())) }
+    }
+
     fun syncNow(quiet: Boolean = false) {
         viewModelScope.launch {
             // Told as soon as your trackers are up to date; the extras finish quietly after.
@@ -2820,12 +3147,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             val result = io {
-                SyncEngine(store).runThen { r ->
+                SyncEngine(store).runThen({ r ->
                     told = true
                     live?.cancel(); io.github.prithirajn.readync.ui.LiveUpdates.cancel(app, io.github.prithirajn.readync.ui.LiveUpdates.SYNC_ID)
                     if (!quiet) viewModelScope.launch { notify(r.message, error = r.needsAttention.isNotEmpty()) }
-                }
+                }, extras = false)
             }
+            // The extras as a background job (it survives you leaving the app; a busy app in the background doesn't).
+            runCatching { io.github.prithirajn.readync.sync.ExtrasWorker.enqueue(app) }
             live?.cancel(); io.github.prithirajn.readync.ui.LiveUpdates.cancel(app, io.github.prithirajn.readync.ui.LiveUpdates.SYNC_ID)
             if (!quiet && !told) notify(result.message, error = result.needsAttention.isNotEmpty())
             // New highlights out to Threads, when you've turned that on.
@@ -3413,7 +3742,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val result: Pair<T?, String?> = io {
                 val m = runCatching { io.github.prithirajn.readync.ai.Ai.model() }.getOrNull()
                 if (m == null) {
-                    Pair<T?, String?>(null, "Set up a model under Services → On-device AI first")
+                    Pair<T?, String?>(null, "Set up a model under Sync → On-device AI first")
                 } else {
                     val r = runCatching { block(m) }
                     val v = r.getOrNull()
@@ -3840,7 +4169,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** A held book from a tracker's history: send it to every linked tracker from now on. */
     fun sendHeld(document: String) {
         viewModelScope.launch {
-            io { SyncEngine.release(store, document) }
+            // The book's highlights from that history go too (they were held with it).
+            io { SyncEngine.release(store, document); Highlights.queueNeverSent(store, document) }
             notify("Sending to your trackers")
             syncNow(quiet = true)
         }

@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -37,6 +38,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -74,7 +76,10 @@ internal fun DeskShelf(books: List<Book>, onOpen: (String) -> Unit, modifier: Mo
             Text("also on your desk", style = CpType.eyebrow, color = c.accentText, modifier = Modifier.weight(1f))
             Text("${books.size}", style = CpType.mono, color = c.quiet)
         }
+        val desk = androidx.compose.foundation.lazy.rememberLazyListState()
+        ScrollTicks(desk)
         LazyRow(
+            state = desk,
             contentPadding = PaddingValues(start = 16.dp, end = 20.dp, top = 12.dp, bottom = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -102,6 +107,7 @@ private fun DeskBook(book: Book, tilt: Float, onClick: () -> Unit) {
                     translationY = -6.dp.toPx() * lift
                     scaleX = 1f + 0.04f * lift; scaleY = 1f + 0.04f * lift
                 }
+                .liftable(maxTilt = 10f, lift = 1.06f)
                 .size(108.dp, 162.dp)
                 .drawBehind { drawRoundRect(ink, topLeft = Offset(4.dp.toPx(), 5.dp.toPx()), size = size, cornerRadius = CornerRadius(6.dp.toPx())) },
         ) { BookCover(book.coverUrl, book.displayTitle, 108.dp, 162.dp) }
@@ -140,9 +146,10 @@ internal fun Ledger(
                 Column(Modifier.weight(1f)) {
                     Text(
                         if (streak <= 1) "Day one" else "$streak days running",
+                        // (the stamps show the last week; the figure is the whole run)
                         fontFamily = Display, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = c.text,
                     )
-                    if (!readToday && streak >= 1) Text("read a page today to keep it going", style = CpType.mono, color = c.quiet)
+                    if (!readToday) Text(if (streak >= 1) "read a page today to keep it going" else "read a page today to start one", style = CpType.mono, color = c.quiet)
                 }
                 Stamps(streak, readToday)
             }
@@ -287,62 +294,106 @@ internal fun ShelfStamps(
                 Modifier
                     .graphicsLayer { translationY = -2.dp.toPx() * pop }
                     .drawBehind {
-                        if (pop > 0.01f) drawRoundRect(c.signalLedge.copy(alpha = pop.coerceIn(0f, 1f)), topLeft = Offset(2.dp.toPx(), 3.dp.toPx()), size = size, cornerRadius = CornerRadius(12.dp.toPx()))
+                        if (pop > 0.01f) drawShape(shape, c.signalLedge.copy(alpha = pop.coerceIn(0f, 1f)), Offset(2.dp.toPx(), 3.dp.toPx()))
                     }
                     .clip(shape)
                     .background(fill)
-                    .then(if (!on) Modifier.drawBehind {
-                        drawRoundRect(c.text.copy(alpha = 0.22f), cornerRadius = CornerRadius(12.dp.toPx()), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
-                    } else Modifier)
+                    // Off: the same cut-cornered stamp, as a faint tint inside an even inked edge (the
+                    // edge used to be a plain rounded box clipped by this shape, so it thinned and broke
+                    // at two corners).
+                    .then(if (!on) Modifier.background(c.text.copy(alpha = 0.04f)).border(1.5.dp, c.text.copy(alpha = 0.2f), shape) else Modifier)
                     .bouncyClickable(shape, pressedScale = 0.94f, role = Role.Tab, onClickLabel = t.label) { Haptics.tick(view); onSelect(t) }
                     .padding(horizontal = 14.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(t.label.lowercase(), style = CpType.mono.copy(fontSize = 13.sp), color = fg)
-                Spacer(Modifier.width(6.dp))
-                Text((counts[t] ?: 0).toString(), fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = fg)
+                Text(if (t == ReadStatus.DNF) "dnf" else t.label.lowercase(), style = CpType.mono.copy(fontSize = 13.sp), color = fg, modifier = Modifier.alignByBaseline())
+                Spacer(Modifier.width(7.dp))
+                // The count in the big figures' face, outlined like them, so a 1 doesn't read as a
+                // Roman numeral and sits on the label's line.
+                FigureText((counts[t] ?: 0).toString(), CpType.screenSmall.copy(fontSize = 16.sp, lineHeight = 18.sp), fg, Modifier.alignByBaseline())
             }
         }
     }
 }
 
 /**
- * One book in the index: a spine of its cover's colour, the cover, the title in Bodoni, the
- * author in italics, a thin bar of progress and a printed line of where it stands. No card: rows
- * are set on the page with a fine rule between them, and lean in a touch when pressed.
+ * One book in the index, as a printed slip: a wash of the cover's own colour, the cover tilted a
+ * touch over a block of that ink (as on the book's page), the title in Bodoni over the author in
+ * italics, little inked stamps for where it stands and where it came from, and the percentage set
+ * large at the right with the time since you last read under it. Progress runs as a bar of the
+ * same ink along the foot of the slip.
  */
 @Composable
-internal fun IndexRow(book: Book, meta: String, held: Boolean, place: String?, modifier: Modifier = Modifier, onClick: () -> Unit) {
+internal fun IndexRow(
+    book: Book, status: String, lastRead: String, where: String?, held: Boolean, place: String?,
+    modifier: Modifier = Modifier, onClick: () -> Unit,
+) {
     val c = Cp.colors
     val ink = rememberBookInk(book.coverUrl)
-    Column(modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .bouncyClickable(RoundedCornerShape(12.dp), pressedScale = 0.985f, onClickLabel = book.displayTitle, onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.width(5.dp).height(66.dp).clip(RoundedCornerShape(topStart = 2.dp, topEnd = 4.dp, bottomEnd = 2.dp, bottomStart = 4.dp)).background(ink))
-            Spacer(Modifier.width(10.dp))
-            BookCover(book.coverUrl, book.displayTitle, 44.dp, 66.dp)
-            Spacer(Modifier.width(14.dp))
+    val shape = RoundedCornerShape(topStart = 18.dp, topEnd = 8.dp, bottomEnd = 18.dp, bottomStart = 8.dp)
+    // Slightly different tilt per book, so the column of covers reads as placed by hand.
+    val tilt = remember(book.document) { ((book.document.hashCode() % 5) - 2) * 0.9f }
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .clip(shape)
+            .background(ink.copy(alpha = 0.10f))
+            .drawBehind { drawShape(shape, ink.copy(alpha = 0.28f), stroke = 1.dp.toPx()) }
+            .bouncyClickable(shape, pressedScale = 0.985f, onClickLabel = book.displayTitle, onClick = onClick),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .graphicsLayer { rotationZ = tilt }
+                    .size(52.dp, 78.dp)
+                    .drawBehind { drawRoundRect(ink, topLeft = Offset(4.dp.toPx(), 5.dp.toPx()), size = size, cornerRadius = CornerRadius(6.dp.toPx())) },
+            ) { BookCover(book.coverUrl, book.displayTitle, 52.dp, 78.dp) }
+            Spacer(Modifier.width(18.dp))
             Column(Modifier.weight(1f)) {
-                Text(book.displayTitle, fontFamily = DisplaySmall, fontWeight = FontWeight.Bold, fontSize = 17.sp, lineHeight = 21.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(book.displayTitle, fontFamily = DisplaySmall, fontWeight = FontWeight.Bold, fontSize = 18.sp, lineHeight = 21.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 book.author?.let { Text(it, style = CpType.small.copy(fontStyle = FontStyle.Italic), color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 place?.let { Text(it, style = CpType.small, color = c.accentText, maxLines = 1) }
                 Spacer(Modifier.height(8.dp))
-                SegmentBar(book.percentage.toFloat(), height = 4.dp, on = ink)
-                Spacer(Modifier.height(5.dp))
-                AnimatedQuiet(meta, maxLines = 1)
-                if (held) {
-                    Spacer(Modifier.height(6.dp))
-                    Chip("not sent to trackers yet", color = c.quiet, background = c.divider)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    SlipStamp(status, ink, filled = true)
+                    where?.let { SlipStamp(it, ink, filled = false) }
+                    if (held) SlipStamp("not sent yet", c.quiet, filled = false)
                 }
             }
+            Spacer(Modifier.width(10.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    // Literata's figures, outlined (as the ledger's): Bodoni's hairline 4 read as a 1.
+                    FigureText(book.percent.toString(), CpType.screenNumber.copy(fontSize = 30.sp, lineHeight = 30.sp), c.text)
+                    Text("%", style = CpType.small, color = c.accentText, modifier = Modifier.padding(start = 1.dp, bottom = 3.dp))
+                }
+                Text(lastRead, style = CpType.mono, color = c.quiet, maxLines = 1)
+            }
         }
-        Box(Modifier.padding(start = 85.dp, end = 16.dp).fillMaxWidth().height(1.dp).background(c.text.copy(alpha = 0.1f)))
+        // Progress along the foot of the slip, in the book's ink.
+        Box(Modifier.fillMaxWidth().height(4.dp).background(ink.copy(alpha = 0.16f))) {
+            Box(Modifier.fillMaxWidth(book.percentage.toFloat().coerceIn(0f, 1f)).height(4.dp).background(ink))
+        }
     }
+}
+
+/** A small inked stamp on a slip: filled with the book's ink, or just its outline. */
+@Composable
+private fun SlipStamp(text: String, ink: androidx.compose.ui.graphics.Color, filled: Boolean) {
+    val c = Cp.colors
+    Text(
+        text.lowercase(),
+        style = CpType.mono.copy(fontSize = 11.sp),
+        color = if (filled) (if (ink.luminance() > 0.5f) androidx.compose.ui.graphics.Color.Black else androidx.compose.ui.graphics.Color.White) else c.textMid,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .then(if (filled) Modifier.background(ink) else Modifier.drawBehind {
+                drawRoundRect(ink.copy(alpha = 0.6f), cornerRadius = CornerRadius(6.dp.toPx()), style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
+            })
+            .padding(horizontal = 7.dp, vertical = 2.dp),
+    )
 }
 
 /** A row of the wall of covers: three books side by side, each over its own colour, with its progress under it. */

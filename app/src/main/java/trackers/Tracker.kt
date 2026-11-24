@@ -290,6 +290,13 @@ interface Tracker {
     val takesProgress: Boolean get() = true
 
     /**
+     * Progress that waited longer than this (seconds) isn't sent: on a tracker where it's a post
+     * others see (Goodreads, Fable), a day-old update would land in your friends' feeds as new.
+     * Null: always sent. (ShelfSync 1.7.0.)
+     */
+    val progressFreshFor: Long? get() = null
+
+    /**
      * True when it can say where you are in a linked book ([position]), so reading or listening
      * further there moves the book here (through the main-source check: asked about, unless you
      * said to always use it).
@@ -311,6 +318,9 @@ interface Tracker {
 
     fun signInWithPassword(email: String, password: String): SignInResult =
         throw UnsupportedOperationException()
+
+    /** A web sign-in that can also be done with an email and password ([signInWithPassword]). */
+    val passwordToo: Boolean get() = false
 
     fun signInWithCookies(cookieHeader: String, userAgent: String): SignInResult =
         throw UnsupportedOperationException()
@@ -347,6 +357,33 @@ interface Tracker {
     fun shelfCandidates(session: Session): List<RemoteBook> = emptyList()
     fun state(session: Session, link: Link): RemoteState
     fun setStatus(session: Session, link: Link, status: ReadStatus)
+
+    /**
+     * A finished book read again ("Read again"): back to Reading there as a new read. By default
+     * just the status; trackers that keep reads (Hardcover) start a fresh one, the old left as is.
+     */
+    fun startReread(session: Session, link: Link) = setStatus(session, link, ReadStatus.READING)
+
+    /**
+     * Highlights here are stored under Readync's own id for each (Seekquel, Readest) or matched by
+     * place and words (BookOrbit): sending one again replaces it, never doubles it.
+     */
+    val highlightsKeyedById: Boolean get() = false
+
+    /** Whether [existingHighlightTexts] can read back what's already there. */
+    val checksHighlights: Boolean get() = false
+
+    /**
+     * Everything already posted for this book (its notes and quotes), as one block of text to look
+     * a passage up in; null when it can't be read. Only for trackers with [checksHighlights].
+     */
+    fun existingHighlightTexts(session: Session, link: Link): String? = null
+
+    /** Whether [highlights] brings highlights made there back here. */
+    val bringsHighlights: Boolean get() = false
+
+    /** Highlights made in this app for the book (with their notes), to keep here as your own. */
+    fun highlights(session: Session, link: Link): List<io.github.prithirajn.readync.source.Clipping> = emptyList()
     fun pushProgress(session: Session, link: Link, percent: Int, visibility: Visibility)
 
     /**
@@ -440,6 +477,9 @@ interface Tracker {
     /** True when [setDates] puts real start and finish days on the tracker. */
     val takesDates: Boolean get() = false
 
+    /** Whether a start day can go on its own, before the book is finished (StoryGraph: only with a finish). */
+    val takesStartAlone: Boolean get() = true
+
     /** The days you started and finished this book (null leaves that date as it is). */
     fun setDates(session: Session, link: Link, started: java.time.LocalDate?, finished: java.time.LocalDate?) {}
 
@@ -515,7 +555,7 @@ fun formatHighlights(entries: List<io.github.prithirajn.readync.source.Clipping>
 object Trackers {
     val all: List<Tracker> =
         listOf(
-            HardcoverTracker, FableTracker, PageboundTracker, StoryGraphTracker, GoodreadsTracker, SeekquelTracker,
+            HardcoverTracker, FableTracker, PageboundTracker, StoryGraphTracker, GoodreadsTracker, SeekquelTracker, LibraryThingTracker,
             // Reading apps and servers, as crosspoint-sync connects them.
             ReadwiseReaderTracker, BookFusionTracker, AudiobookshelfTracker, JellyfinTracker,
             BookOrbitTracker, SpotifyTracker, ReadestTracker, MicroblogTracker,

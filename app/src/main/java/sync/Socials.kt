@@ -19,6 +19,19 @@ import java.io.File
  * it filled in, for one tap. Sign-ins are kept with the app's other data.
  */
 object Socials {
+    /**
+     * Set on this thread just before a post's last "publish" request goes out. After that, a failure
+     * (most often a timeout waiting for the answer) can still mean the post went up, so it must
+     * never be put up again: Instagram reels in particular publish slowly and the answer can be
+     * lost, which is how one highlight went up three times.
+     */
+    object PublishMark {
+        private val sent = ThreadLocal<Boolean>()
+        fun reset() = sent.set(false)
+        fun mark() = sent.set(true)
+        val wasSent: Boolean get() = sent.get() == true
+    }
+
 
     // ---- settings, kept in Snapshot.extras ----
 
@@ -272,9 +285,32 @@ object XQueue {
 
     fun label(d: File): String = runCatching { File(d, "label.txt").readText() }.getOrDefault("")
 
+    /** One post waiting for X: its folder, words, what it is, and its pictures. */
+    class Entry(val dir: File, val text: String, val label: String, val pictures: List<File>)
+
+    /** Everything waiting for X, oldest first. */
+    fun all(context: Context): List<Entry> = dir(context).listFiles()?.sortedBy { it.name }?.mapNotNull { d ->
+        val text = runCatching { File(d, "text.txt").readText() }.getOrNull() ?: return@mapNotNull null
+        Entry(d, text, label(d), d.listFiles { f -> f.name.endsWith(".png") }?.sortedBy { it.name }.orEmpty())
+    }.orEmpty()
+
+    /** New words for a waiting post. */
+    fun edit(d: File, text: String) { runCatching { File(d, "text.txt").writeText(text) } }
+
+    /** Taken out of the queue without posting. */
+    fun remove(d: File) { d.deleteRecursively() }
+
     /** Opens X with the oldest waiting post (then it's done). Returns what to say. */
     fun open(context: Context): String {
-        val (d, text, pics) = oldest(context) ?: return "Nothing waiting for X"
+        val (d, _, _) = oldest(context) ?: return "Nothing waiting for X"
+        return open(context, d)
+    }
+
+    /** Opens X with this waiting post (then it's done). Returns what to say. */
+    fun open(context: Context, d: File): String {
+        if (!d.exists()) return "That post isn't waiting any more"
+        val text = runCatching { File(d, "text.txt").readText() }.getOrNull() ?: return "That post isn't waiting any more"
+        val pics = d.listFiles { f -> f.name.endsWith(".png") }?.sortedBy { it.name }.orEmpty()
         val bitmaps = pics.mapNotNull { BitmapFactory.decodeFile(it.path) }
         val how = io.github.prithirajn.readync.ui.XPost.pictures(context, bitmaps, text)
         if (how != null) d.deleteRecursively()

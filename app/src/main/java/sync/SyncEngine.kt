@@ -15,6 +15,7 @@ import io.github.prithirajn.readync.net.BusyException
 import io.github.prithirajn.readync.net.NetworkException
 import io.github.prithirajn.readync.net.ServiceException
 import io.github.prithirajn.readync.net.SkipException
+import io.github.prithirajn.readync.net.ReviewTextNotTaken
 import io.github.prithirajn.readync.source.Change
 import io.github.prithirajn.readync.source.Clipping
 import io.github.prithirajn.readync.source.CrossPointClient
@@ -157,7 +158,60 @@ class SyncEngine(private val store: Store) {
      */
     fun run(): Result = runThen(null)
 
-    fun runThen(onDone: ((Result) -> Unit)?): Result {
+    /**
+     * The slower extras (ratings, CrossPoint days, exports, serials, past books' details, prices,
+     * book copies, releases and Coming soon, the SFF radar), each timed, within [EXTRAS_BUDGET_MS]:
+     * once that's used up the rest wait for the next sync, so a run can never go on for most of an
+     * hour (2,673 s on 23 Nov) and stays inside a background job's ten minutes. A line in the log
+     * names the slow ones.
+     */
+    fun runExtras() {
+        if (!lock.tryLock()) return
+        try {
+            val start = System.currentTimeMillis()
+            val took = LinkedHashMap<String, Long>()
+            val skipped = ArrayList<String>()
+            fun extra(name: String, block: () -> Unit) {
+                if (System.currentTimeMillis() - start > EXTRAS_BUDGET_MS) { skipped += name; return }
+                val t0 = System.currentTimeMillis()
+                runCatching { block() }
+                took[name] = System.currentTimeMillis() - t0
+            }
+            extra("Ratings") { pullRatings() }
+            // Your CrossPoint books' reading days, as far back as the server has them.
+            extra("CrossPoint days") { crossPointDays() }
+            // Highlights out to Readwise, Notion and Obsidian, where set up.
+            extra("Exports") { Exports.run(store) }
+            extra("Stories from books") { storiesFromEpubs() }
+            extra("Serials") { refreshSerials(); publishedSerials(); findWebNovels() }
+            // Books you've read (brought in from a history too): their genres, moods, series,
+            // page counts and covers, a few each sync, for Wrapped, recaps and the shelf poster.
+            extra("Past books") { fillPastBooks() }
+            // Prices of the books you're watching, a few each sync (each at most twice a day).
+            extra("Prices") { io.github.prithirajn.readync.source.BookPrices.refresh(store) }
+            // A copy of a book you're reading, from your OPDS catalogs (one a sync), for the words around quotes.
+            extra("Book copies") { io.github.prithirajn.readync.source.BookCopies.refresh(store.snapshot.books.values) }
+            // News and releases have their own schedule now (FeedsWorker, every three hours): here only
+            // when that hasn't run for a long while (a phone that holds back periodic jobs).
+            val now = System.currentTimeMillis() / 1000
+            if (now - (store.snapshot.extras[FeedsWorker.RELEASES_KEY]?.toLongOrNull() ?: 0L) >= 2 * FeedsWorker.RELEASES_EVERY_S) extra("Releases") {
+                Releases.check(store); store.update { it.copy(extras = it.extras + (FeedsWorker.RELEASES_KEY to now.toString())) }
+            }
+            if (now - store.snapshot.sffUpdatedAt >= 4 * FeedsWorker.NEWS_EVERY_S) extra("News") { SffRadar.refresh(store, force = false) }
+            if (store.snapshot.pending.isNotEmpty()) extra("Trackers again") { pushPending() }
+            val total = System.currentTimeMillis() - start
+            if (total >= 60_000 || skipped.isNotEmpty()) {
+                val slow = took.entries.filter { it.value >= 5_000 }.sortedByDescending { it.value }.take(5)
+                    .joinToString(" \u00B7 ") { "${it.key} ${Math.round(it.value / 1000.0)}s" }
+                store.log(null, "Extras took ${Math.round(total / 1000.0)}s" + (if (slow.isNotEmpty()) ": $slow" else "") +
+                    (if (skipped.isNotEmpty()) " (left for next time: ${skipped.joinToString(", ")})" else ""))
+            }
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun runThen(onDone: ((Result) -> Unit)?, extras: Boolean = true): Result {
         if (!lock.tryLock()) return Result(if (store.snapshot.running) "A sync is already running" else "Still finishing the last sync's extras; try again in a moment")
         try {
             timings.clear()
@@ -266,27 +320,10 @@ class SyncEngine(private val store: Store) {
                 runCatching { onDone?.invoke(main) }
                 // The slower extras come after your progress has gone out, so a slow or unreachable
                 // site never holds up the trackers; anything they queue goes out at the end.
-                timed("Extras") {
-                    runCatching { pullRatings() }
-                    // Your CrossPoint books' reading days, as far back as the server has them.
-                    runCatching { crossPointDays() }
-                    // Highlights out to Readwise, Notion and Obsidian, where set up.
-                    runCatching { Exports.run(store) }
-                    runCatching { storiesFromEpubs() }
-                    runCatching { refreshSerials() }
-                    runCatching { publishedSerials() }
-                    runCatching { findWebNovels() }
-                    // Books you've read (brought in from a history too): their genres, moods, series,
-                    // page counts and covers, a few each sync, for Wrapped, recaps and the shelf poster.
-                    runCatching { fillPastBooks() }
-                    // Prices of the books you're watching, a few each sync (each at most twice a day).
-                    runCatching { io.github.prithirajn.readync.source.BookPrices.refresh(store) }
-                    // A copy of a book you're reading, from your OPDS catalogs (one a sync), for the words around quotes.
-                    runCatching { io.github.prithirajn.readync.source.BookCopies.refresh(store.snapshot.books.values) }
-                    runCatching { Releases.check(store) }
-                    runCatching { SffRadar.refresh(store, force = false) }
-                    if (store.snapshot.pending.isNotEmpty()) runCatching { pushPending() }
-                }
+                // With [extras] off (a sync you started in the app), they're run by ExtrasWorker instead,
+                // so leaving the app can't strand a long CPU-heavy run in a background process (Android
+                // kills those: "excessive CPU", 23 Nov).
+                if (extras) timed("Extras") { runExtras() }
                 runCatching { store.log(null, timingLine(mainMs) + timings["Extras"]?.takeIf { it >= 1000 }?.let { " (then extras ${Math.round(it / 1000.0)}s)" }.orEmpty()) }
                 main
             } catch (e: AuthException) {
@@ -570,8 +607,10 @@ class SyncEngine(private val store: Store) {
         library.filter { KoreaderDevice.isKoreader(it.device, it.deviceId) }.map { it.document }
             .takeIf { it.isNotEmpty() }?.let { docs -> store.update { s -> KoreaderDevice.seen(s, docs) } }
         val now = System.currentTimeMillis()
+        val jumpNotes = ArrayList<Pair<String, String>>()
 
         store.update { s ->
+            jumpNotes.clear()
             val books = HashMap(s.books)
             val removed = HashMap(s.removedBooks)
             // Books seen here for the first time (from the library list or the change feed).
@@ -616,6 +655,7 @@ class SyncEngine(private val store: Store) {
                 )
             }
             val grew = HashMap(s.grewAt)
+            val extras = HashMap(s.extras)
             for (c in changed.values) {
                 val old = books[c.document]
                 val remPct = removed[c.document]
@@ -672,6 +712,13 @@ class SyncEngine(private val store: Store) {
                     }
                 }
                 if (firstPull && now / 1000 - c.timestamp > RECENT_DAYS * DAY) continue
+                // A jump (the contents, a link, the endnotes) isn't reading: a big move forward waits
+                // until a later position near it says you're reading there (ShelfSync 1.8.4).
+                when (val j = Jumps.decide(s.books[c.document], extras[Jumps.key(c.document)], c.percentage, c.timestamp, books[c.document]?.status)) {
+                    is Jumps.Hold -> { extras[Jumps.key(c.document)] = j.saved; jumpNotes += c.document to j.note; continue }
+                    is Jumps.Release -> { extras.remove(Jumps.key(c.document)); j.note?.let { jumpNotes += c.document to it } }
+                    null -> Unit
+                }
                 for (t in Trackers.all) {
                     val svc = s.service(t.id)
                     if (!svc.linked || !svc.enabled) continue
@@ -680,8 +727,9 @@ class SyncEngine(private val store: Store) {
                     pending[key] = pending[key]?.copy(tries = 0) ?: Pending(t.id, c.document, now)
                 }
             }
-            s.copy(books = books, pending = pending, links = links, cursor = cursor, grewAt = grew, removedBooks = removed)
+            s.copy(books = books, pending = pending, links = links, cursor = cursor, grewAt = grew, removedBooks = removed, extras = extras)
         }
+        for ((doc, note) in jumpNotes) store.log(null, "${title(doc)}: $note")
         for (c in changed.values) if (store.snapshot.grewAt[c.document] == c.timestamp) {
             store.log(null, "${title(c.document)} got longer (new chapters): now ${Math.round(c.percentage * 100)}% of the longer book")
         }
@@ -865,6 +913,38 @@ class SyncEngine(private val store: Store) {
     }
 
     /**
+     * Highlights you made in [t] (Readest) for these books, kept here as your own (with the history
+     * imports), so they show and go to your trackers like any other. Ones Readync itself put there,
+     * and passages already here from another reader, are left out.
+     */
+    private fun pullHighlights(t: Tracker, session: Session, links: List<Link>) {
+        var added = 0
+        for (link in links) {
+            val got = t.highlights(session, link)
+            if (got.isEmpty()) continue
+            store.update { s ->
+                val ours = s.clipRemote.filterKeys { it.startsWith("${t.id}|") }.values.toSet()
+                val have = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips)
+                    .filter { it.document == link.document }
+                val ids = have.map { it.id }.toSet()
+                val texts = have.joinToString("\n") { it.text }
+                val fresh = got.filter { c ->
+                    c.id !in ids && c.id.removePrefix("${t.id}:") !in ours && !Highlights.foundIn(texts, c.text)
+                }
+                added += fresh.size
+                // Already in that app, being from there: never sent back to it.
+                val back = fresh.map { "${t.id}|${it.id}" }
+                if (fresh.isEmpty()) s else s.copy(
+                    historyClips = s.historyClips + fresh,
+                    sentClippings = s.sentClippings + back,
+                    clipRemote = s.clipRemote + fresh.associate { "${t.id}|${it.id}" to it.id.removePrefix("${t.id}:") },
+                )
+            }
+        }
+        if (added > 0) store.log(t.id, "$added highlight${if (added == 1) "" else "s"} from ${t.name}")
+    }
+
+    /**
      * Linked books' positions from the services that can say where you are (Audiobookshelf,
      * Jellyfin, BookFusion, BookOrbit, Readest, Readwise Reader, Spotify): one further along, and
      * newer than the book's own, moves it, as that service. Each service's moves pass the book's
@@ -885,6 +965,9 @@ class SyncEngine(private val store: Store) {
                 .sortedByDescending { it.second.timestamp }
                 .take(POSITIONS_PER_SYNC)
             if (todo.isEmpty()) continue
+            // Highlights made in that app come back here too (Readest), once each.
+            if (t.bringsHighlights) runCatching { pullHighlights(t, session, todo.map { it.first }) }
+                .onFailure { e -> if (e is AuthException) throw e }
             var moved = 0
             try {
                 Primary.within(t.id) {
@@ -1000,6 +1083,10 @@ class SyncEngine(private val store: Store) {
                 .map { RemoteBook(it.document, it.title!!, it.author) }
             val sentKeys = s.links.values.filter { it.service == source.id }.flatMap { it.libraryKeys }.toSet()
             val removed = HashMap(s.removedBooks)
+            // This source's own books by title, to catch it listing one book twice ("Volume 1" and "Vol. 1").
+            val ownByKey = HashMap<String, MutableList<String>>()
+            for (b in s.books.values) if (b.origin == source.id && b.title != null) ownByKey.getOrPut(Matcher.bookKey(b.title)) { ArrayList() } += b.document
+            fun sentElsewhere(d: String) = links.values.any { it.document == d && it.service != source.id && it.externalId != null }
             for (item in items) {
                 val doc = importedDocument(source.id, item.id)
                 val old = books[doc]
@@ -1066,6 +1153,23 @@ class SyncEngine(private val store: Store) {
                     }
                     continue
                 }
+                // The same book listed twice by this source: one copy here. A new twin isn't added; of two
+                // already here, the one not yet sent anywhere goes (one that has been sent stays).
+                val key = Matcher.bookKey(item.title)
+                val twin = ownByKey[key].orEmpty().firstOrNull { d ->
+                    d != doc && books[d]?.let { b -> b.title != null && Matcher.sameBook(item.title, item.author, b.title, b.author) && !Matcher.differentVolumes(item.title, b.title) } == true
+                }
+                if (twin != null) {
+                    if (old == null) continue
+                    if (!sentElsewhere(doc)) {
+                        books.remove(doc)
+                        pending.keys.removeAll { it.endsWith("|$doc") }
+                        links.keys.removeAll { it.endsWith("|$doc") }
+                        ownByKey[key]?.remove(doc)
+                        continue
+                    }
+                }
+                if (old == null) ownByKey.getOrPut(key) { ArrayList() } += doc
                 // New books: ones being read, and past reading (paused, finished, abandoned).
                 // Want to Read stays out. Ones already here follow every change.
                 if (old == null && item.status !in IMPORTED_STATUSES) continue
@@ -1079,7 +1183,7 @@ class SyncEngine(private val store: Store) {
                     author = item.author,
                     // Finished there with no position sent (comics, logged books): read to the end.
                     percentage = if (manual) old!!.percentage
-                        else if (item.status == ReadStatus.FINISHED && (item.fraction ?: 0.0) <= 0.0) 1.0
+                        else if (item.status == ReadStatus.FINISHED && (item.fraction ?: 0.0) < 0.01) 1.0
                         else item.fraction ?: old?.percentage ?: 0.0,
                     status = if (manual) old!!.status else item.status,
                     timestamp = if (manual) old!!.timestamp else if (item.updatedAt > 0) item.updatedAt else old?.timestamp ?: now / 1000,
@@ -1207,7 +1311,10 @@ class SyncEngine(private val store: Store) {
                 val a = byDoc[doc] ?: return@mapValues b
                 // Seekquel's reading dates win over CrossPoint's.
                 if (doc in s.seekquelDates) return@mapValues b.copy(pagesRead = a.pagesRead ?: b.pagesRead)
-                val nb = b.copy(pagesRead = a.pagesRead ?: b.pagesRead, finishedAt = a.finishedAt, startedAt = a.startedAt ?: b.startedAt)
+                // A finished book keeps its finish day when the server has none (one finished in 2021,
+                // before CrossPoint, would otherwise lose it and look recently read).
+                val finished = a.finishedAt ?: b.finishedAt.takeIf { b.status == ReadStatus.FINISHED }
+                val nb = b.copy(pagesRead = a.pagesRead ?: b.pagesRead, finishedAt = finished, startedAt = a.startedAt ?: b.startedAt)
                 if (nb.startedAt != b.startedAt || nb.finishedAt != b.finishedAt) redated += doc
                 nb
             }
@@ -3126,8 +3233,34 @@ class SyncEngine(private val store: Store) {
                     }
                     val positions = ArrayList<Int>()
                     try {
+                        // Sent again with no entry there to replace (no id, not keyed by ours): first look at
+                        // what the tracker already has, so a note still there isn't doubled. A tracker that
+                        // can't be read back gets none of these.
+                        // Also one sent by hand for the first time (a single highlight, an older or a history
+                        // one): where the tracker can be read back, it's looked for there first too, in case
+                        // it was added there some other way. One never sent from here goes where it can't be read.
+                        val unkeyed = again.filter { c ->
+                            val k = "${t.id}|${c.id}"
+                            store.snapshot.clipRemote[k] == null && !t.highlightsKeyedById &&
+                                (k in store.snapshot.sentClippings || t.checksHighlights)
+                        }
+                        val there: String? = if (unkeyed.isNotEmpty() && t.checksHighlights) runCatching { t.existingHighlightTexts(session, link) }.getOrNull() else null
+                        var alreadyThere = 0
+                        var unread = 0
+                        val againToSend = again.filter { c ->
+                            if (c !in unkeyed) return@filter true
+                            val neverSent = !Highlights.reallySent(store.snapshot, "${t.id}|${c.id}")
+                            val go = if (there != null) !Highlights.foundIn(there, c.text) else neverSent && !t.checksHighlights
+                            if (!go) {
+                                if (there == null) unread++ else alreadyThere++
+                                store.update { s -> s.copy(resend = s.resend - "${t.id}|${c.id}") }
+                            }
+                            go
+                        }
+                        if (alreadyThere > 0) store.log(t.id, "$name: $alreadyThere highlight${if (alreadyThere == 1) " is" else "s are"} still on ${t.name}, so not sent again")
+                        if (unread > 0) store.log(t.id, "$name: couldn't read what's on ${t.name}, so $unread highlight${if (unread == 1) " wasn't" else "s weren't"} sent again (to avoid doubles)")
                         // Sent again: replace the earlier entry where the tracker allows, else post anew.
-                        for (c in again) {
+                        for (c in againToSend) {
                             pace()
                             val key = "${t.id}|${c.id}"
                             val previous = store.snapshot.clipRemote[key]
@@ -3264,7 +3397,7 @@ class SyncEngine(private val store: Store) {
     private fun process(tracker: Tracker, session: Session, p: Pending): String? {
         val book = store.snapshot.books[p.document] ?: return null
         // A book brought in from this tracker is already there; past reading waits for the user.
-        if (book.origin == tracker.id || book.held) return null
+        if (io.github.prithirajn.readync.data.ownedByTracker(book, tracker.id) || book.held) return null
         var link = store.snapshot.link(tracker.id, p.document)
         if (link == null) {
             link = autoLink(tracker, session, book) ?: return null
@@ -3275,10 +3408,27 @@ class SyncEngine(private val store: Store) {
         // Only matched, to read its position from (Spotify): nothing goes there.
         if (!tracker.writes) return null
         // Your CrossPoint server sends this book there itself: sending it from here too would double it.
-        if (serverSends(tracker.id, book)) return null
+        // But a server that hasn't (two hours on, the tracker still behind) is covered from here, so a
+        // book never quietly stops moving there.
+        if (serverSends(tracker.id, book)) {
+            val waited = System.currentTimeMillis() - book.timestamp * 1000 > 2 * 3_600_000L
+            // What the tracker has. Not readable (a bot check, a page that changed) counts as behind:
+            // it used to count as caught up, and the book then quietly stopped moving there.
+            val theirs = if (tracker.readsProgress) runCatching { tracker.state(session, link).percent }.getOrNull() else null
+            val lagging = book.status != ReadStatus.FINISHED && (theirs == null || theirs < book.percent)
+            if (!lagging) {
+                // Said on the book, so it's never a silent nothing.
+                val n = "Sent by your CrossPoint server (${tracker.name} has ${theirs ?: book.percent}%)"
+                if (link.note != n) store.putLink(link.copy(note = n))
+                return null
+            }
+            if (!waited) throw AwaitingConfirm() // kept queued: looked at again on the next syncs
+            store.log(tracker.id, "${book.displayTitle}: your CrossPoint server hadn't sent ${book.percent}% to ${tracker.name}" + (theirs?.let { " (it has $it%)" } ?: " (couldn't read what it has)") + ", so Readync did")
+        }
 
         val remote = tracker.state(session, link)
-        val percent = book.percent
+        // A jump still waiting to be confirmed goes out as where you were before it.
+        val percent = Jumps.before(store.snapshot.extras[Jumps.key(book.document)]) ?: book.percent
         val cp = book.status
         // An ongoing web novel read to its latest chapter is caught up, not finished.
         val ongoing = store.snapshot.webNovels[book.document]?.ongoing == true
@@ -3315,7 +3465,7 @@ class SyncEngine(private val store: Store) {
                 when (remote.status) {
                     ReadStatus.FINISHED, ReadStatus.DNF -> {
                         if (rereading) {
-                            tracker.setStatus(session, link, ReadStatus.READING)
+                            tracker.startReread(session, link)
                             did = "Reading again"
                             extras += "Reading again"
                         } else {
@@ -3331,7 +3481,11 @@ class SyncEngine(private val store: Store) {
                     }
                 }
                 if (note == null) {
-                    val skipProgress = (tracker.privacy == PrivacySupport.SKIP_PROGRESS && visibility == Visibility.PRIVATE) || !tracker.takesProgress
+                    // Reading more than a day ago, sent only now: not posted where it'd look new (Goodreads, Fable).
+                    val stale = tracker.progressFreshFor?.let { System.currentTimeMillis() / 1000 - book.timestamp > it } == true
+                    if (stale && link.lastPercent != percent) store.log(tracker.id, "${book.displayTitle}: ${percent}% is over a day old, so not posted to ${tracker.name}")
+                    val privateSkip = tracker.privacy == PrivacySupport.SKIP_PROGRESS && visibility == Visibility.PRIVATE
+                    val skipProgress = privateSkip || !tracker.takesProgress || stale
                     // After the book got longer, a tracker further along is on the old length: bring it to the new one.
                     val grewSince = (store.snapshot.grewAt[book.document] ?: 0L) * 1000 > link.updatedAt
                     // "Move it back" chosen for this book: sent even though the tracker is further along.
@@ -3344,6 +3498,10 @@ class SyncEngine(private val store: Store) {
                     val there = if (tracker.readsProgress) remote.percent else link.lastPercent
                     val behind = there != null && percent < there && !grewSince && !rereading && !forcedBack && !chosenBack
                     when {
+                        // Said on the book (and once in the log), never a silent nothing: StoryGraph went
+                        // a month without progress this way and nothing showed why.
+                        privateSkip && !stale && tracker.takesProgress && there != percent ->
+                            note = "Progress isn't sent to ${tracker.name} while “Who can see updates” is Only me (Sync › Trackers › ${tracker.name})"
                         skipProgress -> Unit
                         behind -> note = if (tracker.readsProgress) "${tracker.name} is further along (${remote.percent}%)" else "${tracker.name} already has $there% from here; it isn't moved back"
                         // Already there: read back where possible, else what this app last sent.
@@ -3397,9 +3555,17 @@ class SyncEngine(private val store: Store) {
         // Sent even when the progress was held back (the tracker further along, a status it lacks):
         // the days you read are true either way.
         if (tracker.takesDates && !skipped && !leftAsIs) {
-            val started = day(book.startedAt)
             val finished = if (target == ReadStatus.FINISHED) day(book.finishedAt) else null
-            val key = "${started ?: ""}|${finished ?: ""}"
+            // A start day goes once per read, on every tracker: never again partway through (a
+            // changed or re-found start used to go out again mid-read, and on StoryGraph made a new
+            // read). Again only after "Read again". Sent already = in what this tracker was sent, or
+            // in the book's send history there (kept even when the link is redone).
+            val startSentAt: Long? = link.datesSent?.substringBefore('|')?.takeIf { it.isNotBlank() }?.let { link.updatedAt.coerceAtLeast(1L) }
+                ?: store.snapshot.sent[Link.key(tracker.id, book.document)]?.lastOrNull { it.other?.contains("started ") == true }?.at
+            val rereadAt = (store.snapshot.rereads[book.document] ?: 0L) * 1000
+            val startAllowed = startSentAt == null || rereadAt > startSentAt
+            val started = day(book.startedAt)?.takeIf { startAllowed && (finished != null || tracker.takesStartAlone) }
+            val key = "${started ?: link.datesSent?.substringBefore('|').orEmpty()}|${finished ?: ""}"
             if ((started != null || finished != null) && key != link.datesSent) {
                 try {
                     tracker.setDates(session, link, started, finished)
@@ -3419,6 +3585,9 @@ class SyncEngine(private val store: Store) {
             }
         }
 
+        // Said once in the log too, not only on the book: a held-back update shouldn't look like nothing happened.
+        if (note != null && note != link.note) store.log(tracker.id, "${book.displayTitle}: $note")
+        if (alreadyThere && link.lastPercent != percent) store.log(tracker.id, "${book.displayTitle}: already at $percent% on ${tracker.name}")
         val updated = link.copy(
             // Only progress that actually went out counts as sent; a status change alone doesn't.
             lastPercent = if (progressSent || alreadyThere) percent else link.lastPercent,
@@ -3472,14 +3641,16 @@ class SyncEngine(private val store: Store) {
             val session = Session(svc.credential).also { it.visibility = svc.visibility }
             try {
                 for (b in books) {
-                    if (b.origin == t.id) continue
+                    if (io.github.prithirajn.readync.data.ownedByTracker(b, t.id)) continue
                     val link = store.snapshot.link(t.id, b.document) ?: continue
                     if (link.externalId == null || link.source == LinkSource.NONE || !link.confirmed) continue
                     val fp = reviewPrint(b)
                     // A refused one is tried again once a day (and right away when the review changes).
                     // ...and right away after an app update too, which may have fixed what was refused.
                     val failedToday = "x:$fp:${Shelves.day()}:${io.github.prithirajn.readync.BuildConfig.VERSION_CODE}"
-                    if (link.reviewSent == fp || link.reviewSent == failedToday) continue
+                    // Text the key couldn't write: not tried again with the same key, at once with a new one.
+                    val keyRefused = "k:$fp:${svc.credential.hashCode()}"
+                    if (link.reviewSent == fp || link.reviewSent == failedToday || link.reviewSent == keyRefused) continue
                     // The rating came from Seekquel: it already has it.
                     if (t.id == SeekquelTracker.id && b.rating != null && store.snapshot.seekquelRatings[b.document] == b.rating) {
                         store.putLink(link.copy(reviewSent = fp)); continue
@@ -3500,6 +3671,15 @@ class SyncEngine(private val store: Store) {
                         throw e
                     } catch (e: SkipException) {
                         store.putLink(link.copy(note = e.message))
+                    } catch (e: ReviewTextNotTaken) {
+                        // Not a failure: the rating went, and the key can't write the text. Not retried with
+                        // this key (no warning), said once in the log and on the book; a new key sends it.
+                        store.putLink(link.copy(reviewSent = keyRefused, note = e.message))
+                        if (e.ratingSent) {
+                            store.log(t.id, "${b.displayTitle}: rated ${stars(t.stepRating(b.rating!!))}; ${e.message}")
+                            recordSent(t.id, b.document, SendEvent(at = System.currentTimeMillis(), other = "rated ${stars(t.stepRating(b.rating))}"))
+                            sent++
+                        } else store.log(t.id, "${b.displayTitle}: ${e.message}")
                     } catch (e: Exception) {
                         store.putLink(link.copy(reviewSent = failedToday))
                         store.log(t.id, "${b.displayTitle}: review not sent (${e.message})", error = true)
@@ -3523,8 +3703,24 @@ class SyncEngine(private val store: Store) {
     /** A first match not confirmed yet: its update waits. */
     private class AwaitingConfirm : Exception("Waiting for you to confirm the match")
 
+    /**
+     * The book's match on [tracker] (found now if there's none), without sending the book there: for
+     * one highlight sent by hand from a book that's held (from a tracker's history). The match isn't
+     * confirmed; null when none is found.
+     */
+    fun matchOnly(tracker: Tracker, document: String): Link? {
+        store.snapshot.link(tracker.id, document)?.takeIf { it.externalId != null && it.source != LinkSource.NONE }?.let { return it }
+        val book = store.snapshot.books[document] ?: return null
+        val svc = store.snapshot.service(tracker.id)
+        if (!svc.linked) return null
+        val session = Session(svc.credential).also { it.visibility = svc.visibility }
+        return autoLink(tracker, session, book)?.takeIf { it.externalId != null && it.source != LinkSource.NONE }
+    }
+
     /** Searches the tracker and links the book if there's one clear match. */
     private fun autoLink(tracker: Tracker, session: Session, book: Book): Link? {
+        // The tracker's own book (from its library or history) is never matched there.
+        if (io.github.prithirajn.readync.data.ownedByTracker(book, tracker.id)) return null
         if (tracker.matchesByDocument) {
             // Seekquel knows the book by CrossPoint's own id; no search, nothing to pick.
             val link = Link(tracker.id, book.document, book.document, title = book.title, author = book.author,
@@ -3873,6 +4069,9 @@ class SyncEngine(private val store: Store) {
             )
         }
         private val lock = ReentrantLock()
+
+        /** How long the extras may run in one go (a background job gets ten minutes in all). */
+        const val EXTRAS_BUDGET_MS = 6 * 60_000L
 
         /** Times a tracker may refuse one highlight before it's left out. */
         private const val CLIP_TRIES = 3

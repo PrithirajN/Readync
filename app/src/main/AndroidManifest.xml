@@ -4,6 +4,11 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- For the finer touch feedback (Haptics in Gadget.kt): a normal permission, granted on install. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Only for reading a printed ISBN live, asked for the first time you do. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- An on-device AI model's download keeps going while you use the rest of the phone. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

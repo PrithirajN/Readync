@@ -97,6 +97,8 @@ private val hints = mapOf(
 @Composable
 fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     var signingIn by remember { mutableStateOf<Tracker?>(null) }
+    // StoryGraph: its email-and-password sign-in, instead of the web one.
+    var byPassword by remember { mutableStateOf(false) }
     var unlinking by remember { mutableStateOf<Tracker?>(null) }
     var settings by remember { mutableStateOf<Tracker?>(null) }
     var signingOut by remember { mutableStateOf(false) }
@@ -128,7 +130,11 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     // Opened from elsewhere (the KOReader card on Reading, a book's page).
     val pendingAction by AppActions.pending.collectAsState()
     LaunchedEffect(pendingAction) {
-        (pendingAction as? AppAction.ServicePage)?.let { page = it.page; AppActions.pending.value = null }
+        (pendingAction as? AppAction.ServicePage)?.let {
+            // "share" and "log" are tabs of this page; the rest are its screens.
+            when (it.page) { "share" -> servicesTab = 2; "log" -> servicesTab = 3; else -> page = it.page }
+            AppActions.pending.value = null
+        }
     }
     val c = Cp.colors
     val linked = Trackers.all.filter { state.service(it.id).linked }
@@ -141,235 +147,244 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     val appVersion = remember(context) { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
 
     val pageScroll = rememberScrollState()
-    Column(
-        Modifier
-            .fillMaxSize()
-            .fadeTopEdge(pageScroll.value > 0)
-            .verticalScroll(pageScroll)
-            .padding(bottom = 32.dp + TabBarSpace)
-    ) {
-        TabHeader("where your reading comes and goes", "Services") {
-            // The app's own settings (sync, AI, backup, updates) behind the gear.
-            IconCircleButton(R.drawable.lucide_settings, "Settings", { appSettings = true })
-        }
-        VSpace(12)
-        Column(Modifier.padding(horizontal = 16.dp)) {
-            // Readync on another phone too, and that one sends: said here, with a way to take over.
-            PostingDeviceCard(vm, state)
-            // A glance before anything else, for the tab you're on: how many are on, how many want
-            // you, a light each, and when it last did something (and, under Share & export, what posts next).
-            fun trackerLight(t: Tracker): Pair<String, Int> {
-                val svc = state.service(t.id)
-                val wants = svc.needsReauth || svc.lastError != null || summary(state, t).second
-                return t.name to when { !svc.enabled -> 0; wants -> 2; else -> 1 }
+    // Pull past the top to sync now.
+    val pullSync = rememberPullToAct { if (!state.running) vm.syncNow() }
+    PullFrame(pullSync, state.running, "Pull to sync", "Let go to sync", "Syncing…") { pm ->
+        Column(
+            pm
+                .fillMaxSize()
+                .fadeTopEdge(pageScroll.value > 0)
+                .verticalScroll(pageScroll)
+                .padding(bottom = 32.dp + TabBarSpace)
+        ) {
+            TabHeader("where your reading comes and goes", "Sync") {
+                // The app's own settings (sync, AI, backup, updates) behind the gear.
+                IconCircleButton(R.drawable.lucide_settings, "Settings", { appSettings = true })
             }
-            fun level(h: Health.Status) = when (h.level) { Health.Level.OFF -> 0; Health.Level.GOOD -> 1; else -> 2 }
-            val full = io.github.prithirajn.readync.Edition.full
-            val (onLabel, lights, lastLine) = when (servicesTab) {
-                0 -> Triple(
-                    "Trackers on",
-                    linkedTrackers.map { trackerLight(it) },
-                    linkedTrackers.maxOfOrNull { state.service(it.id).lastSync }?.takeIf { it > 0 }?.let { "Synced ${ago(it)}" } ?: "Not synced yet",
-                )
-                1 -> Triple(
-                    "Apps on",
-                    listOfNotNull(
-                        Health.source(state)?.let { "CrossPoint" to level(it) },
-                        Health.kindle(state)?.takeIf { full }?.let { "Kindle" to level(it) },
-                        Health.libby(state)?.takeIf { full }?.let { "Libby" to level(it) },
-                        Health.audible(state)?.takeIf { full }?.let { "Audible" to level(it) },
-                        (Health.mihon(state) ?: Health.anilist(state))?.let { "Manga" to level(it) },
-                        Health.kosync(state)?.let { "KOSync" to level(it) },
-                        Health.moon(state)?.let { "Moon+" to level(it) },
-                    ) + linkedApps.map { trackerLight(it) },
-                    (listOf(state.sourceOkAt, state.kosyncOkAt, state.moonOkAt) +
-                        (if (full) listOf(state.kindleOkAt, state.libbyOkAt, state.audibleOkAt) else emptyList()) +
-                        linkedApps.map { state.service(it.id).lastSync }).max().takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Not checked yet",
-                )
-                else -> Triple(
-                    "Connected",
-                    SocialNets.all().filter { SocialNets.connected(state, it.id) }.map { it.name to 1 } +
-                        listOfNotNull(
-                            ("Readwise" to 1).takeIf { state.readwiseToken != null },
-                            ("Notion" to 1).takeIf { state.notionToken != null },
-                            ("Obsidian" to 1).takeIf { state.obsidianFolder != null },
-                        ),
-                    if (!io.github.prithirajn.readync.sync.PostingDevice.isThis(androidx.compose.ui.platform.LocalContext.current, state)) "Posting from your other phone"
-                    else state.threadsPostLog.maxOrNull()?.let { "Posted ${ago(it * 1000)}" } ?: "Nothing posted yet",
-                )
-            }
-            run {
-                // The next 3 posts across your social networks (worked out off the main thread, again as things change).
-                val ctx = androidx.compose.ui.platform.LocalContext.current
-                var nextPosts by remember { mutableStateOf<List<Triple<String, String, String>>>(emptyList()) }
-                LaunchedEffect(state.threadsPostLog, state.threadsBooks, state.extras, state.books.size, state.threadsToken) {
-                    nextPosts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                        runCatching { UpcomingPosts.next(ctx, state).map { Triple(UpcomingPosts.whenText(it), it.where, it.what) } }.getOrDefault(emptyList())
-                    }
+            VSpace(12)
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                // Readync on another phone too, and that one sends: said here, with a way to take over.
+                PostingDeviceCard(vm, state)
+                // A glance before anything else, for the tab you're on: how many are on, how many want
+                // you, a light each, and when it last did something (and, under Share & export, what posts next).
+                fun trackerLight(t: Tracker): Pair<String, Int> {
+                    val svc = state.service(t.id)
+                    val wants = svc.needsReauth || svc.lastError != null || summary(state, t).second
+                    return t.name to when { !svc.enabled -> 0; wants -> 2; else -> 1 }
                 }
-                ServicesMasthead(
-                    lights,
-                    label = onLabel.lowercase(),
-                    lastLine = lastLine,
-                    running = state.running && servicesTab != 2,
-                    next = if (servicesTab == 2) nextPosts else emptyList(),
-                    modifier = Modifier.padding(bottom = 18.dp).animateContentSize(),
-                )
-            }
-            PageTabs(listOf("Trackers", "Reading apps", "Share & export"), servicesTab) { servicesTab = it }
-            // The tab's page slides in from the side you moved toward.
-            androidx.compose.animation.AnimatedContent(
-                servicesTab,
-                transitionSpec = {
-                    val dir = if (targetState > initialState) 1 else -1
-                    (androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.spring(dampingRatio = 0.86f, stiffness = 420f)) { it / 5 * dir } + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(220)))
-                        .togetherWith(androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(180)) { -it / 6 * dir } + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(140)))
-                        .using(androidx.compose.animation.SizeTransform(clip = false))
-                },
-                label = "servicesTab",
-            ) { tab -> Column(Modifier.fillMaxWidth()) {
-            when (tab) {
-                0 -> {
-                if (linkedTrackers.isNotEmpty()) {
-                    VSpace(16)
-                    RisoList {
-                        linkedTrackers.forEachIndexed { i, t ->
-                            if (i > 0) RowDivider()
-                            Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
+                fun level(h: Health.Status) = when (h.level) { Health.Level.OFF -> 0; Health.Level.GOOD -> 1; else -> 2 }
+                val full = io.github.prithirajn.readync.Edition.full
+                val (onLabel, lights, lastLine) = when (servicesTab) {
+                    0, 3 -> Triple(
+                        "Trackers on",
+                        linkedTrackers.map { trackerLight(it) },
+                        linkedTrackers.maxOfOrNull { state.service(it.id).lastSync }?.takeIf { it > 0 }?.let { "Synced ${ago(it)}" } ?: "Not synced yet",
+                    )
+                    1 -> Triple(
+                        "Apps on",
+                        listOfNotNull(
+                            Health.source(state)?.let { "CrossPoint" to level(it) },
+                            Health.kindle(state)?.takeIf { full }?.let { "Kindle" to level(it) },
+                            Health.libby(state)?.takeIf { full }?.let { "Libby" to level(it) },
+                            Health.audible(state)?.takeIf { full }?.let { "Audible" to level(it) },
+                            (Health.mihon(state) ?: Health.anilist(state))?.let { "Manga" to level(it) },
+                            Health.kosync(state)?.let { "KOSync" to level(it) },
+                            Health.moon(state)?.let { "Moon+" to level(it) },
+                        ) + linkedApps.map { trackerLight(it) },
+                        (listOf(state.sourceOkAt, state.kosyncOkAt, state.moonOkAt) +
+                            (if (full) listOf(state.kindleOkAt, state.libbyOkAt, state.audibleOkAt) else emptyList()) +
+                            linkedApps.map { state.service(it.id).lastSync }).max().takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Not checked yet",
+                    )
+                    else -> Triple(
+                        "Connected",
+                        SocialNets.all().filter { SocialNets.connected(state, it.id) }.map { it.name to 1 } +
+                            listOfNotNull(
+                                ("Readwise" to 1).takeIf { state.readwiseToken != null },
+                                ("Notion" to 1).takeIf { state.notionToken != null },
+                                ("Obsidian" to 1).takeIf { state.obsidianFolder != null },
+                            ),
+                        if (!io.github.prithirajn.readync.sync.PostingDevice.isThis(androidx.compose.ui.platform.LocalContext.current, state)) "Posting from your other phone"
+                        else state.threadsPostLog.maxOrNull()?.let { "Posted ${ago(it * 1000)}" } ?: "Nothing posted yet",
+                    )
+                }
+                run {
+                    // The next 3 posts across your social networks (worked out off the main thread, again as things change).
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    var nextPosts by remember { mutableStateOf<List<UpcomingPosts.Upcoming>>(emptyList()) }
+                    var openPost by remember { mutableStateOf<UpcomingPosts.Upcoming?>(null) }
+                    LaunchedEffect(state.threadsPostLog, state.threadsBooks, state.threadsSeen, state.extras, state.books.size, state.threadsToken) {
+                        nextPosts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            runCatching { UpcomingPosts.next(ctx, state) }.getOrDefault(emptyList())
                         }
                     }
+                    openPost?.let { u -> UpcomingPostSheet(vm, state, u) { openPost = null } }
+                    ServicesMasthead(
+                        lights,
+                        label = onLabel.lowercase(),
+                        lastLine = lastLine,
+                        running = state.running && servicesTab != 2,
+                        next = if (servicesTab == 2) nextPosts else emptyList(),
+                        modifier = Modifier.padding(bottom = 18.dp).animateContentSize(),
+                        onOpenPost = { openPost = it },
+                    )
                 }
-                    // Everything not linked yet waits in the Add sheet instead of a long list here.
-                    if (moreTrackers.isNotEmpty()) {
-                        VSpace(12)
-                        AddServiceRow(if (linkedTrackers.isEmpty()) "Link a book tracker" else "Add a book tracker") { addingApps = false; adding = true }
-                    }
-                    // Before highlights go out: off unless you want to look at each one first (for spoilers).
+                PageTabs(listOf("Trackers", "Sources", "Sharing", "Log"), servicesTab) { servicesTab = it }
+                // The tab's page slides in from the side you moved toward.
+                androidx.compose.animation.AnimatedContent(
+                    servicesTab,
+                    transitionSpec = {
+                        val dir = if (targetState > initialState) 1 else -1
+                        (androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.spring(dampingRatio = 0.86f, stiffness = 420f)) { it / 5 * dir } + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(220)))
+                            .togetherWith(androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(180)) { -it / 6 * dir } + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(140)))
+                            .using(androidx.compose.animation.SizeTransform(clip = false))
+                    },
+                    label = "servicesTab",
+                ) { tab -> Column(Modifier.fillMaxWidth()) {
+                when (tab) {
+                    0 -> {
                     if (linkedTrackers.isNotEmpty()) {
                         VSpace(16)
-                        DeviceLabel("Before highlights go out", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
-                        CheckHighlightsCard(vm, state)
-                    }
-                }
-                1 -> {
-                // Everything else as one short list of rows, each opening its own sheet, so the page
-                // stays a glance instead of a long scroll.
-                VSpace(16)
-                RisoList {
-                    NavRow(
-                        R.drawable.lucide_library_big, "CrossPoint",
-                        listOfNotNull(state.account?.username, state.sourceOkAt.takeIf { it > 0 }?.let { "reached ${ago(it)}" }).joinToString(" · ").ifEmpty { null },
-                        trailing = { Health.source(state)?.let { h -> HealthLight(h) { vm.checkCrossPoint() } } },
-                    ) { page = "crosspoint" }
-                    RowDivider()
-                    // Kindle, Libby and Audible: only in the full edition (the shared one leaves them out).
-                    if (io.github.prithirajn.readync.Edition.full) {
-                        NavRow(
-                            R.drawable.lucide_book_open, "Amazon Kindle",
-                            when {
-                                state.kindle == null -> "Not linked"
-                                state.kindleError != null -> "Needs you to sign in again"
-                                else -> state.kindleOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
-                            },
-                            summaryWarn = state.kindle != null && state.kindleError != null,
-                            trailing = { Health.kindle(state)?.let { h -> HealthLight(h) { vm.checkKindle() } } },
-                        ) { page = "kindle" }
-                        RowDivider()
-                        NavRow(
-                            R.drawable.lucide_library_big, "Libby",
-                            when {
-                                state.libby == null -> "Not linked · or open a Reading Journey"
-                                state.libbyError != null -> "Needs you to link again"
-                                else -> state.libbyOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
-                            },
-                            summaryWarn = state.libby != null && state.libbyError != null,
-                            trailing = { Health.libby(state)?.let { h -> HealthLight(h) { vm.checkLibby() } } },
-                        ) { page = "libby" }
-                        RowDivider()
-                        NavRow(
-                            R.drawable.lucide_headphones, "Audible",
-                            when {
-                                state.audible == null -> "Not linked"
-                                state.audibleError != null -> "Needs you to sign in again"
-                                else -> state.audibleOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
-                            },
-                            summaryWarn = state.audible != null && state.audibleError != null,
-                            trailing = { Health.audible(state)?.let { h -> HealthLight(h) { vm.checkAudible() } } },
-                        ) { page = "audible" }
-                        RowDivider()
-                    }
-                    NavRow(
-                        R.drawable.lucide_book_open, "Manga & comics",
-                        when {
-                            state.mihon == null && state.anilist == null -> "Not set up"
-                            state.mihonError != null || state.anilistError != null -> "Needs attention"
-                            else -> listOfNotNull(state.mihon?.let { "Mihon" }, state.anilist?.let { "AniList" }).joinToString(" + ")
-                        },
-                        summaryWarn = (state.mihon != null && state.mihonError != null) || (state.anilist != null && state.anilistError != null),
-                        trailing = {
-                            (Health.mihon(state)?.takeIf { it.level == Health.Level.BAD } ?: Health.anilist(state)?.takeIf { it.level == Health.Level.BAD } ?: Health.mihon(state) ?: Health.anilist(state))
-                                ?.let { h -> HealthLight(h) { vm.checkMihon() } }
-                        },
-                    ) { page = "mihon" }
-                    RowDivider()
-                    NavRow(
-                        R.drawable.lucide_server, "KOSync server",
-                        state.kosync?.let { k -> k.username + " · " + k.server.substringAfter("://") } ?: "Not set up",
-                        trailing = { Health.kosync(state)?.let { h -> HealthLight(h) { vm.checkKosync() } } },
-                    ) { page = "kosync" }
-                    RowDivider()
-                    NavRow(
-                        R.drawable.lucide_moon, "Moon+ Reader",
-                        state.moon?.let { m -> m.username + " · " + m.server.substringAfter("://").substringBefore('/') } ?: "Not set up",
-                        trailing = { Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } } },
-                    ) { page = "moon" }
-                }
-                // Reading apps and servers linked here: most go both ways, a few only bring your place in.
-                if (linkedApps.isNotEmpty()) {
-                    VSpace(16)
-                    RisoList {
-                        linkedApps.forEachIndexed { i, t ->
-                            if (i > 0) RowDivider()
-                            Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
+                        RisoList {
+                            linkedTrackers.forEachIndexed { i, t ->
+                                if (i > 0) RowDivider()
+                                Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
+                            }
                         }
                     }
-                }
-                if (moreApps.isNotEmpty()) {
-                    VSpace(12)
-                    AddServiceRow("Add a reading app or server") { addingApps = true; adding = true }
-                }
-                }
-                else -> {
+                        // Everything not linked yet waits in the Add sheet instead of a long list here.
+                        if (moreTrackers.isNotEmpty()) {
+                            VSpace(12)
+                            AddServiceRow(if (linkedTrackers.isEmpty()) "Link a book tracker" else "Add a book tracker") { addingApps = false; adding = true }
+                        }
+                        // Before highlights go out: off unless you want to look at each one first (for spoilers).
+                        if (linkedTrackers.isNotEmpty()) {
+                            VSpace(16)
+                            DeviceLabel("Before highlights go out", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
+                            CheckHighlightsCard(vm, state)
+                        }
+                    }
+                    1 -> {
+                    // Everything else as one short list of rows, each opening its own sheet, so the page
+                    // stays a glance instead of a long scroll.
                     VSpace(16)
-                    // Social networks, as connectors: the connected ones, each with its own page; the rest under "Add".
-                    DeviceLabel("Social media", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
-                    SocialsList(vm, state) { id -> page = "social:$id" }
-                    // Each place your highlights can go as text, with its own page of options.
-                    VSpace(14)
-                    DeviceLabel("Highlights as text", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
                     RisoList {
-                        ExportRow(state, "readwise", "Readwise", state.readwiseToken != null,
-                            if (state.readwiseToken != null) "${state.readwiseDone.size} sent" else "Daily review, and Readwise's own exports") { page = "readwise" }
+                        NavRow(
+                            R.drawable.lucide_library_big, "CrossPoint",
+                            listOfNotNull(state.account?.username, state.sourceOkAt.takeIf { it > 0 }?.let { "reached ${ago(it)}" }).joinToString(" · ").ifEmpty { null },
+                            trailing = { Health.source(state)?.let { h -> HealthLight(h) { vm.checkCrossPoint() } } },
+                        ) { page = "crosspoint" }
                         RowDivider()
-                        ExportRow(state, "notion", "Notion", state.notionToken != null,
-                            if (state.notionToken != null) "${state.notionPages.size} book page${if (state.notionPages.size == 1) "" else "s"} · ${state.notionDone.size} highlights" else "A page per book, inside a page of yours") { page = "notion" }
+                        // Kindle, Libby and Audible: only in the full edition (the shared one leaves them out).
+                        if (io.github.prithirajn.readync.Edition.full) {
+                            NavRow(
+                                R.drawable.lucide_book_open, "Amazon Kindle",
+                                when {
+                                    state.kindle == null -> "Not linked"
+                                    state.kindleError != null -> "Needs you to sign in again"
+                                    else -> state.kindleOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
+                                },
+                                summaryWarn = state.kindle != null && state.kindleError != null,
+                                trailing = { Health.kindle(state)?.let { h -> HealthLight(h) { vm.checkKindle() } } },
+                            ) { page = "kindle" }
+                            RowDivider()
+                            NavRow(
+                                R.drawable.lucide_library_big, "Libby",
+                                when {
+                                    state.libby == null -> "Not linked · or open a Reading Journey"
+                                    state.libbyError != null -> "Needs you to link again"
+                                    else -> state.libbyOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
+                                },
+                                summaryWarn = state.libby != null && state.libbyError != null,
+                                trailing = { Health.libby(state)?.let { h -> HealthLight(h) { vm.checkLibby() } } },
+                            ) { page = "libby" }
+                            RowDivider()
+                            NavRow(
+                                R.drawable.lucide_headphones, "Audible",
+                                when {
+                                    state.audible == null -> "Not linked"
+                                    state.audibleError != null -> "Needs you to sign in again"
+                                    else -> state.audibleOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
+                                },
+                                summaryWarn = state.audible != null && state.audibleError != null,
+                                trailing = { Health.audible(state)?.let { h -> HealthLight(h) { vm.checkAudible() } } },
+                            ) { page = "audible" }
+                            RowDivider()
+                        }
+                        NavRow(
+                            R.drawable.lucide_book_open, "Manga & comics",
+                            when {
+                                state.mihon == null && state.anilist == null -> "Not set up"
+                                state.mihonError != null || state.anilistError != null -> "Needs attention"
+                                else -> listOfNotNull(state.mihon?.let { "Mihon" }, state.anilist?.let { "AniList" }).joinToString(" + ")
+                            },
+                            summaryWarn = (state.mihon != null && state.mihonError != null) || (state.anilist != null && state.anilistError != null),
+                            trailing = {
+                                (Health.mihon(state)?.takeIf { it.level == Health.Level.BAD } ?: Health.anilist(state)?.takeIf { it.level == Health.Level.BAD } ?: Health.mihon(state) ?: Health.anilist(state))
+                                    ?.let { h -> HealthLight(h) { vm.checkMihon() } }
+                            },
+                        ) { page = "mihon" }
                         RowDivider()
-                        ExportRow(state, "obsidian", "Obsidian", state.obsidianFolder != null,
-                            if (state.obsidianFolder != null) "${state.obsidianHashes.size} book note${if (state.obsidianHashes.size == 1) "" else "s"} in your vault" else "A Markdown note per book in your vault") { page = "obsidian" }
+                        NavRow(
+                            R.drawable.lucide_server, "KOSync server",
+                            state.kosync?.let { k -> k.username + " · " + k.server.substringAfter("://") } ?: "Not set up",
+                            trailing = { Health.kosync(state)?.let { h -> HealthLight(h) { vm.checkKosync() } } },
+                        ) { page = "kosync" }
+                        RowDivider()
+                        NavRow(
+                            R.drawable.lucide_moon, "Moon+ Reader",
+                            state.moon?.let { m -> m.username + " · " + m.server.substringAfter("://").substringBefore('/') } ?: "Not set up",
+                            trailing = { Health.moon(state)?.let { h -> HealthLight(h) { vm.checkMoon() } } },
+                        ) { page = "moon" }
                     }
-                    // Your own copy of everything: backups, moving phones, and history from other apps.
-                    VSpace(14)
-                    DeviceLabel("Your data", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
-                    RisoList {
-                        NavRow(R.drawable.lucide_download, "Backup & import", "Back up, move to a new phone, or bring in history from Goodreads, StoryGraph, Hardcover or KOReader") { page = "backup" }
-                        RowDivider()
-                        // Moved here from Activity › Your library, beside the app's other copies of your data.
-                        NavRow(R.drawable.lucide_list_checks, "Reading log", "Every book as a spreadsheet (Excel or CSV): dates, rating, review, pages, series, genres, highlights") { readingLog = true }
+                    // Reading apps and servers linked here: most go both ways, a few only bring your place in.
+                    if (linkedApps.isNotEmpty()) {
+                        VSpace(16)
+                        RisoList {
+                            linkedApps.forEachIndexed { i, t ->
+                                if (i > 0) RowDivider()
+                                Box(Modifier.riseIn(i + 1)) { LinkedRow(vm, state, t, onOpen = { settings = t }, onRelink = { signingIn = t }) }
+                            }
+                        }
                     }
-                    if (readingLog) ExportSheet(state) { readingLog = false }
+                    if (moreApps.isNotEmpty()) {
+                        VSpace(12)
+                        AddServiceRow("Add a reading app or server") { addingApps = true; adding = true }
+                    }
+                    }
+                    // The sync log (moved here from Activity): what each tracker and source did, and what went wrong.
+                    3 -> { VSpace(12); SyncLogPanel(state) }
+                    else -> {
+                        VSpace(16)
+                        // Social networks, as connectors: the connected ones, each with its own page; the rest under "Add".
+                        DeviceLabel("Social media", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
+                        SocialsList(vm, state) { id -> page = "social:$id" }
+                        // Each place your highlights can go as text, with its own page of options.
+                        VSpace(14)
+                        DeviceLabel("Highlights as text", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
+                        RisoList {
+                            ExportRow(state, "readwise", "Readwise", state.readwiseToken != null,
+                                if (state.readwiseToken != null) "${state.readwiseDone.size} sent" else "Daily review, and Readwise's own exports") { page = "readwise" }
+                            RowDivider()
+                            ExportRow(state, "notion", "Notion", state.notionToken != null,
+                                if (state.notionToken != null) "${state.notionPages.size} book page${if (state.notionPages.size == 1) "" else "s"} · ${state.notionDone.size} highlights" else "A page per book, inside a page of yours") { page = "notion" }
+                            RowDivider()
+                            ExportRow(state, "obsidian", "Obsidian", state.obsidianFolder != null,
+                                if (state.obsidianFolder != null) "${state.obsidianHashes.size} book note${if (state.obsidianHashes.size == 1) "" else "s"} in your vault" else "A Markdown note per book in your vault") { page = "obsidian" }
+                        }
+                        // Your own copy of everything: backups, moving phones, and history from other apps.
+                        VSpace(14)
+                        DeviceLabel("Your data", color = c.quiet, modifier = Modifier.padding(start = 6.dp, bottom = 8.dp))
+                        RisoList {
+                            NavRow(R.drawable.lucide_download, "Backup & import", "Back up, move to a new phone, or bring in history from Goodreads, StoryGraph, Hardcover or KOReader") { page = "backup" }
+                            RowDivider()
+                            // Moved here from Activity › Your library, beside the app's other copies of your data.
+                            NavRow(R.drawable.lucide_list_checks, "Reading log", "Every book as a spreadsheet (Excel or CSV): dates, rating, review, pages, series, genres, highlights") { readingLog = true }
+                        }
+                        if (readingLog) ExportSheet(state) { readingLog = false }
+                    }
                 }
+                } }
             }
-            } }
         }
     }
 
@@ -484,7 +499,8 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     signingIn?.let { t ->
         when (t.signInKind) {
             SignInKind.PASSWORD -> PasswordSheet(vm, t) { signingIn = null }
-            SignInKind.WEBVIEW -> WebSignIn(vm, t) { signingIn = null }
+            SignInKind.WEBVIEW -> if (byPassword) PasswordSheet(vm, t) { signingIn = null; byPassword = false }
+                else WebSignIn(vm, t, onPassword = if (t.passwordToo) ({ byPassword = true }) else null) { signingIn = null }
             SignInKind.TOKEN -> TokenSheet(vm, t) { signingIn = null }
             SignInKind.DEVICE_CODE -> PairSheet(vm, t) { signingIn = null }
             SignInKind.SERVER -> ServerSignInSheet(vm, t) { signingIn = null }
@@ -634,13 +650,15 @@ private fun isBeta(t: Tracker) = t.beta
 private fun summary(state: Snapshot, t: Tracker): Pair<String, Boolean> {
     val svc = state.service(t.id)
     val waiting = state.pending.values.count { it.service == t.id }
-    val review = state.links.values.count { it.service == t.id && ((it.externalId == null && it.note == "Needs a match") || (it.externalId != null && !it.confirmed && it.source != io.github.prithirajn.readync.data.LinkSource.NONE)) }
+    val toMatch = io.github.prithirajn.readync.sync.Health.needsMatch(state, t.id)
+    val review = toMatch.size
+    val which = io.github.prithirajn.readync.sync.Health.titles(state, toMatch)
     return when {
         svc.needsReauth -> "Sign in again to keep syncing" to true
         !svc.enabled -> "Paused" to false
         svc.lastError != null -> "Last sync had a problem" to true
-        waiting > 0 -> "$waiting waiting to sync" + (if (review > 0) " · $review need a match" else "") to false
-        review > 0 -> "$review book${if (review == 1) "" else "s"} need a match" to false
+        waiting > 0 -> "$waiting waiting to sync" + (if (review > 0) " · match needed: $which" else "") to false
+        review > 0 -> "Match needed: $which" to false
         svc.lastSync > 0 -> "Up to date · ${ago(svc.lastSync)}" to false
         else -> "Linked as ${svc.account ?: "you"}" to false
     }
@@ -656,7 +674,7 @@ private fun TrackerName(t: Tracker) {
 }
 
 /** Book trackers (and Micro.blog's shelves) only take your reading; everything else is a reading app or server. */
-private val BOOK_TRACKERS = setOf("hardcover", "fable", "pagebound", "storygraph", "goodreads", "seekquel", "microblog")
+private val BOOK_TRACKERS = setOf("hardcover", "fable", "pagebound", "storygraph", "goodreads", "seekquel", "librarything", "microblog")
 private fun isBookTracker(t: Tracker) = t.id in BOOK_TRACKERS
 
 /** Which way a reading app goes: both ways, or only bringing your place in. */
@@ -732,7 +750,8 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
     val svc = state.service(t.id)
     val waiting = state.pending.values.count { it.service == t.id }
     val failed = state.pending.values.count { it.service == t.id && it.tries > 0 }
-    val review = state.links.values.count { it.service == t.id && ((it.externalId == null && it.note == "Needs a match") || (it.externalId != null && !it.confirmed && it.source != io.github.prithirajn.readync.data.LinkSource.NONE)) }
+    val toMatch = io.github.prithirajn.readync.sync.Health.needsMatch(state, t.id)
+    val review = toMatch.size
     GuardedSheet(
         dragHandle = { SheetGrip() },
         onDismissRequest = onClose,
@@ -760,7 +779,7 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
             val status = listOfNotNull(
                 if (t.id in state.serverLinked) "Also linked on your CrossPoint server: it sends your CrossPoint books to ${t.name}, and Readync sends the rest (Kindle, Libby, Audible, KOReader, physical books), so nothing goes twice." else null,
                 if (waiting > 0) "$waiting book${if (waiting == 1) "" else "s"} waiting to sync" + (if (failed > 0) ", $failed retrying" else "") else null,
-                if (review > 0) "$review need a match: tap the book in Library to pick one" else null,
+                if (review > 0) "Match needed: ${io.github.prithirajn.readync.sync.Health.titles(state, toMatch)}. Open ${if (review == 1) "it" else "each"} in Library to pick one." else null,
             )
             AnimatedVisibility(
                 visible = status.isNotEmpty() || svc.lastError != null,
@@ -804,6 +823,15 @@ private fun TrackerSheet(vm: AppViewModel, state: Snapshot, t: Tracker, onClose:
                         enabled = allowed,
                     ) {
                         CpToggle(svc.highlights && allowed, { vm.setHighlights(t, it) }, "Send highlights to ${t.name}", enabled = allowed)
+                    }
+                    // Turned on, only newer highlights go by themselves: the earlier ones can be sent too.
+                    val earlier = remember(svc.highlights, svc.highlightsSince, state.sentClippings, state.resend, state.links) { vm.earlierUnsent(t).size }
+                    if (svc.highlights && allowed && earlier > 0) {
+                        Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Quiet("$earlier highlight${if (earlier == 1) " was" else "s were"} made before you turned this on, so ${if (earlier == 1) "it isn't" else "they aren't"} sent.", Modifier.weight(1f), color = c.faint)
+                            HSpace(8)
+                            PillButton("Send ${if (earlier == 1) "it" else "them"} too", { vm.sendEarlier(t) }, outlined = false)
+                        }
                     }
                 }
                 if (t.id == io.github.prithirajn.readync.trackers.SeekquelTracker.id) {
@@ -3408,7 +3436,7 @@ private fun PairSheet(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
 /** Full-screen WebView on the tracker's own sign-in page; its cookies become the login. */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun WebSignIn(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
+private fun WebSignIn(vm: AppViewModel, t: Tracker, onPassword: (() -> Unit)? = null, onClose: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -3441,6 +3469,10 @@ private fun WebSignIn(vm: AppViewModel, t: Tracker, onClose: () -> Unit) {
                 Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
                     Text("Sign in to ${t.name}", style = CpType.bodyStrong, color = c.text)
                     Quiet("Sign in below, then tap Done.", maxLines = 1)
+                    onPassword?.let { go ->
+                        Text("Or use your email and password", style = CpType.small, color = c.accentText,
+                            modifier = Modifier.bouncyClickable(CpShapes.control) { go() }.padding(vertical = 2.dp))
+                    }
                 }
                 if (loading) CircularProgressIndicator(Modifier.size(16.dp), color = c.faint, strokeWidth = 2.dp)
                 HSpace(8)
@@ -3719,8 +3751,7 @@ internal fun AddServiceRow(text: String, onClick: () -> Unit) {
             .clip(CpShapes.card)
             // An empty slot waiting for a service: a dashed outline.
             .drawBehind {
-                val stroke = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx(), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(7.dp.toPx(), 5.dp.toPx())))
-                drawRoundRect(edge, cornerRadius = androidx.compose.ui.geometry.CornerRadius(22.dp.toPx()), style = stroke)
+                drawShape(CpShapes.card, edge, stroke = 1.5.dp.toPx(), dash = floatArrayOf(7.dp.toPx(), 5.dp.toPx()))
             }
             .pressRow(source, text, onClick)
             .padding(horizontal = 16.dp, vertical = 15.dp),

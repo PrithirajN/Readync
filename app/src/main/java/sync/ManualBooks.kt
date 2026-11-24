@@ -226,6 +226,63 @@ object Isbn {
         return sum % 11 == 0
     }
 
+    /**
+     * An ISBN printed as text (the copyright page, the back cover above the barcode, a price
+     * sticker, a handwritten note): "ISBN 978-0-575-07979-0", "ISBN-10: 0575079797", digits
+     * broken by spaces or hyphens, letters O read for 0. Only ones whose check digit is right.
+     *
+     * A copyright page often lists every edition ("978-… (hardback)", "978-… (ebook)", "eISBN
+     * 978-…"): the printed book's is the one wanted, so one marked as an ebook, audiobook or PDF is
+     * left out when there's another, and one marked hardback, paperback or print comes first. After
+     * that: one labelled ISBN, then a 13-digit one. Null when there's none (or, without
+     * [allowElectronic], only an ebook's: the camera keeps looking for the printed one).
+     */
+    fun fromText(text: String, allowElectronic: Boolean = true): String? = allFromText(text, allowElectronic).firstOrNull()?.isbn
+
+    /** One ISBN read off text, with the edition it's marked as ("Hardback", "Trade paperback"), if any. */
+    data class Found(val isbn: String, val label: String?, val score: Int, val electronic: Boolean)
+
+    /**
+     * Every ISBN in [text] with a right check digit, best first (as [fromText] chooses), each once,
+     * with what it's marked as. Ebook ones are left out when there are others (and always without
+     * [allowElectronic]). Dashes of any kind (– — ‒) count as the hyphens grouping the digits.
+     */
+    fun allFromText(text: String, allowElectronic: Boolean = true): List<Found> {
+        val ebook = Regex("(?i)\\be-?isbn|\\be-?book|\\bepub|\\bkindle|\\bmobi|\\bpdf|\\bdigital|\\belectronic|\\bonline|\\baudio|\\bebk")
+        val print = Regex("(?i)hard ?(back|cover|bound)|\\bhbk?\\b|paper ?back|\\bpbk\\b|\\bpb\\b|\\bprint|\\btrade|\\bcloth|mass[- ]market|\\bsoft ?cover|collector|special edition|limited|deluxe|signed")
+        // Hyphen-like marks OCR gives for the dashes between groups.
+        val norm = text.replace('\u2013', '-').replace('\u2014', '-').replace('\u2012', '-').replace('\u2010', '-').replace('\u2011', '-').replace('\u2212', '-')
+        val found = ArrayList<Found>()
+        val lines = norm.lines()
+        for ((li, line) in lines.withIndex()) {
+            val labelled = Regex("(?i)\\bisbn").containsMatchIn(line)
+            // Runs of digits (and X at the end), allowing the spaces and hyphens that group them.
+            for (m in Regex("(?i)(?:97[89][\\s-]?)?[\\dOo](?:[\\s-]?[\\dOo]){8}[\\s-]?[\\dXx]").findAll(line)) {
+                val digits = m.value.replace(Regex("[\\s-]"), "").replace('O', '0').replace('o', '0').uppercase()
+                val isbn = fromBarcode(digits) ?: continue
+                // What's said about it: on its line, around it (a label can come before or after,
+                // or on the line below: "978-… \n (ebook)").
+                val next = lines.getOrNull(li + 1)?.takeIf { n -> n.length < 30 && !Regex("\\d{9}").containsMatchIn(n.replace(Regex("[\\s-]"), "")) } ?: ""
+                val around = line.substring(maxOf(0, m.range.first - 24), minOf(line.length, m.range.last + 28)) + " " + next
+                val electronic = ebook.containsMatchIn(around)
+                val printed = print.containsMatchIn(around)
+                // Its edition, as printed: "(TRADE PAPERBACK)" after it, else the words around it.
+                val after = line.substring(minOf(line.length, m.range.last + 1))
+                val label = (Regex("^\\s*[(\\[]([^)\\]]{2,40})[)\\]]").find(after)?.groupValues?.get(1)
+                    ?: Regex("^\\s*[(\\[]([^)\\]]{2,40})[)\\]]").find(next)?.groupValues?.get(1)
+                    ?: print.find(around)?.value ?: ebook.find(around)?.value)
+                    ?.trim()?.lowercase()?.replaceFirstChar { it.uppercase() }
+                found += Found(isbn, label, (if (printed) 4 else 0) + (if (labelled) 2 else 0) + (if (isbn.length == 13) 1 else 0), electronic)
+            }
+        }
+        val pool = found.filter { !it.electronic }.ifEmpty { if (allowElectronic) found else emptyList() }
+        // Best first; one entry per ISBN (the best-described one).
+        return pool.sortedByDescending { it.score }.distinctBy { it.isbn }
+    }
+
+    /** An ISBN set out to read: "978-0241373330", or a 10-digit one as it is. */
+    fun pretty(isbn: String): String = if (isbn.length == 13) isbn.take(3) + "-" + isbn.drop(3) else isbn
+
     /** ISBN-10 → ISBN-13, so both trackers' searches can be tried. */
     fun to13(isbn10: String): String {
         val core = "978" + isbn10.take(9)

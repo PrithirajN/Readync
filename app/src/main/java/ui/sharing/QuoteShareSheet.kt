@@ -123,6 +123,17 @@ fun QuoteShareSheet(
     var showMark by remember { mutableStateOf(BookShot.markOn(context)) }
     var studio by remember { mutableStateOf(false) }
     var page by remember { mutableStateOf(pageText) }
+    // The looks in four kinds: Classic cards, and (with the studio) Printed cards, Book photos and
+    // whole Studio scenes, each drawn over your last studio settings.
+    val presets = remember { BookShot.presets() }
+    val groups = remember(presets) { listOf("Classic") + presets.map { it.group }.distinct() }
+    var group by remember { mutableStateOf("Classic") }
+    var preset by remember { mutableStateOf<BookShot.Preset?>(null) }
+    var dark by remember { mutableStateOf(false) }
+    var source by remember { mutableStateOf(true) }
+    val studioBase = remember(studio) { BookShot.saved(context) }
+    val photoLook = group != "Classic" && preset != null
+    fun formatOf(z: QuoteCard.Size) = when (z) { QuoteCard.Size.POST -> BookShot.Format.POST; QuoteCard.Size.SQUARE -> BookShot.Format.SQUARE; QuoteCard.Size.STORY -> BookShot.Format.STORY }
     // No photo of its page: the words around it from the app's own copy of the book, when there is one.
     LaunchedEffect(clip.id, text) {
         if (page == null && book != null) {
@@ -155,7 +166,7 @@ fun QuoteShareSheet(
         val found = if (standalone) null else page?.let { io.github.prithirajn.readync.sync.PageContext.find(it, text) }
         if (found != null) sc.copy(before = found.before, after = found.after) else sc
     }
-    LaunchedEffect(content, look, size, showMark, studio, page) {
+    LaunchedEffect(content, look, size, showMark, studio, page, group, preset, dark, source) {
         if (studio) return@LaunchedEffect
         BookShot.setMark(context, showMark)
         // A moment's pause, so typing a note or flicking through looks draws only the one you stop on.
@@ -165,7 +176,9 @@ fun QuoteShareSheet(
                 val cover = book?.coverUrl?.let { runCatching { CoverCache.load(context, it, 1400) }.getOrNull() }
                 seed = book?.coverUrl?.let { runCatching { CoverAccent.of(context, it) }.getOrNull() }
                 withContext(Dispatchers.Default) {
-                    if (look == QuoteCard.Look.PAGE) BookShot.render(context, shotContent.copy(coverColor = seed), BookShot.saved(context), mark = showMark)
+                    val pr = preset
+                    if (group != "Classic" && pr != null) BookShot.render(context, shotContent.copy(coverColor = seed), pr.apply(studioBase, dark, source).copy(format = formatOf(size)), mark = showMark)
+                    else if (look == QuoteCard.Look.PAGE) BookShot.render(context, shotContent.copy(coverColor = seed), BookShot.saved(context), mark = showMark)
                     else QuoteCard.render(context, content, look, cover, seed, mark = showMark, size = size)
                 }
             }
@@ -220,7 +233,11 @@ fun QuoteShareSheet(
                 Column {
                     Screen(Modifier.fillMaxWidth()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            DeviceLabel(look.label + if (look.sized) " · " + size.label else "", color = c.screenDim, modifier = Modifier.weight(1f))
+                            DeviceLabel(
+                                if (photoLook) "${preset!!.name} · ${size.label}" + if (dark) " · dark" else ""
+                                else look.label + if (look.sized) " · " + size.label else "",
+                                color = c.screenDim, modifier = Modifier.weight(1f),
+                            )
                             Led(bmp != null && !failed, size = 6.dp)
                             Spacer(Modifier.width(6.dp))
                             DeviceLabel(if (bmp == null) "Drawing" else "Live", color = c.accent)
@@ -231,15 +248,22 @@ fun QuoteShareSheet(
                                 .fillMaxWidth()
                                 .heightIn(min = 280.dp)
                                 // Swipe the picture for the next or the one before.
-                                .pointerInput(look) {
+                                .pointerInput(look, group, preset) {
                                     var drag = 0f
                                     detectHorizontalDragGestures(
                                         onDragStart = { drag = 0f },
                                         onHorizontalDrag = { ch, d -> ch.consume(); drag += d },
                                         onDragEnd = {
-                                            val i = looks.indexOf(look).coerceAtLeast(0)
-                                            if (drag < -60f) pick(looks[(i + 1) % looks.size])
-                                            else if (drag > 60f) pick(looks[(i - 1 + looks.size) % looks.size])
+                                            if (group != "Classic") {
+                                                val mine = presets.filter { it.group == group }
+                                                val i = mine.indexOf(preset).coerceAtLeast(0)
+                                                if (drag < -60f) { dir = 1; preset = mine[(i + 1) % mine.size]; tick() }
+                                                else if (drag > 60f) { dir = -1; preset = mine[(i - 1 + mine.size) % mine.size]; tick() }
+                                            } else {
+                                                val i = looks.indexOf(look).coerceAtLeast(0)
+                                                if (drag < -60f) pick(looks[(i + 1) % looks.size])
+                                                else if (drag > 60f) pick(looks[(i - 1 + looks.size) % looks.size])
+                                            }
                                         },
                                     )
                                 },
@@ -281,10 +305,11 @@ fun QuoteShareSheet(
                         VSpace(10)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             DeviceLabel("Swipe for another look", color = c.screenDim, modifier = Modifier.weight(1f))
-                            for (l in looks) { Led(l == look, size = 5.dp); Spacer(Modifier.width(4.dp)) }
+                            if (group == "Classic") for (l in looks) { Led(l == look, size = 5.dp); Spacer(Modifier.width(4.dp)) }
+                            else DeviceLabel(presets.filter { it.group == group }.let { m -> "${m.indexOf(preset) + 1} / ${m.size}" }, color = c.screenDim)
                         }
                     }
-                    if (look.sized) {
+                    if (look.sized || photoLook) {
                         VSpace(10)
                         // Post, square or story, each with a little frame of its shape.
                         Segmented(QuoteCard.Size.entries, size, { it.label }, { size = it }) { z, on ->
@@ -297,17 +322,52 @@ fun QuoteShareSheet(
             }
             if (failed && bmp != null) { VSpace(6); AnimatedQuiet("Couldn't draw that one; this is the last picture. Try another look or shape.", color = c.faint) }
             VSpace(14)
-            // The Book photo studio, offered on its own above the looks, with this very passage in it.
-            run {
+            // The kinds of look: Classic cards, then the photo kinds when the studio is here.
+            if (groups.size > 1) {
+                Segmented(groups, group, { it }, onPick = { g ->
+                    group = g
+                    if (g != "Classic" && preset?.group != g) preset = presets.first { it.group == g }
+                    tick()
+                }, modifier = Modifier.riseIn(2))
+                VSpace(12)
+            }
+            if (group == "Classic") {
+                // The Book photo studio, offered on its own above the looks, with this very passage in it.
                 BookPhotoTile(shotContent, Modifier.riseIn(2), onOpen = { studio = true }, onFromPhoto = onFromPhoto)
                 VSpace(14)
-            }
-            // The looks as a row of keys, each with a swatch of itself; the chosen one stays pressed in, lit.
-            val lookScroll = rememberScrollState()
-            val keyStep = with(LocalDensity.current) { 84.dp.toPx() }
-            LaunchedEffect(look) { lookScroll.animateScrollTo(((look.ordinal - 1).coerceAtLeast(0) * keyStep).toInt()) }
-            Row(Modifier.riseIn(2).fillMaxWidth().horizontalScroll(lookScroll).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (l in looks) LookKey(l, l == look) { pick(l) }
+                // The looks as a row of keys, each with a swatch of itself; the chosen one stays pressed in, lit.
+                val lookScroll = rememberScrollState()
+                val keyStep = with(LocalDensity.current) { 84.dp.toPx() }
+                LaunchedEffect(look) { lookScroll.animateScrollTo(((look.ordinal - 1).coerceAtLeast(0) * keyStep).toInt()) }
+                Row(Modifier.riseIn(2).fillMaxWidth().horizontalScroll(lookScroll).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (l in looks) LookKey(l, l == look) { pick(l) }
+                }
+            } else {
+                // This kind's looks, each a little picture of this passage drawn that way.
+                androidx.compose.foundation.lazy.LazyRow(Modifier.riseIn(2).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(presets.filter { it.group == group }.size) { i ->
+                        val p = presets.filter { it.group == group }[i]
+                        PresetKey(p, shotContent.copy(coverColor = seed), studioBase, dark, source, p == preset) {
+                            if (p != preset) { val mine = presets.filter { it.group == group }; dir = if (mine.indexOf(p) > mine.indexOf(preset)) 1 else -1; preset = p; tick() }
+                        }
+                    }
+                }
+                VSpace(12)
+                Segmented(listOf(false, true), dark, { if (it) "Dark" else "Light" }, onPick = { dark = it })
+                VSpace(4)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Source", style = CpType.body, color = c.text)
+                        Text("The book's title and author on the picture.", style = CpType.small, color = c.faint)
+                    }
+                    CpToggle(source, { source = it }, "Source")
+                }
+                VSpace(10)
+                BigButton("Use as reference", {
+                    preset?.let { BookShot.save(context, it.apply(studioBase, dark, source).copy(format = formatOf(size))) }
+                    studio = true
+                }, filled = false)
+                Quiet("Opens the studio with this look, to change anything in it.", color = c.faint)
             }
             if (look == QuoteCard.Look.PAGE) {
                 VSpace(12)
@@ -369,7 +429,7 @@ fun QuoteShareSheet(
                 PillButton("Copy", {
                     bmp?.let { runCatching { QuoteCard.copy(context, it) }.onSuccess { tick(); said = "Copied. Paste it into any app that takes pictures." }.onFailure { said = "Couldn't copy it; use Share instead." } }
                 }, Modifier.weight(1f))
-                PillButton("Save", {
+                PillButton("Download", {
                     bmp?.let {
                         val ok = runCatching { QuoteCard.save(context, it) }.getOrDefault(false)
                         said = if (ok) "Saved to Pictures › ${io.github.prithirajn.readync.Edition.name}." else "Couldn't save here; use Share and pick your gallery."
@@ -398,7 +458,7 @@ fun QuoteShareSheet(
             }
             Confetti(burst, Modifier.matchParentSize())
             }
-            // The passage as a video, or as words: the two other ways, side by side.
+            // The passage as a video, or as words: the other ways, side by side.
             VSpace(8)
             var filming by remember { mutableStateOf(false) }
             var filmCover by remember { mutableStateOf<Bitmap?>(null) }
@@ -407,6 +467,11 @@ fun QuoteShareSheet(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillButton("\u25B6 Make it a video", { filming = true }, Modifier.weight(1f))
+                PillButton("Copy text", {
+                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    runCatching { cm.setPrimaryClip(android.content.ClipData.newPlainText(if (standalone) "Note" else "Quote", plain)) }
+                        .onSuccess { tick(); said = "The words are copied." }
+                }, Modifier.weight(1f))
                 PillButton("Share as text", {
                     val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                         type = "text/plain"
@@ -427,7 +492,36 @@ fun QuoteShareSheet(
             plain = plain,
             onClose = { studio = false },
             fullNote = noteDraft.ifBlank { note },
+            coverUrl = book?.coverUrl,
         )
+    }
+}
+
+/**
+ * One ready-made photo look as a key: this very passage drawn that way, small, its name under it,
+ * lit when it's the one. Drawn in the background, one at a time.
+ */
+@Composable
+private fun PresetKey(p: BookShot.Preset, content: BookShot.Content, base: BookShot.Options, dark: Boolean, source: Boolean, on: Boolean, onClick: () -> Unit) {
+    val c = Cp.colors
+    val context = LocalContext.current
+    val thumb by androidx.compose.runtime.produceState<Bitmap?>(null, p.name, dark, source, content.text) {
+        value = withContext(Dispatchers.Default) {
+            runCatching {
+                val full = BookShot.render(context, content, p.apply(base, dark, source).copy(format = BookShot.Format.SQUARE, filmGrain = 0f, focus = 0f))
+                Bitmap.createScaledBitmap(full, 220, 220, true).also { if (it !== full) full.recycle() }
+            }.getOrNull()
+        }
+    }
+    val sink by androidx.compose.animation.core.animateDpAsState(if (on) 2.dp else 0.dp, androidx.compose.animation.core.spring(dampingRatio = 0.5f, stiffness = 700f), label = "presetSink")
+    Key(onClick, Modifier.size(width = 92.dp, height = 118.dp).offset(y = sink), shape = RoundedCornerShape(14.dp), ledge = if (on) 1.dp else 3.dp, role = Role.RadioButton, label = p.name) {
+        Column(Modifier.fillMaxSize().padding(7.dp), verticalArrangement = Arrangement.SpaceBetween, horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.size(76.dp).clip(RoundedCornerShape(8.dp)).background(c.track)) {
+                thumb?.let { Image(it.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+            }
+            Text(p.name, style = CpType.small, color = if (on) c.text else c.textMid, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            GlowBar(on)
+        }
     }
 }
 

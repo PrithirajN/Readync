@@ -23,6 +23,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import io.github.prithirajn.readync.sync.Isbn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -122,6 +123,7 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
         }
     }
     val tick = rememberTick()
+    var readingLive by remember { mutableStateOf(false) }
     /** The old way, kept for phones where the live scanner can't run: a photo of the barcode. */
     fun photoScan() {
         val p = PageScanner.newPhoto(context)
@@ -129,22 +131,29 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
         try { camera.launch(p.second) } catch (e: ActivityNotFoundException) { error = "No camera app found. Search by title instead." }
     }
     /**
-     * The live scanner: a framing box over the camera that reads the ISBN as soon as it's in view.
-     * A shop's own barcode is skipped once, with the scanner opened again for the ISBN one.
+     * Google's live barcode scanner, for when Readync can't use the camera itself: a framing box
+     * that reads the ISBN barcode as soon as it's in view. A shop's own barcode is skipped once.
      */
-    fun liveScan(retried: Boolean = false) {
+    fun googleScan(retried: Boolean = false) {
         error = null
         PageScanner.scanLive(context) { r ->
             when (r) {
                 is PageScanner.LiveScan.Isbn -> { tick(); scanned = r.isbn; query = r.isbn }
                 is PageScanner.LiveScan.NotIsbn ->
-                    if (!retried) { vm.notify("That's not the ISBN barcode", "Try the one with 978 or 979 under it."); liveScan(true) }
+                    if (!retried) { vm.notify("That's not the ISBN barcode", "Try the one with 978 or 979 under it."); googleScan(true) }
                     else error = "That barcode isn't a book's ISBN. Look for the one starting 978 or 979, usually on the back cover."
                 PageScanner.LiveScan.Cancelled -> Unit
                 is PageScanner.LiveScan.Unavailable -> photoScan()
             }
         }
     }
+    // One camera for both: the barcode, or the ISBN printed as text, whichever it sees first. Without
+    // the camera permission, Google's barcode scanner (which needs none) is used instead.
+    if (readingLive) LiveIsbnReader(
+        onFound = { isbn -> readingLive = false; tick(); scanned = isbn; query = isbn },
+        onClose = { readingLive = false },
+        onNoCamera = { readingLive = false; googleScan() },
+    )
 
     Sheet(mode?.title ?: "Add a book", onClose) {
         val pick = picked
@@ -195,7 +204,7 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
                             scanned = null
                             query = ""
                             searched = ""
-                            liveScan()
+                            readingLive = true
                         }
                     }
                 }, busy = busy, filled = false)
@@ -207,9 +216,10 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
 
         // The quickest way: the barcode on the back cover finds the exact edition.
         VSpace(8)
-        BigButton(if (scanning) "Reading the barcode…" else "Scan the barcode", { liveScan() }, busy = scanning)
+        BigButton(if (scanning) "Reading the barcode…" else "Scan the ISBN", { error = null; readingLive = true }, busy = scanning)
         if (scanned == null) {
-            Quiet("Point at the barcode on the back cover; it's read the moment it's in the box.", Modifier.padding(top = 6.dp), color = c.faint)
+            Quiet("Point at the barcode, or the ISBN printed on the copyright page or back cover; it's read the moment it's in the box.", Modifier.padding(top = 6.dp), color = c.faint)
+
         }
         scanned?.let { Quiet("ISBN $it", Modifier.padding(top = 6.dp), color = c.faint) }
         VSpace(14)
@@ -220,7 +230,11 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
                 Row(verticalAlignment = Alignment.Bottom) {
                     Box(Modifier.weight(1f)) { CpTextField(query, { query = it }, "Search", placeholder = "Title or author") }
                     HSpace(8)
-                    PillButton("Search", { scanned = null; searched = query.trim() })
+                    PillButton("Search", {
+                        // An ISBN typed in finds that exact edition, as a scanned one does.
+                        val typed = Isbn.fromBarcode(query.trim().replace(Regex("[\\s-]"), ""))
+                        if (typed != null) scanned = typed else { scanned = null; searched = query.trim() }
+                    })
                 }
             }
             VSpace(16)
@@ -259,7 +273,7 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
             }
             if (!idle || error != null) VSpace(16)
         } else {
-            Quiet("Link Hardcover or Seekquel under Services to add books with their covers and details. Or type it in:")
+            Quiet("Link Hardcover or Seekquel under Sync to add books with their covers and details. Or type it in:")
             VSpace(12)
         }
 

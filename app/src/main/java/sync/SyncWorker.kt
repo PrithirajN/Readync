@@ -163,6 +163,52 @@ object Notices {
     }
 
     /** Big news about your own series and authors (three a day at most, never spoilers). */
+    /** New & upcoming: what's out (and, if you asked, reminders before), a few at most, then one line for the rest. Each said once. */
+    @android.annotation.SuppressLint("MissingPermission")
+    fun releases(context: Context, store: io.github.prithirajn.readync.data.Store) {
+        if (!allowed(context)) return
+        val nm = NotificationManagerCompat.from(context)
+        val news = Releases.toNotify(store.snapshot)
+        if (news.isNotEmpty()) {
+            channel(context, RELEASES, "New & upcoming books")
+            for ((i, pair) in news.take(3).withIndex()) {
+                val (r, what) = pair
+                val day = r.date?.let { java.time.format.DateTimeFormatter.ofPattern("d MMM").format(java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault())) }
+                val title = if (what == "out") when (r.kind) {
+                    "chapter" -> "New chapter: ${r.title}"
+                    "webnovel" -> r.title.replaceFirstChar { it.uppercase() }
+                    else -> "Out now: ${r.title}"
+                } else "Coming ${day ?: "soon"}: ${r.title}"
+                nm.notify(
+                    300 + (r.key.hashCode() and 0xFFFF),
+                    NotificationCompat.Builder(context, RELEASES)
+                        .setSmallIcon(R.drawable.lucide_book_open)
+                        .setContentTitle(title)
+                        .setContentText(
+                            if (r.kind == "author") "New from ${r.series}" + (r.number?.let { " \u00B7 $it" } ?: "")
+                            else listOfNotNull(r.series.takeIf { r.kind == "book" || r.kind == "volume" }?.let { "Next in $it" + (r.number?.let { n -> " (#$n)" } ?: "") }, r.author).joinToString(" \u00B7 "),
+                        )
+                        .setContentIntent(openApp(context, MainActivity.ACTION_RELEASES, code = 30 + i))
+                        .setAutoCancel(true)
+                        .build(),
+                )
+            }
+            if (news.size > 3) {
+                nm.notify(
+                    299,
+                    NotificationCompat.Builder(context, RELEASES)
+                        .setSmallIcon(R.drawable.lucide_book_open)
+                        .setContentTitle("${news.size - 3} more new and upcoming")
+                        .setContentText(news.drop(3).take(4).joinToString(", ") { it.first.title })
+                        .setContentIntent(openApp(context, MainActivity.ACTION_RELEASES, code = 29))
+                        .setAutoCancel(true)
+                        .build(),
+                )
+            }
+            store.update { st -> st.copy(releases = st.releases + news.mapNotNull { (r, what) -> st.releases[r.key]?.let { r.key to it.copy(notified = what) } }) }
+        }
+    }
+
     fun sffNews(context: Context, store: io.github.prithirajn.readync.data.Store) {
         if (!allowed(context)) return
         val now = System.currentTimeMillis() / 1000
@@ -225,7 +271,7 @@ object Notices {
                 .setSmallIcon(R.drawable.lucide_bell)
                 .setContentTitle(title)
                 .setContentText(text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(text + if (t.books.isNotEmpty()) "\nAdd them to Want to Read or track their prices on Catalogs › Posts." else ""))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text + if (t.books.isNotEmpty()) "\nAdd them to Want to Read or track their prices on Discover › Catalogs › From posts." else ""))
                 .setContentIntent(openApp(context, MainActivity.ACTION_POSTS, code = 72))
                 .setAutoCancel(true)
                 .build(),
@@ -391,43 +437,7 @@ object Notices {
         } else if (!result.failed) {
             prefs.edit().remove("lastFailure").apply()
         }
-        // New & upcoming: what's out (and, if you asked, reminders before), a few at most, then one line for the rest.
-        val news = Releases.toNotify(store.snapshot)
-        if (news.isNotEmpty()) {
-            channel(context, RELEASES, "New & upcoming books")
-            for ((i, pair) in news.take(3).withIndex()) {
-                val (r, what) = pair
-                val day = r.date?.let { java.time.format.DateTimeFormatter.ofPattern("d MMM").format(java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault())) }
-                val title = if (what == "out") when (r.kind) {
-                    "chapter" -> "New chapter: ${r.title}"
-                    "webnovel" -> r.title.replaceFirstChar { it.uppercase() }
-                    else -> "Out now: ${r.title}"
-                } else "Coming ${day ?: "soon"}: ${r.title}"
-                nm.notify(
-                    300 + (r.key.hashCode() and 0xFFFF),
-                    NotificationCompat.Builder(context, RELEASES)
-                        .setSmallIcon(R.drawable.lucide_book_open)
-                        .setContentTitle(title)
-                        .setContentText(listOfNotNull(r.series.takeIf { r.kind == "book" || r.kind == "volume" }?.let { "Next in $it" + (r.number?.let { n -> " (#$n)" } ?: "") }, r.author).joinToString(" \u00B7 "))
-                        .setContentIntent(openApp(context, MainActivity.ACTION_RELEASES, code = 30 + i))
-                        .setAutoCancel(true)
-                        .build(),
-                )
-            }
-            if (news.size > 3) {
-                nm.notify(
-                    299,
-                    NotificationCompat.Builder(context, RELEASES)
-                        .setSmallIcon(R.drawable.lucide_book_open)
-                        .setContentTitle("${news.size - 3} more new and upcoming")
-                        .setContentText(news.drop(3).take(4).joinToString(", ") { it.first.title })
-                        .setContentIntent(openApp(context, MainActivity.ACTION_RELEASES, code = 29))
-                        .setAutoCancel(true)
-                        .build(),
-                )
-            }
-            store.update { st -> st.copy(releases = st.releases + news.mapNotNull { (r, what) -> st.releases[r.key]?.let { r.key to it.copy(notified = what) } }) }
-        }
+        releases(context, store)
         sffNews(context, store)
         probeBack(context, store)
         // Another source has a different position: that book's trackers wait for your choice, so say so (once per position).
@@ -498,6 +508,72 @@ object Notices {
                         .build(),
                 )
             }
+        }
+    }
+}
+
+/**
+ * The extras of a sync you started in the app (Sync now, pulling down), run as a background job
+ * rather than in the app's own process time: if you leave the app mid-way, Android keeps a job
+ * running (up to ten minutes) where it would kill a busy background app for using the CPU.
+ */
+class ExtrasWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val app = applicationContext as ReadyncApp
+        SyncEngine(app.store).runExtras()
+        runCatching { Notices.priceDrops(applicationContext, app.store) }
+        app.store.flush()
+        Result.success()
+    }
+
+    companion object {
+        fun enqueue(context: Context) {
+            val request = OneTimeWorkRequestBuilder<ExtrasWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork("sync-extras", androidx.work.ExistingWorkPolicy.KEEP, request)
+        }
+    }
+}
+
+/**
+ * News and releases on their own schedule, apart from the tracker sync: every three hours (when
+ * there's a connection and the battery isn't low), whether or not the app is open. News is fetched
+ * when it's over three hours old, and your releases and Coming soon are looked at every twelve; each
+ * tells you what's new as before. So a sync stays quick, and News is ready when you open it.
+ */
+class FeedsWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val app = applicationContext as ReadyncApp
+        val store = app.store
+        val now = System.currentTimeMillis() / 1000
+        val s = store.snapshot
+        if (s.settings.isQuiet(Calendar.getInstance().get(Calendar.HOUR_OF_DAY))) return@withContext Result.success()
+        if (s.sffItems.isEmpty() || now - s.sffUpdatedAt >= NEWS_EVERY_S) {
+            runCatching { SffRadar.refresh(store, force = true) }
+            runCatching { Notices.sffNews(applicationContext, store) }
+        }
+        val lastReleases = s.extras[RELEASES_KEY]?.toLongOrNull() ?: 0L
+        if (s.releaseSettings.enabled && now - lastReleases >= RELEASES_EVERY_S) {
+            runCatching { Releases.check(store) }
+            store.update { it.copy(extras = it.extras + (RELEASES_KEY to now.toString())) }
+            runCatching { Notices.releases(applicationContext, store) }
+        }
+        store.flush()
+        Result.success()
+    }
+
+    companion object {
+        private const val NAME = "feeds-periodic"
+        const val NEWS_EVERY_S = 3 * 3600L
+        const val RELEASES_EVERY_S = 12 * 3600L
+        const val RELEASES_KEY = "feeds.releasesAt"
+
+        fun schedule(context: Context) {
+            val request = PeriodicWorkRequestBuilder<FeedsWorker>(3, TimeUnit.HOURS, 1, TimeUnit.HOURS)
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).setRequiresBatteryNotLow(true).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(NAME, ExistingPeriodicWorkPolicy.KEEP, request)
         }
     }
 }

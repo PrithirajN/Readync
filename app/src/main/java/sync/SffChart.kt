@@ -514,7 +514,7 @@ object SffChart {
         for (n in news) if (n.document != null && n.document in docs) lines += Line(n.id, n.document, "News about it", news = true)
         // Comets: the next books in your series, coming closer as their day nears.
         val comets = ArrayList<Comet>()
-        for (r in s.releases.values.sortedBy { it.date ?: Long.MAX_VALUE }) {
+        for (r in s.releases.values.filter { !it.skipped }.sortedBy { it.date ?: Long.MAX_VALUE }) {
             if (r.kind != "book" && r.kind != "volume") continue
             val date = r.date ?: continue
             if (date <= now) continue

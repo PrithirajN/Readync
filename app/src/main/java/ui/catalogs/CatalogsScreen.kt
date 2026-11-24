@@ -103,7 +103,13 @@ private fun score(h: Hit, q: String): Double {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
+fun CatalogsScreen(
+    vm: AppViewModel, state: Snapshot,
+    /** Inside Discover: its masthead in place of this tab's own. */
+    header: (@Composable () -> Unit)? = null,
+    /** The views offered ("Search", "Posts", "Deals"); one alone shows no switch. */
+    modes: List<String> = listOf("Search", "Posts", "Deals"),
+) {
     val c = Cp.colors
     val context = LocalContext.current.applicationContext
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { Opds.load(context) } }
@@ -139,13 +145,17 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
         }.awaitAll()
     }
     // Search the catalogs, or the deals on books whose price you're watching.
-    var mode by rememberSaveable { mutableStateOf("Search") }
+    var modeSaved by rememberSaveable { mutableStateOf(modes.first()) }
+    val mode = modeSaved.takeIf { it in modes } ?: modes.first()
     val sharedPost by PostShare.pending.collectAsState()
-    LaunchedEffect(sharedPost) { if (sharedPost != null) mode = "Posts" }
+    LaunchedEffect(sharedPost) { if (sharedPost != null && "Posts" in modes) modeSaved = "Posts" }
     val sharedMedia by PostShare.media.collectAsState()
-    LaunchedEffect(sharedMedia) { if (sharedMedia != null) mode = "Posts" }
+    LaunchedEffect(sharedMedia) { if (sharedMedia != null && "Posts" in modes) modeSaved = "Posts" }
     val goTo by CatalogsGo.mode.collectAsState()
-    LaunchedEffect(goTo) { goTo?.let { mode = it; CatalogsGo.mode.value = null } }
+    LaunchedEffect(goTo) { goTo?.takeIf { it in modes }?.let { modeSaved = it; CatalogsGo.mode.value = null } }
+    // A search asked for from Discover's search box.
+    val askedQuery by CatalogsGo.query.collectAsState()
+    LaunchedEffect(askedQuery) { askedQuery?.takeIf { "Search" in modes }?.let { query = it; modeSaved = "Search"; CatalogsGo.query.value = null } }
 
     // Every server at once, a moment after you stop typing; results come in as each answers.
     LaunchedEffect(query, servers.map { it.id }) {
@@ -189,16 +199,26 @@ fun CatalogsScreen(vm: AppViewModel, state: Snapshot) {
     val latestServers = remember(latestFound.size) { latestFound.map { it.first.id }.distinct().size }
     val listState = rememberLazyListState()
 
-    LazyColumn(Modifier.fillMaxSize().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp + TabBarSpace)) {
+    LazyColumn(Modifier.fillMaxSize().edgeBump().fadeTopEdge(listState.canScrollBackward), state = listState, contentPadding = PaddingValues(bottom = 32.dp + TabBarSpace)) {
         item(key = "head") {
             Column {
-                TabHeader(if (servers.isEmpty()) "opds book servers" else "${servers.size} server${if (servers.size == 1) "" else "s"}, searched together", "Catalogs") {
+                if (header != null) {
+                    header()
+                    // Adding servers, beside the views (only where the servers are).
+                    if ("Search" in modes) Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Quiet(if (servers.isEmpty()) "Your OPDS book servers, searched together" else "${servers.size} server${if (servers.size == 1) "" else "s"}, searched together", Modifier.weight(1f))
+                        IconCircleButton(R.drawable.lucide_list_checks, "Paste a list of servers", { pasting = true }, tint = c.textMid)
+                        IconCircleButton(R.drawable.lucide_plus, "Add a server", { addingNew = true }, tint = c.accentText)
+                    }
+                } else TabHeader(if (servers.isEmpty()) "opds book servers" else "${servers.size} server${if (servers.size == 1) "" else "s"}, searched together", "Catalogs") {
                     IconCircleButton(R.drawable.lucide_list_checks, "Paste a list of servers", { pasting = true }, tint = c.textMid)
                     IconCircleButton(R.drawable.lucide_plus, "Add a server", { addingNew = true }, tint = c.accentText)
                 }
                 Column(Modifier.padding(horizontal = 16.dp)) {
+                if (modes.size > 1) {
                 VSpace(12)
-                Segmented(listOf("Search", "Posts", "Deals"), mode, { if (it == "Deals" && state.priceWatch.isNotEmpty()) "Deals · ${state.priceWatch.size}" else it }, { mode = it }, Modifier.fillMaxWidth())
+                Segmented(modes, mode, { when { it == "Deals" && state.priceWatch.isNotEmpty() -> "Deals · ${state.priceWatch.size}"; it == "Posts" && header != null -> "From posts"; else -> it } }, { modeSaved = it }, Modifier.fillMaxWidth())
+                }
                 if (servers.isNotEmpty() && mode == "Search") {
                     VSpace(12)
                     val clear: (@Composable () -> Unit)? = if (query.isNotEmpty()) { { IconCircleButton(R.drawable.lucide_x, "Clear", { query = "" }) } } else null

@@ -164,7 +164,7 @@ object BookPrices {
     /** The listings the last [check] on this thread found, by store. */
     fun lastListings(): Map<String, List<PriceListing>> = listings.get().orEmpty()
 
-    private val EDITION = Regex("(?i)\\b(deluxe|special|collector'?s|limited|anniversary|signed|illustrated|exclusive|sprayed[- ]edges?|gift|premium)\\b(?:\\s+(?:hardcover\\s+)?edition)?")
+    private val EDITION = Regex("(?i)\\b(deluxe|special|collector['’]?s|limited|anniversary|signed|illustrated|exclusive|sprayed[- ]edges?|gift|premium)\\b(?:\\s+(?:hardcover\\s+)?edition)?")
 
     private val SMALL = setOf("a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with", "from", "into")
 
@@ -203,7 +203,7 @@ object BookPrices {
 
     /** A title without its edition words, for searching ("Leviathan Wakes 10th Anniversary Edition" -> "Leviathan Wakes"). */
     fun withoutEdition(title: String): String =
-        title.replace(Regex("(?i)[(\\[]?\\s*\\b(\\d+(st|nd|rd|th)\\s+)?(anniversary|deluxe|special|collector'?s|limited|illustrated|signed|exclusive|gift|premium)(\\s+(hardcover\\s+)?edition)?\\b\\s*[)\\]]?"), " ")
+        title.replace(Regex("(?i)[(\\[]?\\s*\\b(\\d+(st|nd|rd|th)\\s+)?(anniversary|deluxe|special|collector['’]?s|limited|illustrated|signed|exclusive|gift|premium)(\\s+(hardcover\\s+)?edition)?\\b\\s*[)\\]]?"), " ")
             .replace(Regex("(?i)\\b(hardcover|paperback|edition)\\b"), " ")
             .replace(Regex("\\s+"), " ").trim().trimEnd(':', '-', '–', ',').trim()
             .ifBlank { title }
@@ -232,17 +232,41 @@ object BookPrices {
             edition != null && !name.contains(edition, true) -> "$name ($edition)"
             else -> name
         }
-        return w.copy(
-            title = shown,
-            author = w.author ?: v?.optJSONArray("authors")?.optString(0)?.ifBlank { null },
-            cover = w.cover ?: v?.optJSONObject("imageLinks")?.let { it.optString("thumbnail").ifBlank { it.optString("smallThumbnail") } }
-                ?.ifBlank { null }?.replace("http://", "https://")?.replace("&edge=curl", ""),
-        )
+        val author = w.author ?: v?.optJSONArray("authors")?.optString(0)?.ifBlank { null }
+        // Google Books often has no picture for a new book: then Open Library's, then the picture on
+        // the store pages it's followed at (the stores always show one).
+        val cover = w.cover
+            ?: v?.optJSONObject("imageLinks")?.let { it.optString("thumbnail").ifBlank { it.optString("smallThumbnail") } }
+                ?.ifBlank { null }?.replace("http://", "https://")?.replace("&edge=curl", "")
+            ?: runCatching { OpenLibrary.cover(withoutEdition(tidy), author) }.getOrNull()
+            ?: storeCover(w)
+        return w.copy(title = shown, author = author, cover = cover)
+    }
+
+    /** The book's picture on a store page it's followed at: Atlantic's product data, else Bookswagon's or Amazon's page. */
+    private fun storeCover(w: PriceWatch): String? {
+        fun abs(u: String?) = u?.trim()?.ifBlank { null }?.let { if (it.startsWith("//")) "https:$it" else it }?.takeIf { it.startsWith("https://") }
+        w.links["atlantic"]?.let { link ->
+            Regex("/products/([^/?#]+)").find(link)?.groupValues?.get(1)?.let { handle ->
+                runCatching { abs(JSONObject(get("https://atlanticbooks.com/products/$handle.js")).optString("featured_image")) }.getOrNull()?.let { return it }
+            }
+        }
+        w.links["bookswagon"]?.let { link -> runCatching { abs(bwCover(meta(fetch(link).body, "og:image"))) }.getOrNull()?.let { return it } }
+        w.links["amazon"]?.let { link ->
+            runCatching {
+                val html = get(link)
+                abs(Regex("""data-old-hires="(https[^"]+)"""").find(html)?.groupValues?.get(1))
+                    ?: abs(Regex(""""hiRes":"(https[^"]+)"""").find(html)?.groupValues?.get(1))
+                    ?: abs(Regex("""id="(?:landingImage|imgBlkFront)"[^>]*src="(https[^"]+)"""").find(html)?.groupValues?.get(1))
+                    ?: abs(meta(html, "og:image"))
+            }.getOrNull()?.let { return it }
+        }
+        return null
     }
 
     /** "Deluxe edition", "Special edition"… when the title says so. */
     fun editionOf(title: String?): String? = title?.let { EDITION.find(it)?.groupValues?.get(1) }
-        ?.replace('-', ' ')?.lowercase()?.replaceFirstChar { it.uppercase() }?.let { if (it.endsWith("edges")) it else "$it edition" }
+        ?.replace('-', ' ')?.replace('’', '\'')?.lowercase()?.replaceFirstChar { it.uppercase() }?.let { if (it.endsWith("edges")) it else "$it edition" }
 
     /** Hardcovers first, then paperbacks, then anything else. */
     private fun formatRank(format: String?): Int = when {
@@ -261,20 +285,60 @@ object BookPrices {
             ?: Regex("""(?is)Publisher\s*(?:&rlm;|&lrm;|[:\s]|</?[a-z][^>]*>){1,12}([A-Za-z][^<(;]{1,80})""").find(html)?.groupValues?.get(1)
                 ?.let { it.trim() }?.takeIf { it.isNotBlank() }
 
-    /** The listing to follow among [found]: hardcovers before paperbacks, otherwise the stores' own order. */
+    /**
+     * What the stores already read this check found for the book (Atlantic is read last): the binding
+     * it is there, its price, and the edition its title names. Used to tell the right one among a shop's
+     * several listings, where the shop's title alone can't ("A Knight of the Seven Kingdoms" is the
+     * paperback, the illustrated one and the collector's hardcover alike).
+     */
+    private data class Clue(val formatRank: Int?, val price: Double?, val edition: String?)
+    private val clue = ThreadLocal<Clue?>()
+
+    private fun clueFrom(book: Book, so: List<PricePoint>): Clue {
+        val print = so.filter { it.price != null && it.format != "Kindle" }
+        val rank = print.mapNotNull { pp -> formatRank(pp.format).takeIf { it < 2 } }.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
+        val prices = print.mapNotNull { it.price }.sorted()
+        return Clue(rank, prices.getOrNull(prices.size / 2), editionOf(book.displayTitle)?.lowercase())
+    }
+
+    /** How well [l] fits the [clue]: lower is better (the same edition, then binding, then price nearest). */
+    private fun fit(l: PriceListing, c: Clue?): Triple<Int, Int, Double> {
+        if (c == null) return Triple(0, formatRank(l.format), 0.0)
+        val ed = when { c.edition == null -> 0; l.edition?.lowercase() == c.edition -> 0; l.edition == null -> 1; else -> 2 }
+        val fmt = c.formatRank?.let { r -> val mine = formatRank(l.format); if (mine == r) 0 else if (mine == 2) 1 else 2 } ?: formatRank(l.format)
+        val far = if (c.price != null && l.price != null && l.price > 0) kotlin.math.abs(kotlin.math.ln(l.price / c.price)) else 1.0
+        return Triple(ed, fmt, far)
+    }
+
+    /**
+     * The listing to follow among [found]: the one that fits what the other stores found (its edition,
+     * then its binding, then the nearest price); without those, hardcovers before paperbacks, otherwise
+     * the store's own order.
+     */
     private fun pick(store: String, found: List<PriceListing>): PriceListing? {
         if (found.isEmpty()) return null
         listings.get()?.put(store, found)
-        return found.withIndex().minWith(compareBy({ formatRank(it.value.format) }, { it.index })).value
+        val c = clue.get()
+        // One the shop can sell you comes before one it can't, unless you're following one exact edition.
+        val strict = strictEdition.get() == true
+        return found.withIndex().minWith(
+            compareBy<IndexedValue<PriceListing>>({ if (!strict && it.value.inStock == false) 1 else 0 }, { fit(it.value, c).first }, { fit(it.value, c).second }, { fit(it.value, c).third }, { it.index })
+        ).value
     }
 
     /** Whether the book being checked is one exact edition (it was added from a store's page). */
     private val strictEdition = ThreadLocal<Boolean>()
 
     /** What to search a store for: the ISBN, then the title (without its subtitle) and the author's surname. */
-    private fun queries(book: Book): List<String> {
+    private fun queries(book: Book, titleOnly: Boolean = false): List<String> {
         val surname = book.author?.split(",", "&", " and ")?.firstOrNull()?.trim()?.split(" ")?.lastOrNull()
         val title = tidyShopTitle(book.displayTitle).substringBefore(":").substringBefore(" (").trim().ifEmpty { book.displayTitle }
+        // Atlantic's search wants every word in the product's title: with the author's name added it
+        // finds only the listings that happen to carry it (the paperback, not "…Collector's Edition").
+        if (titleOnly) return listOfNotNull(
+            book.isbn?.filter { it.isDigit() || it == 'X' }?.takeIf { it.length == 13 || it.length == 10 },
+            title, withoutEdition(title), listOfNotNull(title, surname).joinToString(" "),
+        ).distinct()
         return listOfNotNull(
             book.isbn?.filter { it.isDigit() || it == 'X' }?.takeIf { it.length == 13 || it.length == 10 },
             listOfNotNull(title, surname).joinToString(" "),
@@ -291,6 +355,8 @@ object BookPrices {
         listings.set(HashMap())
         for (s in shops) {
             try {
+                // What the stores read so far found, to tell this store's right listing (see Clue).
+                clue.set(clueFrom(book, out))
                 out += when (s.id) {
                     "amazon" -> amazon(book, watch.links["amazon"], now, "amazon" in watch.pinned)
                     "bookswagon" -> bookswagon(book, watch.links["bookswagon"], now, "bookswagon" in watch.pinned)
@@ -316,41 +382,101 @@ object BookPrices {
 
     // ---- Atlantic Books (Shopify) ----
 
+    /**
+     * A page followed from an earlier check (not one you chose) that's another edition or binding than
+     * the book: "A Knight of the Seven Kingdoms Collector's Edition" followed at the plain paperback
+     * because that was all the shop listed then. The shop is searched again for the right one (which
+     * may turn out to be the same page, if it's all the shop has).
+     */
+    private fun wrongEdition(l: PriceListing): Boolean {
+        val c = clue.get() ?: return false
+        if (c.edition != null && l.edition?.lowercase() != c.edition) return true
+        val r = c.formatRank ?: return false
+        val mine = formatRank(l.format)
+        return mine < 2 && mine != r
+    }
+
+    /**
+     * The author Atlantic gives a product: its description says "• Author(s): Paulette Alden<br>"
+     * (there's no field for it). Null when it doesn't say.
+     */
+    internal fun atlanticAuthor(p: JSONObject): String? {
+        val body = p.optString("description").ifBlank { p.optString("body") }.ifBlank { p.optString("body_html") }
+        return Regex("(?i)Author\\(?s?\\)?\\s*:\\s*([^<\\n]{2,160})").find(body)?.groupValues?.get(1)
+            ?.replace("&amp;", "&")?.trim()?.trimEnd(',', ';', '.')?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Whether a shop's [author] can be the book's: true when either is unknown, else they must share
+     * a name of three letters or more ("Robert Kolker" and "Kolker, Robert" agree; "Paulette Alden" doesn't).
+     */
+    internal fun authorsAgree(book: String?, shop: String?): Boolean {
+        if (book.isNullOrBlank() || shop.isNullOrBlank()) return true
+        fun names(s: String) = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD).lowercase()
+            .split(Regex("[^\\p{L}]+")).filter { it.length >= 3 && it !in setOf("and", "the", "with", "editor", "edited", "translated", "illustrated") }.toSet()
+        val a = names(book); val b = names(shop)
+        if (a.isEmpty() || b.isEmpty()) return true
+        return a.any { it in b }
+    }
+
     private fun atlantic(book: Book, link: String?, now: Long, pinned: Boolean = false): List<PricePoint> {
-        val handle = link?.let { Regex("/products/([^/?#]+)").find(it)?.groupValues?.get(1) }
+        val linked = link?.let { Regex("/products/([^/?#]+)").find(it)?.groupValues?.get(1) }
+            ?.takeIf { h ->
+                // A followed page by another author (a different book of the same name) is searched again.
+                pinned || runCatching { JSONObject(get("https://atlanticbooks.com/products/$h.js")) }.getOrNull()
+                    ?.let { !wrongEdition(atlanticListing(h, it)) && authorsAgree(book.author, atlanticAuthor(it)) } ?: true
+            }
+        val handle = linked
             ?: run {
                 // Every listing of it (each edition read for its format, publisher and pages); a hardcover is followed first.
                 val found = ArrayList<PriceListing>()
-                for (qRaw in queries(book)) {
+                for (qRaw in queries(book, titleOnly = true)) {
                     val q = URLEncoder.encode(qRaw, "UTF-8")
                     val o = runCatching { JSONObject(get("https://atlanticbooks.com/search/suggest.json?q=$q&resources[type]=product&resources[limit]=10")) }.getOrNull() ?: continue
                     val products = o.optJSONObject("resources")?.optJSONObject("results")?.optJSONArray("products") ?: continue
                     val handles = (0 until products.length()).map { products.getJSONObject(it) }
-                        .filter { matches(book, it.optString("title")) }
+                        .filter { matches(book, it.optString("title")) && authorsAgree(book.author, atlanticAuthor(it)) }
                         .mapNotNull { it.optString("handle").takeIf { h -> h.isNotBlank() } }
                         .filter { h -> found.none { it.url.endsWith("/$h") } }
                         .take(6)
                     for (h in handles) {
+                        if (found.size >= 10) break
                         val pj = runCatching { JSONObject(get("https://atlanticbooks.com/products/$h.js")) }.getOrNull() ?: continue
+                        if (!authorsAgree(book.author, atlanticAuthor(pj))) continue
                         found += atlanticListing(h, pj)
                     }
-                    if (found.isNotEmpty()) break
+                    // Enough once one fits what the other stores found (its edition and binding); otherwise
+                    // the next search (without the edition words, say) may turn up the right one.
+                    val c = clue.get()
+                    if (found.isNotEmpty() && (c == null || found.any { fit(it, c).let { f -> f.first == 0 && f.second == 0 } })) break
                 }
                 pick("atlantic", found)?.url?.substringAfterLast("/products/") ?: return listOf(PricePoint("atlantic", now, null, inStock = false))
             }
         val p = JSONObject(get("https://atlanticbooks.com/products/$handle.js"))
-        if (!pinned && !matches(book, p.optString("title"))) return listOf(PricePoint("atlantic", now, null, inStock = false, url = if (link != null) "drop" else null))
-        val v = p.optJSONArray("variants")?.optJSONObject(0)
+        if (!pinned && (!matches(book, p.optString("title")) || !authorsAgree(book.author, atlanticAuthor(p))))
+            return listOf(PricePoint("atlantic", now, null, inStock = false, url = if (link != null) "drop" else null))
+        // The variant the shop itself shows: the cheapest one in stock (the first was read before, and when it
+        // was sold out the book read as out of stock while the shop sold it).
+        val v = atlanticVariant(p)
+        val variants = p.optJSONArray("variants")
         // Shopify gives prices in paise.
         val price = (v?.optLong("price") ?: p.optLong("price")).takeIf { it > 0 }?.let { it / 100.0 }
         val mrp = (v?.optLong("compare_at_price") ?: p.optLong("compare_at_price")).takeIf { it > 0 }?.let { it / 100.0 }
-        val available = v?.optBoolean("available") ?: p.optBoolean("available", true)
+        val available = if (variants != null && variants.length() > 0) (0 until variants.length()).any { variants.optJSONObject(it)?.optBoolean("available") == true }
+            else p.optBoolean("available", true)
         return listOf(PricePoint("atlantic", now, price, mrp?.takeIf { price == null || it > price }, available, atlanticListing(handle, p).format, "https://atlanticbooks.com/products/$handle", p.optString("title").ifBlank { null }))
     }
 
     /** An Atlantic product (Shopify's .js) as a listing: its binding from the variant, type or tags; its publisher (the vendor); pages from its description. */
+    /** The variant Atlantic shows: the cheapest in stock, else the first. */
+    private fun atlanticVariant(p: JSONObject): JSONObject? {
+        val a = p.optJSONArray("variants") ?: return null
+        val all = (0 until a.length()).mapNotNull { a.optJSONObject(it) }
+        return all.filter { it.optBoolean("available") && it.optLong("price") > 0 }.minByOrNull { it.optLong("price") } ?: all.firstOrNull()
+    }
+
     private fun atlanticListing(handle: String, p: JSONObject): PriceListing {
-        val v = p.optJSONArray("variants")?.optJSONObject(0)
+        val v = atlanticVariant(p)
         val tags = p.optJSONArray("tags")?.let { t -> (0 until t.length()).map { t.optString(it) } }.orEmpty()
         val body = p.optString("description").ifBlank { p.optString("body_html") }
         val format = listOfNotNull(v?.optString("title")?.takeIf { it != "Default Title" }, p.optString("type").ifBlank { null })
@@ -360,7 +486,10 @@ object BookPrices {
         val pages = tags.firstNotNullOfOrNull { Regex("(?i)pages?\\D{0,3}(\\d{2,4})").find(it)?.groupValues?.get(1)?.toIntOrNull() } ?: pagesIn(body)
         val title = p.optString("title").ifBlank { null }
         val price = ((v?.optLong("price") ?: p.optLong("price")).takeIf { it > 0 })?.let { it / 100.0 }
-        return PriceListing("atlantic", "https://atlanticbooks.com/products/$handle", title, format, p.optString("vendor").ifBlank { null }, pages, editionOf(title), price)
+        val variants = p.optJSONArray("variants")
+        val available = if (variants != null && variants.length() > 0) (0 until variants.length()).any { variants.optJSONObject(it)?.optBoolean("available") == true }
+            else p.optBoolean("available", true)
+        return PriceListing("atlantic", "https://atlanticbooks.com/products/$handle", title, format, p.optString("vendor").ifBlank { null }, pages, editionOf(title), price, available)
     }
 
     // ---- Bookswagon ----
@@ -380,7 +509,12 @@ object BookPrices {
             // (Any printing of it counts here: Bookswagon often has another edition than the one followed.)
             val linkIsbn = link?.let { Regex("/(\\d{13})").find(it)?.groupValues?.get(1) }
             val linkTitle = titleOf(page0!!)
-            if (!pinned && !loose { matches(book, linkTitle, linkIsbn) }) { url = null; page0 = null; rejected = true }
+            val linkData = bwBook(page0!!)
+            if (!pinned && (!loose { matches(book, linkTitle, linkIsbn) } || !authorsAgree(book.author, linkData?.author))) { url = null; page0 = null; rejected = true }
+            // Sold out there: another edition the shop has in stock is looked for (this one stays if none is).
+            else if (!pinned && strictEdition.get() != true && linkData?.inStock == false) { url = null; page0 = null }
+            // This book, but another edition or binding than the one followed: looked for again below.
+            else if (!pinned && wrongEdition(bookswagonListing(url!!, page0!!))) { url = null; page0 = null }
         }
         // Bookswagon's own search first (/search-books/leviathan-wakes): one page lists every edition it
         // has, each with its price, so nothing more needs opening to compare them.
@@ -394,15 +528,25 @@ object BookPrices {
                 val page = bwGet("https://www.bookswagon.com/search-books/$slug", BW_LINK)?.takeIf { BW_LINK.containsMatchIn(it) } ?: continue
                 val tiles = bwTiles(page)
                 // Your exact edition first, then the others that are this book, in Bookswagon's order.
-                val ours = tiles.filter { t -> (isbn != null && t.isbn == isbn) || loose { matches(book, t.title, t.isbn) } }
+                // By the book's author (a different book of the same name is left out).
+                val ours = tiles.filter { t -> ((isbn != null && t.isbn == isbn) || loose { matches(book, t.title, t.isbn) }) && authorsAgree(book.author, t.author) }
                     .sortedBy { if (isbn != null && it.isbn == isbn) 0 else 1 }
                 if (ours.isEmpty()) continue
-                val found = ours.map { t -> PriceListing("bookswagon", t.url, t.title, t.format, null, null, editionOf(t.title), t.price) }
-                val chosen = if (isbn != null && ours.first().isbn == isbn) found.first().also { listings.get()?.put("bookswagon", found) } else pick("bookswagon", found)
+                // The search doesn't say what's in stock: with more than one edition, their pages are
+                // opened (a few) to see, so one you can buy is followed before a sold-out one.
+                val opened = HashMap<String, String>()
+                val found = ours.mapIndexed { i, t ->
+                    val h = if (ours.size > 1 && i < 6) bwGet(t.url)?.also { opened[t.url] = it } else null
+                    val d = h?.let { bwBook(it) }
+                    PriceListing("bookswagon", t.url, t.title, d?.format ?: t.format, d?.publisher, null, editionOf(t.title), d?.price ?: t.price, d?.inStock)
+                }.filter { l -> authorsAgree(book.author, opened[l.url]?.let { bwBook(it)?.author }) }
+                if (found.isEmpty()) continue
+                val exact = found.firstOrNull { isbn != null && it.url.endsWith("/$isbn") }
+                val chosen = if (exact != null && (strictEdition.get() == true || exact.inStock != false)) exact.also { listings.get()?.put("bookswagon", found) } else pick("bookswagon", found)
                 if (chosen != null) {
                     tile = ours.firstOrNull { it.url == chosen.url }
                     url = chosen.url
-                    page0 = bwGet(chosen.url)
+                    page0 = opened[chosen.url] ?: bwGet(chosen.url)
                     break
                 }
             }
@@ -416,7 +560,7 @@ object BookPrices {
                 for (u in bwAddresses(book, i)) {
                     val h = bwGet(u) ?: continue
                     val t = titleOf(h) ?: continue
-                    if (matches(book, t, i)) { pages[u] = h; found += bookswagonListing(u, h) }
+                    if (matches(book, t, i) && authorsAgree(book.author, bwBook(h)?.author)) { pages[u] = h; found += bookswagonListing(u, h) }
                     return
                 }
             }
@@ -435,29 +579,119 @@ object BookPrices {
         }
         var html: String = page0!!
         // A page whose price is filled in by its script: read as a browser would.
-        if (bwPrice(html) == null) browser?.invoke(url!!)?.takeIf { bwPrice(it) != null }?.let { html = it }
+        if (bwBook(html)?.price == null && bwPrice(html) == null) browser?.invoke(url!!)?.takeIf { bwBook(it)?.price != null || bwPrice(it) != null }?.let { html = it }
         val title = titleOf(html)
-        // Structured data first, then the page's own price labels.
+        // The book's own data on the page first (the redesigned site), then structured data, then the
+        // page's price labels.
+        val data = bwBook(html)
         val ld = Regex(""""price"\s*:\s*"?([\d,.]+)"?""").find(html)?.groupValues?.get(1)
         val labelled = Regex("""(?is)(?:our\s*price|offer\s*price|lblOfferPrice|actualprice|sell(?:ing)?\s*price)[^₹]{0,200}₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)
         val mrp = Regex("""(?is)(?:M\.?R\.?P\.?|lblMrp|mrp)[^₹]{0,120}₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)
-        val price = money(ld) ?: money(labelled) ?: bwPrice(html) ?: tile?.price
-        val out = Regex("""(?i)out\s+of\s+stock|currently\s+unavailable|not\s+available""").containsMatchIn(html) && price == null
-        val binding = bookswagonListing(url!!, html).format
-        val listPrice = money(mrp) ?: tile?.mrp
+        val price = data?.price ?: money(ld) ?: money(labelled) ?: bwPrice(html) ?: tile?.price
+        val out = data?.inStock == false ||
+            (Regex("""(?i)out\s+of\s+stock|currently\s+unavailable|not\s+available""").containsMatchIn(html) && price == null)
+        val binding = data?.format ?: bookswagonListing(url!!, html).format
+        // With the book's data there, no struck-out price means none (the label hunt could catch another book's).
+        val listPrice = if (data?.price != null) data.mrp ?: tile?.mrp else money(mrp) ?: tile?.mrp
         return listOf(PricePoint("bookswagon", now, price, listPrice?.takeIf { price == null || it > price }, !out && price != null, binding ?: tile?.format, url, title ?: tile?.title))
     }
 
     /** One book in Bookswagon's search results: its page, ISBN, title, and the prices shown under it. */
-    private data class BwTile(val url: String, val isbn: String, val title: String?, val price: Double?, val mrp: Double?, val format: String?)
+    private data class BwTile(val url: String, val isbn: String, val title: String?, val price: Double?, val mrp: Double?, val format: String?, val author: String? = null)
 
     /**
-     * The books on a Bookswagon search page, each with its price and list price (the struck-out one),
-     * read from the part of the page between its link and the next book's.
+     * One field of the data Bookswagon's pages carry for their script (since its 2026 redesign): the
+     * data sits inside a script string, so its quotes come escaped (\"productTitle\":\"…\").
+     */
+    private fun bwField(obj: String, name: String): String? =
+        Regex("""\\"${Regex.escape(name)}\\":(?:\\"(.*?)\\"|([\d.]+|null|true|false))(?=,\\"|\})""").find(obj)
+            ?.let { m -> m.groupValues[1].ifEmpty { m.groupValues[2] } }?.takeIf { it.isNotEmpty() && it != "null" }
+
+    /** A text value from that data, with its two layers of escaping undone. */
+    private fun bwText(raw: String): String =
+        raw.replace(Regex("""\\+u([0-9a-fA-F]{4})""")) { it.groupValues[1].toInt(16).toChar().toString() }
+            .replace(Regex("""\\(.)""")) { it.groupValues[1] }.replace(Regex("""\\(.)""")) { it.groupValues[1] }
+            .let(::unescape).replace(Regex("\\s+"), " ").trim()
+
+    /** "Paperback", "Hardcover"… as the rest of the app writes them. */
+    private fun bwBinding(s: String?): String? =
+        s?.let { Regex("(?i)\\b(Paperback|Hardcover|Hardback|Board book|Mass Market)\\b").find(it)?.value }
+            ?.replaceFirstChar { it.uppercase() }?.replace("Hardback", "Hardcover")
+
+    /** The selling price and the struck-out list price among two amounts, whichever field each came in. */
+    private fun bwPrices(a: Double?, b: Double?): Pair<Double?, Double?> {
+        val price = listOfNotNull(a, b).minOrNull()
+        return price to listOfNotNull(a, b).maxOrNull()?.takeIf { price != null && it > price }
+    }
+
+    /**
+     * The books in the data behind a Bookswagon search page (its "initialBooks"): title, ISBN, binding
+     * and both prices, exactly as the shop has them. Read before the page's markup, which since the
+     * redesign shows no "By:" line and names each book only as "Cover of …".
+     */
+    private fun bwDataTiles(page: String): List<BwTile> {
+        val out = LinkedHashMap<String, BwTile>()
+        for (m in Regex("""\\"iD_Product\\":""").findAll(page)) {
+            val end = page.indexOf('}', m.range.last).takeIf { it > 0 } ?: continue
+            val obj = page.substring(m.range.first, end + 1)
+            val isbn = bwField(obj, "iSBN13")?.takeIf { Regex("\\d{13}").matches(it) } ?: continue
+            if (isbn in out) continue
+            val slug = bwField(obj, "product_TitleURl")?.takeIf { Regex("[a-z0-9-]+").matches(it) } ?: "book"
+            // The search names its prices the opposite way to the book page, so the lower one is the price.
+            val (price, mrp) = bwPrices(money(bwField(obj, "product_SalePrice")), money(bwField(obj, "product_ActualPrice")))
+            out[isbn] = BwTile("https://www.bookswagon.com/book/$slug/$isbn", isbn, bwField(obj, "product_Title")?.let(::bwText),
+                price, mrp, bwBinding(bwField(obj, "binding")), bwField(obj, "authorName1")?.let(::bwText)?.ifBlank { null })
+        }
+        return out.values.toList()
+    }
+
+    /** What a Bookswagon book page's own data says about the book it's for. */
+    private data class BwBook(val title: String?, val author: String?, val isbn: String?, val format: String?, val publisher: String?,
+                              val price: Double?, val mrp: Double?, val inStock: Boolean?)
+
+    /** The book a Bookswagon page is for, from the data its script is given ("book":{"productId":…}). */
+    private fun bwBook(html: String): BwBook? {
+        val start = html.indexOf("""\"book\":{\"productId\"""").takeIf { it >= 0 } ?: return null
+        val end = html.indexOf('}', start).takeIf { it > 0 } ?: return null
+        val obj = html.substring(start, end + 1)
+        // Here "actualPrice" is what you pay and "salePrice" the list price; taken by size, not by name.
+        val (price, mrp) = bwPrices(money(bwField(obj, "discountedPrice") ?: bwField(obj, "actualPrice")), money(bwField(obj, "salePrice")))
+        return BwBook(
+            bwField(obj, "productTitle")?.let(::bwText)?.ifBlank { null },
+            bwField(obj, "authorName1")?.let(::bwText)?.ifBlank { null },
+            bwField(obj, "iSBN13"),
+            bwBinding(bwField(obj, "binding")),
+            bwField(obj, "publisherName")?.let(::bwText)?.ifBlank { null },
+            price, mrp,
+            bwField(obj, "isInStock")?.let { it != "0" && it != "false" },
+        )
+    }
+
+    /**
+     * A Bookswagon picture's address that the app can load: its image server answers only plain http
+     * (https fails there), so the shop's own https address for the same cover is used instead.
+     */
+    private fun bwCover(u: String?): String? {
+        val path = u?.let { Regex("""images\.bookswagon\.com/productimages/(?:mainimages|images\d*)/([^"'\s?]+)""").find(it)?.groupValues?.get(1) }
+        return when {
+            path != null -> "https://www.bookswagon.com/api/cover/$path"
+            u.isNullOrBlank() -> null
+            u.startsWith("//") -> "https:$u"
+            u.startsWith("/") -> "https://www.bookswagon.com$u"
+            else -> u
+        }
+    }
+
+    /**
+     * The books on a Bookswagon search page, each with its price and list price (the struck-out one):
+     * from the page's data when it has it, else read from the part of the markup between a book's
+     * link and the next book's.
      */
     private fun bwTiles(page: String): List<BwTile> {
-        val links = BW_LINK.findAll(page).toList()
+        val data = bwDataTiles(page)
         val out = LinkedHashMap<String, BwTile>()
+        data.forEach { out[it.isbn] = it }
+        val links = BW_LINK.findAll(page).toList()
         for ((k, m) in links.withIndex()) {
             val isbn = m.groupValues[2]
             if (isbn in out) continue
@@ -474,6 +708,8 @@ object BookPrices {
             val byAt = parts.indexOfFirst { it.startsWith("By", true) && (it.length <= 3 || it[2] == ':' || it[2] == ' ') }
             val title = parts.getOrNull(byAt - 1)?.takeIf { byAt > 0 && !it.endsWith("%") && !it.contains('₹') }
                 ?: Regex("""(?i)(?:alt|title)="([^"]{3,200})"""").find(chunk)?.groupValues?.get(1)?.let(::unescape)
+                    // The redesigned site describes each picture as "Cover of <title>".
+                    ?.replace(Regex("(?i)^\\s*(?:cover\\s+(?:image\\s+)?of|book\\s+cover\\s*(?:of|:)?)\\s+"), "")
             val format = Regex("(?i)\\b(Paperback|Hardcover|Hardback|Board book|Mass Market)\\b").find(chunk)?.value?.replaceFirstChar { it.uppercase() }?.replace("Hardback", "Hardcover")
             val u = m.groupValues[1].let { if (it.startsWith("/")) "https://www.bookswagon.com$it" else it }
             out[isbn] = BwTile(u, isbn, title?.trim(), price, mrp, format)
@@ -488,14 +724,23 @@ object BookPrices {
             // app's unseen browser, which waits for it.
             ?: browserUntil?.invoke(u, ready) ?: browser?.invoke(u)
 
-    /** A Bookswagon page's title: its heading (tags inside it dropped), else its og:title. */
-    private fun bwTitle(html: String): String? =
-        Regex("""(?is)<h1[^>]*>(.*?)</h1>""").find(html)?.groupValues?.get(1)?.replace(Regex("<[^>]+>"), " ")?.let(::unescape)
-            ?.replace(Regex("\\s+"), " ")?.trim()?.takeIf { it.isNotBlank() }
-            ?: meta(html, "og:title")?.let(::unescape)?.substringBefore(" | ")?.removePrefix("Buy ")?.substringBefore(" by ")?.trim()
+    /**
+     * A Bookswagon page's title: the book's own data, else its title heading (tags inside it dropped),
+     * else its og:title. The redesigned page's first heading is the shop's "BW" logo, so headings
+     * that short don't count.
+     */
+    private fun bwTitle(html: String): String? {
+        bwBook(html)?.title?.let { return it }
+        fun clean(s: String) = unescape(s.replace(Regex("<[^>]+>"), " ")).replace(Regex("\\s+"), " ").trim()
+        Regex("""(?is)<h1[^>]*product-title[^>]*>(.*?)</h1>""").find(html)?.groupValues?.get(1)?.let(::clean)?.takeIf { it.isNotBlank() }?.let { return it }
+        Regex("""(?is)<h1[^>]*>(.*?)</h1>""").findAll(html).map { clean(it.groupValues[1]) }.firstOrNull { it.length > 2 && it != "BW" }?.let { return it }
+        // "Buy The Great Indian Novel Book by Shashi Tharoor - BooksWagon"
+        return meta(html, "og:title")?.let(::unescape)?.substringBefore(" | ")?.replace(Regex("(?i)\\s+-\\s+books?wagon.*$"), "")
+            ?.removePrefix("Buy ")?.substringBefore(" by ")?.trim()?.removeSuffix(" Book")?.trim()?.ifBlank { null }
+    }
 
-    /** A Bookswagon book page that has loaded: its title heading. */
-    private val BW_PAGE = Regex("<h1[^>]*>\\s*[^<\\s]")
+    /** A Bookswagon book page that has loaded: the book's data, or a title heading that isn't the "BW" logo. */
+    private val BW_PAGE = Regex("""\\"productTitle\\":\\"[^\\]|<h1[^>]*product-title|<h1[^>]*>\s*(?!BW\s*</h1>)[^<\s]""")
 
     /** The selling price on a Bookswagon page, however it's marked up. */
     private fun bwPrice(html: String): Double? =
@@ -530,6 +775,9 @@ object BookPrices {
     /** A Bookswagon page as a listing: binding, publisher, pages and price. */
     private fun bookswagonListing(url: String, html: String): PriceListing {
         val title = bwTitle(html)
+        bwBook(html)?.takeIf { it.price != null || it.format != null }?.let { d ->
+            return PriceListing("bookswagon", url, title, d.format, d.publisher ?: publisherIn(html), pagesIn(html), editionOf(title), d.price, d.inStock)
+        }
         val binding = Regex("""(?i)(?:binding|format)\s*(?:[:\s]|</?[a-z][^>]*>){0,8}(Paperback|Hardcover|Hardback|Board book|Mass Market)""").find(html)?.groupValues?.get(1)
             ?: Regex("""(?i)\b(Paperback|Hardcover|Hardback|Board book|Mass Market)\b""").find(html)?.value
         val price = money(Regex(""""price"\s*:\s*"?([\d,.]+)"?""").find(html)?.groupValues?.get(1))
@@ -677,7 +925,7 @@ object BookPrices {
                 val barcode = v?.optString("barcode")?.filter { it.isDigit() }?.takeIf { it.length == 13 || it.length == 10 }
                     ?: v?.optString("sku")?.filter { it.isDigit() }?.takeIf { it.length == 13 && it.startsWith("97") }
                 val author = p.optJSONArray("tags")?.let { t -> (0 until t.length()).map { t.optString(it) }.firstOrNull { it.startsWith("author:", true) || it.startsWith("Author_", true) } }
-                    ?.substringAfter(':')?.substringAfter('_')?.trim()
+                    ?.substringAfter(':')?.substringAfter('_')?.trim() ?: atlanticAuthor(p)
                 val cover = p.optString("featured_image").ifBlank { null }?.let { if (it.startsWith("//")) "https:$it" else it }
                 val title = p.optString("title").ifBlank { throw PriceException("No book on that page") }
                 val fake = Book(document = "x", title = title, author = author, percentage = 0.0, status = null, timestamp = 0, isbn = barcode)
@@ -687,12 +935,13 @@ object BookPrices {
                 val r = fetch(link)
                 val url = r.url.ifBlank { link }
                 val html = r.body
-                val title = Regex("""<h1[^>]*>\s*([^<]+)</h1>""").find(html)?.groupValues?.get(1)?.let(::unescape)
-                    ?: meta(html, "og:title")?.let(::unescape) ?: throw PriceException("No book on that page")
-                val author = Regex("""(?is)(?:\bby\b|author)[^<]{0,30}<a[^>]*>([^<]{2,80})</a>""").find(html)?.groupValues?.get(1)?.let(::unescape)
-                val isbn = Regex("/(\\d{13})").find(url)?.groupValues?.get(1) ?: isbnIn(html)
+                val data = bwBook(html)
+                val title = bwTitle(html) ?: throw PriceException("No book on that page")
+                val author = data?.author
+                    ?: Regex("""(?is)(?:\bby\b|author)[^<]{0,30}<a[^>]*>([^<]{2,80})</a>""").find(html)?.groupValues?.get(1)?.let(::unescape)
+                val isbn = Regex("/(\\d{13})").find(url)?.groupValues?.get(1) ?: data?.isbn ?: isbnIn(html)
                 val fake = Book(document = "x", title = title, author = author, percentage = 0.0, status = null, timestamp = 0, isbn = isbn)
-                Found("bookswagon", url, title, author, isbn, meta(html, "og:image"), bookswagon(fake, url, now, pinned = true))
+                Found("bookswagon", url, title, author, isbn, bwCover(meta(html, "og:image")), bookswagon(fake, url, now, pinned = true))
             }
             else -> {
                 // A short link (amzn.in/d/…, amzn.to/…): its redirects followed one by one, so the
@@ -892,6 +1141,8 @@ object BookPrices {
         return null
     }
 
+    private const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
     /** One book on an Amazon wish list. */
     data class Wished(val asin: String, val title: String, val author: String?, val format: String?, val price: Double?, val cover: String?)
 
@@ -900,18 +1151,46 @@ object BookPrices {
      * line says Paperback, Hardcover, Kindle and the like). Follows its pages, up to a few hundred items.
      */
     fun wishList(link: String): List<Wished> {
-        val first = fetch(link)
-        if (!first.url.contains("wishlist", true) && !first.url.contains("/hz/", true) && !link.contains("wishlist", true)) {
-            throw PriceException("That isn't a wish list's address (open the list, then Share › Copy link)")
+        // Amazon now shows a list as a grid of pictures (no format, no author) unless asked for its list
+        // view, and gives the list view only to a desktop browser: so the list view, as a desktop asks.
+        // (On a phone's user agent the shared list came back as a grid and read as "private".)
+        fun page(u: String): io.github.prithirajn.readync.net.HttpResponse {
+            val r = Http.request("GET", u, mapOf(
+                "User-Agent" to DESKTOP_UA,
+                "Accept" to "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+                "Accept-Language" to "en-IN,en;q=0.9",
+            ), timeoutMs = 20_000)
+            if (r.code == 503 || r.body.contains("api-services-support@amazon.com") || r.body.contains("Type the characters you see")) {
+                throw PriceException("Amazon asked to check this isn't a robot; try again in a minute")
+            }
+            if (!r.ok) throw PriceException("Amazon answered HTTP ${r.code}")
+            return r
         }
+        // The list's own address (a short amzn.in link followed first), in list view.
+        val listId = Regex("/(?:hz/)?wishlist/(?:ls/|genericItemsPage/)?([A-Z0-9]{10,16})").find(link)?.groupValues?.get(1)
+            ?: Regex("/(?:hz/)?wishlist/(?:ls/|genericItemsPage/)?([A-Z0-9]{10,16})").find(runCatching { page(link).url }.getOrDefault(""))?.groupValues?.get(1)
+            ?: throw PriceException("That isn't a wish list's address (open the list, then Share › Copy link)")
+        val first = page("https://www.amazon.in/hz/wishlist/ls/$listId?viewType=list")
         val out = LinkedHashMap<String, Wished>()
         var html = first.body
         var pages = 0
         while (true) {
             // Each item: its id, then its name (with the product link), its byline, its price.
             val ids = Regex("""id="itemName_([A-Z0-9]+)"""").findAll(html).map { it.groupValues[1] }.toList()
-            if (ids.isEmpty() && pages == 0 && html.contains("signin", true) && !html.contains("itemName_")) {
-                throw PriceException("That list is private: make it Public (or Shared) on Amazon, then paste its link again")
+            if (ids.isEmpty() && pages == 0) {
+                // Still the grid: its items have a name, a picture and a price but no format, so a book
+                // is told by its ASIN (a printed book's is its ISBN-10).
+                val grid = Regex("""(?s)<li[^>]*data-itemId="([A-Z0-9]+)"(.*?)</li>""").findAll(html).mapNotNull { m ->
+                    val body = m.groupValues[2]
+                    val asin = Regex("/dp/([A-Z0-9]{10})").find(body)?.groupValues?.get(1) ?: return@mapNotNull null
+                    if (!Regex("^[0-9]{9}[0-9X]$").matches(asin)) return@mapNotNull null
+                    val title = Regex("""(?:aria-label|title)="([^"]{2,})"""").find(body)?.groupValues?.get(1)?.let(::unescape) ?: return@mapNotNull null
+                    val price = Regex("""a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(body)?.groupValues?.get(1)?.let(::money)
+                    val cover = Regex("""<img[^>]+src="(https[^"]+)"""").find(body)?.groupValues?.get(1)
+                    Wished(asin, title, null, null, price, cover)
+                }.toList()
+                if (grid.isNotEmpty()) return grid
+                if (html.contains("signin", true)) throw PriceException("That list is private: make it Public (or Shared) on Amazon, then paste its link again")
             }
             for (id in ids) {
                 // The name is the link's title (attributes in either order), else its text.
@@ -928,14 +1207,17 @@ object BookPrices {
                 val author = byline?.removePrefix("by ")?.substringBefore(" (")?.trim()?.takeIf { it.isNotBlank() }
                 val price = Regex("""(?s)id="itemPrice_$id".{0,300}?a-offscreen">\s*₹\s*([\d,]+(?:\.\d+)?)""").find(html)?.groupValues?.get(1)?.let(::money)
                     ?: Regex("""data-price="([\d.]+)"[^>]*data-itemid="$id"""").find(html)?.groupValues?.get(1)?.let(::money)
-                val cover = Regex("""(?s)id="itemImage_$id".{0,400}?src="(https[^"]+)"""").find(html)?.groupValues?.get(1)
+                // The item's picture: in its own block (list view puts it before the name), full size.
+                val cover = (Regex("""(?s)id="itemImage_$id".{0,400}?src="(https[^"]+)"""").find(html)?.groupValues?.get(1)
+                    ?: Regex("""(?s)data-itemId="$id".{0,4000}?<img[^>]+src="(https://m\.media-amazon\.com/images/I/[^"]+)"""").find(html)?.groupValues?.get(1))
+                    ?.replace(Regex("""\._[A-Z0-9_,]+_\."""), ".")
                 out[asin] = Wished(asin, title, author, format, price, cover)
             }
             // More of the list, a page at a time.
             val more = Regex("""name="showMoreUrl"[^>]*value="([^"]+)"""").find(html)?.groupValues?.get(1)
                 ?: Regex(""""showMoreUrl"\s*:\s*"([^"]+)"""").find(html)?.groupValues?.get(1)
             if (more.isNullOrBlank() || ++pages >= 15) break
-            html = runCatching { get(if (more.startsWith("/")) "https://www.amazon.in" + unescape(more) else unescape(more)) }.getOrNull() ?: break
+            html = runCatching { page(if (more.startsWith("/")) "https://www.amazon.in" + unescape(more) else unescape(more)).body }.getOrNull() ?: break
             Thread.sleep(500)
         }
         return out.values.toList()
@@ -949,7 +1231,14 @@ object BookPrices {
      * its own), followed at that page, looked for at Amazon.in, Bookswagon and Atlantic Books, with
      * [target] as the price you'd buy at. Blocking.
      */
-    fun track(store: Store, url: String, target: Double?): Tracked = runCatching {
+    fun track(store: Store, url: String, target: Double?): Tracked =
+        trackPage(store, url, target).also { r -> if (r.ok && r.document != null) lookElsewhere(store, r.document) }
+
+    /**
+     * The first half of [track]: the page read and the book tracked at it, at once. The other stores
+     * are looked for after, by [lookElsewhere] (so the sheet can close as soon as the book's known).
+     */
+    fun trackPage(store: Store, url: String, target: Double?): Tracked = runCatching {
         val f = identify(url.trim())
         val s0 = store.snapshot
         val inLibrary = s0.books.values.firstOrNull { b ->
@@ -971,9 +1260,6 @@ object BookPrices {
             )
             s.copy(priceWatch = s.priceWatch + (key to w))
         }
-        fillInWatch(store, key)
-        // The other stores, now.
-        refresh(store, force = key)
         val title = inLibrary?.displayTitle ?: f.title
         val msg = when {
             already -> "Already tracking “$title”: now followed at ${shop(f.store)?.name ?: f.store} too"
@@ -982,6 +1268,12 @@ object BookPrices {
         }
         Tracked(msg, true, key, title)
     }.getOrElse { Tracked(it.message ?: "Couldn't read that page", false) }
+
+    /** The second half of [track]: the book's details filled in and the other stores looked at now. */
+    fun lookElsewhere(store: Store, key: String) {
+        fillInWatch(store, key)
+        refresh(store, force = key)
+    }
 
     // ---- keeping watch ----
 
@@ -1014,19 +1306,29 @@ object BookPrices {
                 val wrong = points.filter { it.url == "drop" }.map { it.store }.toSet()
                 val found = points.filter { it.url != null && it.url != "drop" && it.price != null && it.format != "Kindle" }
                 val links = (cur.links - wrong) + found.filter { it.store !in cur.pinned }.associate { it.store to it.url!! }
+                // A store now followed at another page (the right edition found, in place of the one followed
+                // before): what the old page's prices were aren't this book's, so they go ("lowest seen ₹360"
+                // was the paperback's, under the collector's hardcover).
+                val moved = found.filter { it.store !in cur.pinned && cur.links[it.store] != null && cur.links[it.store] != it.url }.associate { it.store to it.url }
                 // Earlier misreads (a price under 40% of every other store's at the same check) are let go too.
                 val byCheck = cur.history.groupBy { it.at }
                 val keep = cur.history.filter { h ->
                     val rest = byCheck[h.at].orEmpty().filter { it.store != h.store && it.price != null && it.inStock && it.format != "Kindle" }.mapNotNull { it.price }
                     h.price == null || h.format == "Kindle" || rest.isEmpty() || h.price >= rest.min() * 0.4
                 }.filter { h ->
-                    h.store !in wrong && (h.store in cur.pinned || h.title == null || (if (h.store == "bookswagon") loose { matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) }) } else matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) })))
+                    h.store !in wrong && !(h.store in moved && h.url != null && h.url != moved[h.store]) && (h.store in cur.pinned || h.title == null || (if (h.store == "bookswagon") loose { matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) }) } else matches(book, h.title, h.url?.let { u -> Regex("/(\\d{13})").find(u)?.groupValues?.get(1) })))
                 }
                 s.copy(priceWatch = s.priceWatch + (w.document to cur.copy(
                     history = (keep + points2.map { if (it.url == "drop") it.copy(url = null) else it }).takeLast(400),
                     checkedAt = now, links = links, choices = cur.choices + found2,
                     error = problems.takeIf { it.isNotEmpty() && points.none { p -> p.price != null } }?.joinToString("; "),
                 )))
+            }
+            // Still no picture (none on Google Books or Open Library): the one on the store pages just found.
+            if (store.snapshot.books[w.document]?.coverUrl == null) store.snapshot.priceWatch[w.document]?.takeIf { it.cover == null }?.let { cur ->
+                runCatching { storeCover(cur) }.getOrNull()?.let { pic ->
+                    store.update { s -> s.priceWatch[w.document]?.let { c -> s.copy(priceWatch = s.priceWatch + (w.document to c.copy(cover = c.cover ?: pic))) } ?: s }
+                }
             }
         }
     }

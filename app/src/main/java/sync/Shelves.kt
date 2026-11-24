@@ -165,6 +165,9 @@ object Shelves {
         val starts = HashMap<String, Double>()
         val last = HashMap<String, Double>()
         var read = 0.0
+        // Pages read on an earlier day but synced only today (read before midnight, synced after):
+        // they belong to the day they were read, so a streak doesn't lose that day.
+        val late = HashMap<String, Double>()
         for (b in s.books.values) {
             if (b.held) continue
             val pages = b.pageCount?.takeIf { it > 0 } ?: continue
@@ -173,8 +176,16 @@ object Shelves {
                 ReadStatus.TO_READ -> 0.0
                 else -> b.percentage.coerceIn(0.0, 1.0)
             }
-            // A book last moved before today (read yesterday, synced only now) starts the day where it is.
-            var start = (if (newDay && b.timestamp >= sod) s.pagesLastF[b.document] else if (newDay) f else s.pagesStartF[b.document])
+            // A book last moved before today (read yesterday, synced only now) starts the day where it
+            // is; what it moved since the last count goes to the day it was read on.
+            if (b.timestamp in 1 until sod) {
+                val was = s.pagesLastF[b.document] ?: (if (newDay) null else s.pagesStartF[b.document])
+                if (was != null && f > was) {
+                    val on = day(b.timestamp * 1000)
+                    if (on != today) late[on] = (late[on] ?: 0.0) + (f - was) * pages
+                }
+            }
+            var start = (if (newDay && b.timestamp >= sod) s.pagesLastF[b.document] else if (newDay || b.timestamp in 1 until sod) f else s.pagesStartF[b.document])
                 // Not seen before: where it is now, unless you started it today (then from the start).
                 ?: if (!firstRun && (b.startedAt ?: 0L) >= sod) 0.0 else f
             // Gone back (read again, or a position moved back): today counts from there.
@@ -191,7 +202,8 @@ object Shelves {
             else -> counted
         }
         // Every day kept (a number a day: years of them are a few kilobytes).
-        val days = s.pagesByDay + (today to todayPages)
+        val earlier = late.filterKeys { it !in s.pagesCleared }.mapValues { (d, v) -> (s.pagesByDay[d] ?: 0) + Math.round(v).toInt() }.filterValues { it > 0 }
+        val days = s.pagesByDay + earlier + (today to todayPages)
         return s.copy(
             pagesTotal = pagesRead(s.books.values), pagesDay = today, pagesByDay = days,
             pagesStartF = starts, pagesLastF = last,

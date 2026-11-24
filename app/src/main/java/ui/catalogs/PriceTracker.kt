@@ -171,7 +171,7 @@ private fun StoreActions(vm: AppViewModel, key: String, w: PriceWatch, store: St
         PillButton(if (pasting) "Cancel" else if (found) "Paste a different page" else "Paste its page", { pasting = !pasting; choosing = false; err = null })
     }
     if (choosing) {
-        for (o in options.sortedWith(compareBy<PriceListing>({ l -> if (Regex("(?i)hard").containsMatchIn(l.format ?: "")) 0 else if (Regex("(?i)paper").containsMatchIn(l.format ?: "")) 1 else 2 }, { l -> l.price ?: Double.MAX_VALUE }))) {
+        for (o in options.sortedWith(compareBy<PriceListing>({ l -> if (l.inStock == false) 1 else 0 }, { l -> if (Regex("(?i)hard").containsMatchIn(l.format ?: "")) 0 else if (Regex("(?i)paper").containsMatchIn(l.format ?: "")) 1 else 2 }, { l -> l.price ?: Double.MAX_VALUE }))) {
             val on = o.url == current
             Row(
                 Modifier.fillMaxWidth().padding(start = 40.dp, bottom = 6.dp).clip(CpShapes.control)
@@ -191,7 +191,8 @@ private fun StoreActions(vm: AppViewModel, key: String, w: PriceWatch, store: St
                     o.title?.let { Text(it, style = CpType.small, color = c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
                 HSpace(8)
-                Text(o.price?.let { rupees(it) } ?: "–", style = CpType.bodyStrong, color = c.text)
+                if (o.inStock == false) { Text("out of stock", style = CpType.small, color = c.quiet); HSpace(6) }
+                Text(o.price?.let { rupees(it) } ?: "–", style = CpType.bodyStrong, color = if (o.inStock == false) c.quiet else c.text)
                 if (on) { HSpace(6); Text("tracking", style = CpType.small, color = c.accentText) }
             }
         }
@@ -341,7 +342,8 @@ fun DealsList(vm: AppViewModel, state: Snapshot) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.size(16.dp), color = c.accent, strokeWidth = 2.dp)
                 HSpace(8)
-                Quiet(if (reading.size == 1) reading.values.first() + "…" else "Reading ${reading.size} shop pages…")
+                val lines = reading.values.filter { it.isNotBlank() }
+                Quiet(if (lines.size == 1) lines.first() + "…" else if (lines.isEmpty()) "Looking at the shops…" else "Reading ${lines.size} shop pages…")
             }
         } else lastPrice?.let { r ->
             VSpace(10)
@@ -356,7 +358,8 @@ fun DealsList(vm: AppViewModel, state: Snapshot) {
                 }
             }
         }
-        for ((book, w) in rows) {
+        for ((idx, pair) in rows.withIndex()) {
+            val (book, w) = pair
             val best = w.best
             val hit = w.target?.let { t -> (best?.price ?: Double.MAX_VALUE) <= t } == true
             Row(
@@ -364,7 +367,7 @@ fun DealsList(vm: AppViewModel, state: Snapshot) {
                     .padding(vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                BookCover(book.coverUrl, book.displayTitle, 44.dp, 66.dp)
+                Box(Modifier.liftable()) { BookCover(book.coverUrl ?: w.cover, book.displayTitle, 44.dp, 66.dp) }
                 HSpace(12)
                 Column(Modifier.weight(1f)) {
                     Text(book.displayTitle, style = CpType.bodyStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -373,10 +376,16 @@ fun DealsList(vm: AppViewModel, state: Snapshot) {
                             .joinToString(" · ").ifEmpty { if (w.checkedAt == 0L) "checking…" else "not found yet" },
                         style = CpType.small, color = if (hit) c.good else c.quiet, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
-                    if (w.document !in state.books) Text("Not in your library", style = CpType.small, color = c.faint)
+                    if ("price:fill:${w.document}" in running) Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(10.dp), color = c.accent, strokeWidth = 1.5.dp)
+                        HSpace(6)
+                        Text("looking at the other shops…", style = CpType.small, color = c.accentText)
+                    }
+                    else if (w.document !in state.books) Text("Not in your library", style = CpType.small, color = c.faint)
                 }
                 HSpace(8)
-                Column(horizontalAlignment = Alignment.End) {
+                // The price hangs like a tag on a string, and comes in swinging.
+                Column(Modifier.swingIn(idx), horizontalAlignment = Alignment.End) {
                     Text(best?.price?.let { rupees(it) } ?: "–", style = CpType.bodyStrong, color = if (hit || (w.drop ?: 0.0) >= 0.05) c.good else c.text)
                     w.drop?.takeIf { it >= 0.01 }?.let { Text("↓ ${Math.round(it * 100)}%", style = CpType.small, color = c.good) }
                 }
@@ -409,7 +418,8 @@ private fun AddDealSheet(vm: AppViewModel, onClose: () -> Unit) {
         BigButton(if (busy) "Reading the page…" else "Track it", {
             if (busy) return@BigButton
             busy = true; said = null
-            vm.trackFromLink(url, price.toDoubleOrNull()) { m, ok -> busy = false; said = m to ok; if (ok) { url = ""; price = "" } }
+            // Down as soon as the page is read; the other shops are looked at with it on Deals.
+            vm.trackFromLink(url, price.toDoubleOrNull()) { m, ok -> busy = false; if (ok) onClose() else said = m to ok }
         }, enabled = url.isNotBlank() && BookPrices.trackable(url) != null)
         if (url.isNotBlank() && BookPrices.trackable(url) == null) { VSpace(6); Quiet("That isn't a bookshop's book page.", color = c.faint) }
     }
@@ -431,7 +441,8 @@ private fun WishListSheet(vm: AppViewModel, onClose: () -> Unit) {
         BigButton(if (busy) "Reading the list…" else "Import", {
             if (busy) return@BigButton
             busy = true; said = null
-            vm.importWishList(url) { m, ok -> busy = false; said = m to ok }
+            // Down as soon as the list is read; its books are looked up at the other shops on Deals.
+            vm.importWishList(url) { m, ok -> busy = false; if (ok) { vm.notify(m); onClose() } else said = m to ok }
         }, enabled = url.isNotBlank() && BookPrices.shopOf(url) == "amazon")
     }
 }

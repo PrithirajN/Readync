@@ -345,7 +345,7 @@ object SffRadar {
      * Your own series' news, from New & upcoming, as stories: the next books coming (and out in
      * the past two weeks), linked to the book of yours they follow.
      */
-    internal fun releaseItems(s: Snapshot, now: Long): List<SffFeedItem> = s.releases.values.mapNotNull { r ->
+    internal fun releaseItems(s: Snapshot, now: Long): List<SffFeedItem> = s.releases.values.filter { !it.skipped }.mapNotNull { r ->
         if (r.kind != "book" && r.kind != "volume") return@mapNotNull null
         if (r.date != null && r.date < now - 14 * 86_400L) return@mapNotNull null
         val base = Matcher.baseTitle(r.series)

@@ -18,6 +18,7 @@ fun BookStudio(
     plain: String,
     onClose: () -> Unit,
     fullNote: String? = base.note,
+    coverUrl: String? = null,
 ) {
     AlertDialog(
         onDismissRequest = onClose,
