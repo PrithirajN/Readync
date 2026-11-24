@@ -15,8 +15,8 @@ android {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 505
-        versionName = "4.19.12"
+        versionCode = 506
+        versionName = "4.19.13"
         // Only the processors phones and e-readers use (64-bit and older 32-bit ARM). The on-device
         // AI, text recognition and barcode libraries are native code, one copy per processor type, so
         // leaving out x86 (emulators, a few old tablets) takes away about half the APK.
@@ -46,6 +46,12 @@ android {
     }
     val fullKey = key("full", "signing.properties")
     val sharedKey = key("shared", "signing-shared.properties")
+    // On GitHub Actions a release must be signed with the real keys: without signing/ it would fall
+    // back to a throwaway debug key, and phones refuse it as an update (4.19.12 went out that way).
+    if (System.getenv("CI") == "true" && (fullKey == null || sharedKey == null) &&
+        gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }) {
+        throw GradleException("signing/ is missing from the project: release APKs would be signed with a debug key. Put signing/ in the zip.")
+    }
 
     // Two editions from the same code, both called Readync. "full" is yours. "lite" is the one to
     // share: its own app (its own ID, so it installs beside yours; a dog-eared icon; its own key)
