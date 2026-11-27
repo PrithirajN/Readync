@@ -484,7 +484,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
 
     val existing = state.paperClips.filter { it.document == book.document }.sortedByDescending { it.createdAt }
     // The highlight you already have for this passage (from your e-reader or an earlier snap), so it isn't added twice.
-    val already = remember(text, state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips) {
+    val already = remember(text, state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.hooplaClips, state.everandClips, state.moonClips, state.historyClips, state.koClips) {
         if (text.length < 8) null
         else Highlights.forBook(state, book.document).map { it.clip }.firstOrNull { cl ->
             val a = cl.text.lowercase().filter { it.isLetterOrDigit() }
@@ -501,6 +501,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
     fun shot(t: String, n: String?) = BookShot.Content(
         text = t, author = book.author, title = book.displayTitle, chapter = null, page = pageNo,
         others = emptyList(), note = n, sectors = BookShot.sectorsFor(state, book),
+        pageCount = book.pageCount, at = pageNo?.let { p -> book.pageCount?.takeIf { it > 0 }?.let { p.toFloat() / it } },
     )
     fun reset() { text = ""; note = ""; lines = emptyList(); picked.clear(); scan = null }
 
@@ -650,7 +651,7 @@ fun PaperHighlightSheet(vm: AppViewModel, state: Snapshot, book: Book, onClose: 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
     val c = Cp.colors
-    val items = remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.sentClippings, state.resend, state.clipHidden, book.document) {
+    val items = remember(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.hooplaClips, state.everandClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.sentClippings, state.resend, state.clipHidden, book.document) {
         Highlights.forBook(state, book.document)
     }
     var open by remember { mutableStateOf<String?>(null) }
@@ -662,9 +663,9 @@ fun HighlightsSection(vm: AppViewModel, state: Snapshot, book: Book) {
         VSpace(20)
         CpCard {
             Column(Modifier.padding(14.dp)) {
-                Quiet("You read this in KOReader. Its highlights and notes don't come through sync, but they can come from KOReader's own files.")
+                Quiet("You read this in KOReader. Its highlights, notes and bookmarks don't come through sync, but they can come from KOReader's own files.")
                 VSpace(8)
-                PillButton("Set up KOReader highlights", { vm.openKoHighlights() })
+                PillButton("Set up KOReader highlights & bookmarks", { vm.openKoHighlights() })
             }
         }
     }
@@ -1349,9 +1350,9 @@ fun KoreaderNudgeCard(onSetUp: () -> Unit, onLater: () -> Unit, modifier: Modifi
     CpCard(modifier) {
         Column(Modifier.padding(14.dp)) {
             Eyebrow("Reading in KOReader?")
-            Text("Bring its highlights in too", style = CpType.bodyStrong, color = c.text)
+            Text("Bring its highlights and bookmarks in too", style = CpType.bodyStrong, color = c.text)
             VSpace(4)
-            Quiet("Your position comes through sync, but KOReader's highlights and notes don't. They can come from KOReader's own files on this phone, or from its HighlightSync or AnnotationSync plugin on Koofr.", color = c.faint)
+            Quiet("Your position comes through sync, but KOReader's highlights, notes and bookmarks don't. They can come from KOReader's own files on this phone or over Wi-Fi (no plugin), or from its HighlightSync or AnnotationSync plugin on Koofr.", color = c.faint)
             VSpace(10)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 PillButton("Set up", onSetUp, outlined = false)

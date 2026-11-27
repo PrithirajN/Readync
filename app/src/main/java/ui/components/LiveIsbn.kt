@@ -64,7 +64,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * the frames are only read on the phone. Asks for the camera the first time. [onFound] gets the ISBN.
  */
 @Composable
-fun LiveIsbnReader(onFound: (String) -> Unit, onClose: () -> Unit, onNoCamera: (() -> Unit)? = null) {
+fun LiveIsbnReader(onFound: (String) -> Unit, onClose: () -> Unit, onNoCamera: (() -> Unit)? = null, onPrinted: ((Double) -> Unit)? = null) {
     val context = LocalContext.current
     val c = Cp.colors
     var allowed by remember {
@@ -89,7 +89,7 @@ fun LiveIsbnReader(onFound: (String) -> Unit, onClose: () -> Unit, onNoCamera: (
 
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            if (allowed) IsbnCamera(onFound = onFound, onSeen = { seen = it }, onChoices = { choices = it }, onCamera = { camera = it; torch = false })
+            if (allowed) IsbnCamera(onFound = onFound, onSeen = { seen = it }, onChoices = { choices = it }, onCamera = { camera = it; torch = false }, onPrinted = onPrinted)
             // The box to hold it in.
             Canvas(Modifier.fillMaxSize()) {
                 val w = size.width * 0.82f
@@ -155,7 +155,7 @@ fun LiveIsbnReader(onFound: (String) -> Unit, onClose: () -> Unit, onNoCamera: (
 
 @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
 @Composable
-private fun IsbnCamera(onFound: (String) -> Unit, onSeen: (String) -> Unit, onChoices: (List<Isbn.Found>) -> Unit, onCamera: (androidx.camera.core.Camera) -> Unit) {
+private fun IsbnCamera(onFound: (String) -> Unit, onSeen: (String) -> Unit, onChoices: (List<Isbn.Found>) -> Unit, onCamera: (androidx.camera.core.Camera) -> Unit, onPrinted: ((Double) -> Unit)? = null) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val view = LocalView.current
@@ -199,7 +199,14 @@ private fun IsbnCamera(onFound: (String) -> Unit, onSeen: (String) -> Unit, onCh
                     barcodes.process(image)
                         .addOnSuccessListener { codes ->
                             // (Not while you're choosing between the editions listed on a page.)
-                            if (pool.size < 2) codes.firstNotNullOfOrNull { b -> b.rawValue?.let { Isbn.fromBarcode(it) } }?.let { found(it); finish(); return@addOnSuccessListener }
+                            if (pool.size < 2) codes.firstNotNullOfOrNull { b -> b.rawValue?.let { Isbn.fromBarcode(it) } }?.let { isbn ->
+                                // The price is usually printed by the barcode ("MRP ₹499"): read it off the same frame.
+                                if (onPrinted == null) { found(isbn); finish(); return@addOnSuccessListener }
+                                text.process(image)
+                                    .addOnSuccessListener { t -> Isbn.printedPrice(t.text)?.let { p -> main.execute { onPrinted(p) } } }
+                                    .addOnCompleteListener { found(isbn); finish() }
+                                return@addOnSuccessListener
+                            }
                             text.process(image)
                                 .addOnSuccessListener { t ->
                                     val all = Isbn.allFromText(t.text, allowElectronic = false)

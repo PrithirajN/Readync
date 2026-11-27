@@ -1,5 +1,6 @@
 package io.github.prithirajn.readync.ui
 
+import io.github.prithirajn.readync.data.finishDay
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -330,6 +331,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * What to fill in as the price paid for a book being added: from the price tracker when that
+     * edition is already watched, else a quick look at the shops ([BookPrices.quote]).
+     */
+    fun priceQuote(title: String, author: String?, isbn: String?, format: String?, done: (io.github.prithirajn.readync.source.BookPrices.Quote?) -> Unit) {
+        viewModelScope.launch {
+            val s = store.snapshot
+            val tracked = isbn?.let { i -> s.priceWatch.values.firstOrNull { w -> s.books[w.document]?.isbn == i || w.isbn == i } }
+            val latest = tracked?.history?.filter { it.price != null && it.inStock }?.groupBy { it.store }?.values?.mapNotNull { it.maxByOrNull { p -> p.at } }
+            if (!latest.isNullOrEmpty()) {
+                val mrp = latest.mapNotNull { it.mrp }.maxOrNull()
+                val low = latest.minByOrNull { it.price!! }!!
+                return@launch done(io.github.prithirajn.readync.source.BookPrices.Quote(mrp, null, low.price, io.github.prithirajn.readync.source.BookPrices.shop(low.store)?.name))
+            }
+            done(io { runCatching { io.github.prithirajn.readync.source.BookPrices.quote(title, author, isbn, format) }.getOrNull() })
+        }
+    }
+
     /** Why a never-sent highlight hasn't gone: waiting for your check, older than Send highlights, or held with its book. */
     fun whyNotSent(clipId: String): String {
         val s = store.snapshot
@@ -415,7 +434,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Trackers.all.filter { it.updatesHighlights && store.snapshot.clipRemote["${it.id}|$clipId"] != null }.map { it.id }
         edit("Note deleted", done, syncAfter = inPlace.isNotEmpty()) {
             val s = store.snapshot
-            val shown = Highlights.forBook(s, (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).firstOrNull { it.id == clipId }?.document ?: "")
+            val shown = Highlights.forBook(s, (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips).firstOrNull { it.id == clipId }?.document ?: "")
                 .firstOrNull { it.clip.id == clipId }?.clip ?: throw IllegalStateException("That highlight is gone")
             noteToCrossPoint(clipId, null)
             Highlights.edit(store, clipId, shown.text, null)
@@ -479,7 +498,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun safeToResend(tracker: Tracker, document: String): List<String> {
         val s = store.snapshot
-        val ids = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips)
+        val ids = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips)
             .filter { it.document == document }.map { it.id }.toSet()
         return ids.map { "${tracker.id}|$it" }.filter { k ->
             Highlights.reallySent(s, k) && (tracker.highlightsKeyedById || tracker.checksHighlights || (tracker.updatesHighlights && s.clipRemote[k] != null))
@@ -3018,6 +3037,321 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- KOReader on another device, over its SSH server ----
+
+    /** A new sign-in key for KOReader (kept until replaced): the line to add to its settings/SSH/authorized_keys. */
+    fun koSshKey(): String {
+        store.snapshot.koSsh?.publicKey?.let { return it }
+        val (priv, pub) = io.github.prithirajn.readync.source.KoSshClient.newKey()
+        pendingKoKey = priv to pub
+        return pub
+    }
+    private var pendingKoKey: Pair<String, String>? = null
+
+    /**
+     * Connects to KOReader at [host]:[port] (with Readync's key, or KOReader's "Login without
+     * password" when [noPassword]), finds it, and keeps the connection. [done] gets what was found, or why not.
+     */
+    fun connectKoSsh(host: String, port: Int, noPassword: Boolean, done: (ok: Boolean, message: String) -> Unit) {
+        viewModelScope.launch {
+            val old = store.snapshot.koSsh
+            val key = if (noPassword) null else (pendingKoKey ?: old?.privateKey?.let { it to (old.publicKey ?: "") } ?: io { io.github.prithirajn.readync.source.KoSshClient.newKey() })
+            val acct = io.github.prithirajn.readync.data.KoSshAccount(
+                host = host.trim(), port = port, privateKey = key?.first, publicKey = key?.second?.takeIf { it.isNotBlank() } ?: old?.publicKey,
+                noPassword = noPassword, enabled = true, koDir = old?.takeIf { it.host == host.trim() }?.koDir,
+            )
+            try {
+                val d = io {
+                    io.github.prithirajn.readync.source.KoSshClient(acct).connect().use { c -> io.github.prithirajn.readync.sync.KoSshSync.probe(c, acct.koDir) }
+                }
+                pendingKoKey = null
+                io { store.update { it.copy(koSsh = acct.copy(koDir = d.koDir), koSshError = null, koSshOkAt = 0L) } }
+                val v = d.version?.substringBefore('-')?.let { " $it" } ?: ""
+                done(true, "Found KOReader$v on ${d.deviceName}." + if (!d.canImport) " Update it to 2025.04 or later so it can take highlights in." else "")
+                notify("KOReader connected", "Reading its books and highlights.")
+                syncNow(quiet = false)
+            } catch (e: Exception) {
+                done(false, e.message ?: "Couldn't connect")
+            }
+        }
+    }
+
+    /**
+     * Puts Readync's key into KOReader's settings/SSH/authorized_keys itself, signing in once with
+     * KOReader's "Login without password" (on for that moment), then connects with the key.
+     */
+    fun installKoSshKey(host: String, port: Int, done: (ok: Boolean, message: String) -> Unit) {
+        viewModelScope.launch {
+            val pub = koSshKey()
+            try {
+                io {
+                    val open = io.github.prithirajn.readync.data.KoSshAccount(host = host.trim(), port = port, noPassword = true)
+                    io.github.prithirajn.readync.source.KoSshClient(open).connect().use { c ->
+                        val d = io.github.prithirajn.readync.sync.KoSshSync.probe(c, null)
+                        val path = "${d.koDir}/settings/SSH/authorized_keys"
+                        val old = c.readOrNull(path)?.toString(Charsets.UTF_8).orEmpty()
+                        if (!old.lines().any { it.trim() == pub.trim() }) {
+                            c.write(path, (old.trimEnd().let { if (it.isEmpty()) "" else "$it\n" } + pub.trim() + "\n").toByteArray())
+                        }
+                    }
+                }
+                connectKoSsh(host, port, noPassword = false) { ok, msg ->
+                    done(ok, if (ok) "$msg Readync's key is in. You can turn \"Login without password\" off again now." else msg)
+                }
+            } catch (e: Exception) {
+                done(false, (e.message ?: "Couldn't sign in") + " (\"Login without password\" has to be on for this step.)")
+            }
+        }
+    }
+
+    fun removeKoSsh() {
+        viewModelScope.launch {
+            io { store.update { it.copy(koSsh = null, koSshOkAt = 0L, koSshError = null, koSshInfo = null, koSshBooks = emptyMap(), koHlMods = it.koHlMods.filterKeys { k -> !k.startsWith("ssh:") }) } }
+            notify("KOReader over Wi-Fi disconnected", "Highlights already brought in stay.")
+        }
+    }
+
+    fun setKoSshEnabled(on: Boolean) {
+        viewModelScope.launch { io { store.update { s -> s.copy(koSsh = s.koSsh?.copy(enabled = on)) } } }
+    }
+
+    /** Reads KOReader there and gives it what's waiting, now. */
+    fun checkKoSsh() {
+        viewModelScope.launch {
+            io {
+                val e = SyncEngine(store)
+                runCatching { e.pullKoHighlights() }
+                runCatching { e.pullCpBookmarks() }
+                runCatching { e.pushToKoSsh() }
+            }
+            Health.koSsh(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
+                ?: notify("KOReader over Wi-Fi", "Checked.")
+        }
+    }
+
+    /** Copies your library's books' EPUBs from KOReader's device ([doc] alone, or all). */
+    fun copyBooksFromKoSsh(doc: String? = null, done: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            val msg = try {
+                val n = io { SyncEngine(store).copyBooksFromKoSsh(doc) }
+                if (n == 0) (if (doc == null) "Every book already has its file here, or none of KOReader's books are in your library." else "That book's file isn't on the device.")
+                else "Copied $n book file${if (n == 1) "" else "s"} from KOReader."
+            } catch (e: Exception) { e.message ?: "Couldn't copy from KOReader" }
+            done(msg)
+        }
+    }
+
+    // ---- Book files (EPUBs kept here) ----
+
+    /**
+     * Keeps the EPUB at [uri] as [doc]'s file. [done] says whether it's the very file on your
+     * e-reader (exact places) or another copy (places found by their words).
+     */
+    fun attachBookFile(doc: String, uri: android.net.Uri, done: (String) -> Unit) {
+        viewModelScope.launch {
+            val msg = try {
+                io {
+                    val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw io.github.prithirajn.readync.net.ServiceException("Couldn't open that file")
+                    io.github.prithirajn.readync.source.EpubText.open(bytes) ?: throw io.github.prithirajn.readync.net.ServiceException("That isn't an EPUB Readync can read")
+                    val (k, v) = io.github.prithirajn.readync.source.BookFiles.save(doc, bytes)
+                    store.update { it.copy(koBooks = it.koBooks + (k to v)) }
+                    if (v.substringAfterLast('|') == doc) "Same file as your e-reader: highlights and bookmarks go on their exact words."
+                    else "Kept. It's another copy than your e-reader's, so places are found by their words."
+                }
+            } catch (e: Exception) { e.message ?: "Couldn't add that file" }
+            done(msg)
+        }
+    }
+
+    /** Adds several EPUBs at once, each to the book it is (by its KOReader document ID, else title and author). */
+    fun addBookFiles(uris: List<android.net.Uri>, done: (String) -> Unit) {
+        viewModelScope.launch {
+            val msg = io {
+                var matched = 0
+                val missed = ArrayList<String>()
+                for (u in uris) {
+                    val name = runCatching { getApplication<Application>().contentResolver.query(u, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } }.getOrNull() ?: "a file"
+                    val bytes = runCatching { getApplication<Application>().contentResolver.openInputStream(u)?.use { it.readBytes() } }.getOrNull()
+                    if (bytes == null || io.github.prithirajn.readync.source.EpubText.open(bytes) == null) { missed += name; continue }
+                    val doc = io.github.prithirajn.readync.sync.BookFileMatch.match(store.snapshot, bytes)
+                    if (doc == null) { missed += name; continue }
+                    val (k, v) = io.github.prithirajn.readync.source.BookFiles.save(doc, bytes)
+                    store.update { it.copy(koBooks = it.koBooks + (k to v)) }
+                    matched++
+                }
+                listOfNotNull(
+                    if (matched > 0) "Added $matched book file${if (matched == 1) "" else "s"}." else null,
+                    if (missed.isNotEmpty()) "Not matched to a book: ${missed.take(5).joinToString(", ")}${if (missed.size > 5) " and ${missed.size - 5} more" else ""}. Add those from the book's own page." else null,
+                ).joinToString(" ").ifEmpty { "Nothing added." }
+            }
+            done(msg)
+        }
+    }
+
+    fun removeBookFile(doc: String) {
+        viewModelScope.launch {
+            io {
+                val k = io.github.prithirajn.readync.source.BookFiles.key(doc)
+                io.github.prithirajn.readync.source.BookFiles.remove(k)
+                store.update { it.copy(koBooks = it.koBooks - k) }
+            }
+        }
+    }
+
+    fun removeAllBookFiles() {
+        viewModelScope.launch {
+            io {
+                io.github.prithirajn.readync.source.BookFiles.removeAll()
+                store.update { it.copy(koBooks = it.koBooks.filterKeys { k -> !k.startsWith(io.github.prithirajn.readync.source.BookFiles.PREFIX) }) }
+            }
+        }
+    }
+
+    // ---- CrossPoint bookmarks ----
+
+    fun refreshBookmarks(doc: String) {
+        viewModelScope.launch { io { runCatching { SyncEngine(store).pullCpBookmarks(listOf(doc), full = true) } } }
+    }
+
+    /** The bookmark's page text from the book's file (fetching the file from KOReader over Wi-Fi first when it can). */
+    fun bookmarkPage(doc: String, b: io.github.prithirajn.readync.source.CrossPointClient.Bookmark, done: (io.github.prithirajn.readync.sync.SyncEngine.BookmarkText?, Boolean) -> Unit) {
+        viewModelScope.launch {
+            val t = io {
+                val e = SyncEngine(store)
+                e.bookmarkPage(doc, b) ?: run {
+                    if (store.snapshot.koSsh != null && io.github.prithirajn.readync.sync.KoPlacement.bookFor(store.snapshot, doc) == null) {
+                        runCatching { e.copyBooksFromKoSsh(doc) }
+                        e.bookmarkPage(doc, b)
+                    } else null
+                }
+            }
+            // Whether there's a file at all (so "no file" isn't said when the place just wasn't found in it).
+            val hasFile = t != null || io { runCatching { io.github.prithirajn.readync.sync.KoPlacement.bookFor(store.snapshot, doc) != null }.getOrDefault(false) }
+            done(t, hasFile)
+        }
+    }
+
+    /** Makes a highlight from a bookmark (see [SyncEngine.highlightFromBookmark]); [done] gets null, or why not. */
+    fun highlightFromBookmark(
+        doc: String, b: io.github.prithirajn.readync.source.CrossPointClient.Bookmark, text: String,
+        place: io.github.prithirajn.readync.source.EpubText.Place?, note: String?, done: (String?) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val err = try {
+                val ok = io { SyncEngine(store).highlightFromBookmark(doc, b, text, place, note) }
+                if (ok) null else "Pick a passage first"
+            } catch (e: Exception) { e.message ?: "Couldn't add the highlight" }
+            done(err)
+            if (err == null) { notify("Highlight added", "It's on CrossPoint now, and goes on to KOReader and your trackers with the next sync."); syncNow(quiet = true) }
+        }
+    }
+
+    fun tickBookmark(doc: String, id: String, done: Boolean) {
+        viewModelScope.launch { io { store.update { s -> s.copy(bookmarkDone = if (done) s.bookmarkDone + "$doc|$id" else s.bookmarkDone - "$doc|$id") } } }
+    }
+
+    /** Deletes the bookmark on CrossPoint (so on the device, and in KOReader through its sync). */
+    fun deleteBookmark(doc: String, id: String) {
+        viewModelScope.launch {
+            val ok = io {
+                val a = store.snapshot.account ?: return@io false
+                runCatching { io.github.prithirajn.readync.source.CrossPointClient(a).deleteBookmark(doc, id) }.isSuccess.also { ok ->
+                    if (ok) store.update { s -> s.copy(cpBookmarks = s.cpBookmarks + (doc to (s.cpBookmarks[doc] ?: emptyList()).filter { it.id != id })) }
+                }
+            }
+            if (!ok) notify("Couldn't remove the bookmark", "Try again when you're online.", error = true)
+        }
+    }
+
+    fun setBookmarkRemoveWhenDone(on: Boolean) { viewModelScope.launch { io { store.update { it.copy(bookmarkRemoveWhenDone = on) } } } }
+    fun setBookmarkAutoHighlight(on: Boolean) {
+        viewModelScope.launch {
+            io { store.update { it.copy(bookmarkAutoHighlight = on, extras = if (on) it.extras + ("bookmarkAutoSince" to (System.currentTimeMillis() / 1000).toString()) else it.extras) } }
+        }
+    }
+
+    // ---- Everand ----
+
+    /** Links Everand with the sign-in everand.com kept after you signed in there (its cookies). */
+    fun connectEverand(cookies: String, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val account = io { io.github.prithirajn.readync.source.EverandClient.connect(cookies) }
+                io { store.update { it.copy(everand = account, everandOkAt = 0L, everandError = null) } }
+                done(null)
+                notify("Everand linked", "Bringing in what you're reading and listening to on Everand.")
+                syncNow(quiet = false)
+            } catch (e: Exception) {
+                done(e.message ?: "Couldn't link Everand")
+            }
+        }
+    }
+
+    fun removeEverand() {
+        viewModelScope.launch {
+            io { store.update { it.copy(everand = null, everandOkAt = 0L, everandError = null, everandClips = emptyList()) } }
+            notify("Everand disconnected", "Your books remain in your library.")
+        }
+    }
+
+    fun setEverandHighlights(sync: Boolean) {
+        viewModelScope.launch { io { store.update { s -> s.copy(everand = s.everand?.copy(syncHighlights = sync)) } } }
+    }
+
+    fun setEverandEnabled(on: Boolean) {
+        viewModelScope.launch { io { store.update { s -> s.copy(everand = s.everand?.copy(enabled = on)) } } }
+    }
+
+    /** The Everand health light: checks your titles live. */
+    fun checkEverand() {
+        viewModelScope.launch {
+            io { SyncEngine(store).pullEverand() }
+            Health.everand(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
+        }
+    }
+
+    // ---- hoopla ----
+
+    /** Links hoopla with the sign-in token from hoopladigital.com (caught when you sign in there, or pasted). */
+    fun connectHoopla(token: String, done: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val account = io { io.github.prithirajn.readync.source.HooplaClient.connect(token) }
+                io { store.update { it.copy(hoopla = account, hooplaOkAt = 0L, hooplaError = null) } }
+                done(null)
+                notify("hoopla linked", "Bringing in what you're reading on hoopla.")
+                syncNow(quiet = false)
+            } catch (e: Exception) {
+                done(e.message ?: "Couldn't link hoopla")
+            }
+        }
+    }
+
+    /** Unlinks hoopla; the books stay, its highlights go. */
+    fun removeHoopla() {
+        viewModelScope.launch {
+            io { store.update { it.copy(hoopla = null, hooplaOkAt = 0L, hooplaError = null, hooplaClips = emptyList()) } }
+            notify("hoopla disconnected", "Your books remain in your library.")
+        }
+    }
+
+    fun setHooplaHighlights(sync: Boolean) {
+        viewModelScope.launch { io { store.update { s -> s.copy(hoopla = s.hoopla?.copy(syncHighlights = sync)) } } }
+    }
+
+    fun setHooplaEnabled(on: Boolean) {
+        viewModelScope.launch { io { store.update { s -> s.copy(hoopla = s.hoopla?.copy(enabled = on)) } } }
+    }
+
+    /** The hoopla health light: checks your borrows live. */
+    fun checkHoopla() {
+        viewModelScope.launch {
+            io { SyncEngine(store).pullHoopla() }
+            Health.hoopla(store.snapshot)?.let { notify(it.title, it.detail, error = it.level == Health.Level.BAD) }
+        }
+    }
+
     fun setLibbyHighlights(sync: Boolean) {
         viewModelScope.launch {
             io { store.update { s -> s.copy(libby = s.libby?.copy(syncHighlights = sync)) } }
@@ -3904,10 +4238,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         fun inMonth(t: Long?) = t != null && t > 0 && io.github.prithirajn.readync.sync.Shelves.month(t * 1000) == m0
         // Books brought in from a history count too (held only means they aren't sent to trackers).
         val books = s.books.values.toList()
-        val finished = books.filter { it.status == ReadStatus.FINISHED && inMonth(it.finishedAt ?: it.timestamp) }
+        val finished = books.filter { it.status == ReadStatus.FINISHED && inMonth(it.finishDay) }
         val reading = books.filter { it.status == ReadStatus.READING && inMonth(it.timestamp) }.sortedByDescending { it.timestamp }
         val pages = io.github.prithirajn.readync.sync.Shelves.pagesThisMonth(s, null)
-        val highlights = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.id !in s.clipHidden && inMonth(it.createdAt) }.distinctBy { it.id }.size
+        val highlights = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips).filter { it.id !in s.clipHidden && inMonth(it.createdAt) }.distinctBy { it.id }.size
         withModel("The model couldn't write a recap that kept to your numbers", { m ->
             io.github.prithirajn.readync.ai.Assistant.monthRecap(m, io.github.prithirajn.readync.sync.Shelves.monthName(), finished, reading, pages, highlights)
         }, done)
@@ -3928,7 +4262,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** An answer about your reading, from your library and highlights, worked out on the phone. */
     fun aiAsk(question: String, done: (String?, String?) -> Unit) {
         val s = store.snapshot
-        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.id !in s.clipHidden }.distinctBy { it.id }
+        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips).filter { it.id !in s.clipHidden }.distinctBy { it.id }
         withModel("The model couldn't answer that", { m -> io.github.prithirajn.readync.ai.Assistant.ask(m, question, s.books.values, clips) }, done)
     }
 

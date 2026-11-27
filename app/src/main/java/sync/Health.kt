@@ -37,7 +37,7 @@ object Health {
 
     /** The books waiting for you to pick or confirm their match on tracker [id], newest first. */
     fun needsMatch(s: Snapshot, id: String): List<String> = s.links.values
-        .filter { it.service == id && !io.github.prithirajn.readync.data.ownedByTracker(s.books[it.document], id) && ((it.externalId == null && it.note == "Needs a match") || (it.externalId != null && !it.confirmed && it.source != io.github.prithirajn.readync.data.LinkSource.NONE)) }
+        .filter { it.service == id && s.books[it.document]?.held != true && !io.github.prithirajn.readync.data.ownedByTracker(s.books[it.document], id) && ((it.externalId == null && it.note == "Needs a match") || (it.externalId != null && !it.confirmed && it.source != io.github.prithirajn.readync.data.LinkSource.NONE)) }
         .map { it.document }.distinct().sortedByDescending { s.books[it]?.timestamp ?: 0 }
 
     /** "Eden's Rise", "Eden's Rise and Slow Horses", "Eden's Rise, Slow Horses and 2 more". */
@@ -208,6 +208,59 @@ object Health {
         is AuthException -> "Audible needs you to sign in again. Tap Sign in on the Audible page."
         is NetworkException -> "Couldn't reach Audible (${e.message ?: "offline"}). It's retried on the next sync."
         else -> e.message ?: "Something went wrong reading your Audible library."
+    }
+
+    fun koSsh(s: Snapshot, now: Long = System.currentTimeMillis()): Status? {
+        val k = s.koSsh ?: return null
+        val error = s.koSshError
+        return when {
+            !k.enabled -> Status(Level.OFF, "KOReader over Wi-Fi is off", "Nothing is read from or given to KOReader on ${k.host} until you switch it back on.")
+            error != null -> Status(Level.BAD, "KOReader over Wi-Fi needs attention", error)
+            s.koSshOkAt == 0L -> Status(Level.WARN, "KOReader not reached yet", "It's reached on the next sync while the device is awake on this Wi-Fi. Tap to try now.")
+            now - s.koSshOkAt > 7 * 86_400_000L -> Status(Level.WARN, "KOReader not reached lately", "The device hasn't been awake on this Wi-Fi with KOReader's SSH server on for a while. Tap to try now.")
+            else -> Status(Level.GOOD, "KOReader over Wi-Fi is working", s.koSshInfo ?: "Highlights and bookmarks go both ways.")
+        }
+    }
+
+    fun describeKoSsh(e: Exception): String = when (e) {
+        is AuthException, is NetworkException -> e.message ?: "Couldn't reach KOReader"
+        else -> e.message ?: "Something went wrong with KOReader over Wi-Fi."
+    }
+
+    fun hoopla(s: Snapshot, now: Long = System.currentTimeMillis()): Status? {
+        val h = s.hoopla ?: return null
+        val error = s.hooplaError
+        return when {
+            !h.enabled -> Status(Level.OFF, "hoopla sync is off", "Nothing is read from hoopla until you switch it back on.")
+            error != null -> Status(Level.BAD, "hoopla needs attention", error)
+            s.hooplaOkAt == 0L -> Status(Level.WARN, "hoopla not checked yet", "Your hoopla borrows are checked on the next sync. Tap to check now.")
+            now - s.hooplaOkAt > STALE_MS -> Status(Level.WARN, "hoopla not checked lately", "The last good check of hoopla was a while ago. Tap to check now.")
+            else -> Status(Level.GOOD, "hoopla is healthy", "Your hoopla borrows, progress and highlights are syncing.")
+        }
+    }
+
+    fun describeHoopla(e: Exception): String = when (e) {
+        is AuthException -> "hoopla needs you to sign in again. Tap Sign in again on the hoopla page."
+        is NetworkException -> "Couldn't reach hoopla (${e.message ?: "offline"}). It's retried on the next sync."
+        else -> e.message ?: "Something went wrong reading your hoopla borrows."
+    }
+
+    fun everand(s: Snapshot, now: Long = System.currentTimeMillis()): Status? {
+        val e = s.everand ?: return null
+        val error = s.everandError
+        return when {
+            !e.enabled -> Status(Level.OFF, "Everand sync is off", "Nothing is read from Everand until you switch it back on.")
+            error != null -> Status(Level.BAD, "Everand needs attention", error)
+            s.everandOkAt == 0L -> Status(Level.WARN, "Everand not checked yet", "Your Everand titles are checked on the next sync. Tap to check now.")
+            now - s.everandOkAt > STALE_MS -> Status(Level.WARN, "Everand not checked lately", "The last good check of Everand was a while ago. Tap to check now.")
+            else -> Status(Level.GOOD, "Everand is healthy", "What you're reading and listening to on Everand is syncing.")
+        }
+    }
+
+    fun describeEverand(e: Exception): String = when (e) {
+        is AuthException -> "Everand needs you to sign in again. Tap Sign in again on the Everand page."
+        is NetworkException -> "Couldn't reach Everand (${e.message ?: "offline"}). It's retried on the next sync."
+        else -> e.message ?: "Something went wrong reading your Everand titles."
     }
 
     fun libby(s: Snapshot, now: Long = System.currentTimeMillis()): Status? {

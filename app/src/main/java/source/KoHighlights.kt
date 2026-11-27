@@ -20,6 +20,9 @@ data class KoAnnotation(
     val bookmark: Boolean = false,
 )
 
+/** A KOReader page bookmark: its place ([page], KOReader's position in the book), its label and when it was made (unix seconds). */
+data class KoBookmark(val page: String, val label: String?, val createdAt: Long)
+
 /** One book's file from a KOReader sync plugin: what names the book, and its highlights. */
 data class KoFile(
     /** The file's path on the server. */
@@ -36,6 +39,8 @@ data class KoFile(
     val pages: Int? = null,
     /** The book's own file name as KOReader has it ("Dune - Frank Herbert.epub"), when known exactly, for "Filename" matching. */
     val fileName: String? = null,
+    /** Its page bookmarks (EPUB positions only). */
+    val bookmarks: List<KoBookmark> = emptyList(),
 )
 
 /**
@@ -257,7 +262,13 @@ class KoHighlightsClient(account: Account) {
                     },
                 )
             }
-            return KoFile(path, docId, bookName, list, fileName = fileNameOf(path))
+            val marks = entries.mapNotNull { (_, a) ->
+                if (a.optBoolean("deleted", false) || a.has("pos0")) return@mapNotNull null
+                val page = (a.opt("page") as? String)?.takeIf { it.startsWith("/body/") } ?: return@mapNotNull null
+                val label = a.optString("text", "").trim().takeIf { it.isNotEmpty() && !it.startsWith("in ") }
+                KoBookmark(page, label, timeOf(a.optString("datetime", "")) ?: 0L)
+            }
+            return KoFile(path, docId, bookName, list, fileName = fileNameOf(path), bookmarks = marks)
         }
     }
 }

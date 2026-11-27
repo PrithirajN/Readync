@@ -74,7 +74,7 @@ fun CopyCard(vm: AppViewModel, book: Book, alwaysShow: Boolean = false) {
                 }
                 failed != null -> {
                     Quiet("Couldn't get one: ${failed.message ?: "not found"}" + (failed.at.takeIf { it > 0 }?.let { " · ${ago(it * 1000)}" } ?: ""), color = c.errorText)
-                    if (reading && BookCopies.auto(context)) Quiet("Tried again by itself in a few days.", color = c.faint)
+                    if (reading && BookCopies.auto(context)) Quiet("Readync tries again by itself in a few days.", color = c.faint)
                     VSpace(10)
                     PillButton("Try now", { vm.toggleBookCopy(book.document) })
                 }

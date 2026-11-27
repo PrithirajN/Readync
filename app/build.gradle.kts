@@ -15,8 +15,8 @@ android {
         applicationId = "io.github.prithirajn.trackersync"
         minSdk = 26
         targetSdk = 35
-        versionCode = 506
-        versionName = "4.19.13"
+        versionCode = 545
+        versionName = "4.29.12"
         // Only the processors phones and e-readers use (64-bit and older 32-bit ARM). The on-device
         // AI, text recognition and barcode libraries are native code, one copy per processor type, so
         // leaving out x86 (emulators, a few old tablets) takes away about half the APK.
@@ -136,6 +136,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     // Reads the page number off a photo of a page, on the phone (Latin script model bundled).
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    // KOReader on a Kindle/Kobo over its own SSH server (SFTP and commands), for highlights and bookmarks without a plugin.
+    implementation("com.github.mwiede:jsch:0.2.20")
     // Runs a language model you add (Gemma, Qwen, Llama, Phi… as .litertlm) on the phone, for the AI helpers.
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
     // Reads a book's ISBN barcode off a photo of the back cover, on the phone.

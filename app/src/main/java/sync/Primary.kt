@@ -31,7 +31,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 object Primary {
 
     /** The sources, in the order they're trusted when nothing else says (can grow). */
-    val ORDER = listOf("crosspoint", "kosync", "koreader", "seekquel", "kindle", "libby", "mihon", "moonreader", "audible")
+    val ORDER = listOf("crosspoint", "kosync", "koreader", "seekquel", "kindle", "libby", "mihon", "moonreader", "audible", "hoopla", "everand")
 
     /** More than this far ahead (0–1), a source takes over as the primary. */
     const val TAKEOVER_LEAD = 0.10
@@ -58,6 +58,8 @@ object Primary {
         "mihon" -> "Mihon"
         "moonreader" -> "Moon+ Reader"
         "audible" -> "Audible"
+        "hoopla" -> "hoopla"
+        "everand" -> "Everand"
         else -> Trackers.byId(id)?.name ?: id
     }
 
@@ -304,6 +306,8 @@ object Primary {
             add("mihon")
             if (s.moon != null) add("moonreader")
             if (s.audible != null) add("audible")
+            if (s.hoopla != null) add("hoopla")
+            if (s.everand != null) add("everand")
             // Reading apps that say where you are (Audiobookshelf, Jellyfin…), once linked.
             for (t in Trackers.all) if (t.bringsPositions && s.service(t.id).linked) add(t.id)
         }

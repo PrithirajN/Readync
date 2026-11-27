@@ -1,5 +1,6 @@
 package io.github.prithirajn.readync.sync
 
+import io.github.prithirajn.readync.data.finishDay
 import io.github.prithirajn.readync.data.Book
 import io.github.prithirajn.readync.data.ReadStatus
 import io.github.prithirajn.readync.data.Snapshot
@@ -32,7 +33,7 @@ object Shelves {
             }
         }
         return when (sort) {
-            Sort.RECENT -> if (tab == ReadStatus.FINISHED) on.sortedByDescending { it.finishedAt ?: it.timestamp }
+            Sort.RECENT -> if (tab == ReadStatus.FINISHED) on.sortedByDescending { it.finishDay ?: 0L }
                 else on.sortedByDescending { it.timestamp }
             Sort.TITLE -> on.sortedBy { (it.title ?: "").lowercase().removePrefix("the ").removePrefix("a ") }
             Sort.AUTHOR -> on.sortedWith(compareBy({ (it.author ?: "\uFFFF").lowercase() }, { (it.title ?: "").lowercase() }))
@@ -115,7 +116,7 @@ object Shelves {
         val m = month(now)
         return books.count { b ->
             b.status == ReadStatus.FINISHED &&
-                (b.finishedAt ?: b.timestamp).let { t -> t > 0 && month(t * 1000) == m }
+                b.finishDay?.let { t -> month(t * 1000) == m } == true
         }
     }
 

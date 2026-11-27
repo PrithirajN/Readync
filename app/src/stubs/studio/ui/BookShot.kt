@@ -180,6 +180,8 @@ object BookShot {
         val sectors: Set<String> = emptySet(),
         /** A note on its own, with no passage: [text] is the note. */
         val standalone: Boolean = false,
+        val pageCount: Int? = null,
+        val at: Float? = null,
     ) {
         val hasPage: Boolean get() = !before.isNullOrBlank() || !after.isNullOrBlank()
     }

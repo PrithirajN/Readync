@@ -231,6 +231,20 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("koSeenAt", s.koSeenAt)
         o.put("koNudgeOff", s.koNudgeOff)
         o.put("cpSentKo", org.json.JSONArray(s.cpSentKo.toList()))
+        o.put("cpBmSentKo", JSONObject().also { j -> s.cpBmSentKo.forEach { (k, v) -> j.put(k, v) } })
+        o.put("cpBookmarks", JSONObject().also { j -> s.cpBookmarks.forEach { (d, l) -> j.put(d, JSONArray().also { a -> l.forEach { b -> a.put(bookmarkJson(b)) } }) } })
+        o.put("koBookmarks", JSONObject().also { j -> s.koBookmarks.forEach { (d, l) -> j.put(d, JSONArray().also { a -> l.forEach { b -> a.put(JSONObject().put("page", b.page).put("label", b.label ?: JSONObject.NULL).put("at", b.createdAt)) } }) } })
+        o.put("koBmSentCp", JSONArray(s.koBmSentCp.toList()))
+        o.put("cpBookmarksAt", JSONObject().also { j -> s.cpBookmarksAt.forEach { (k, v) -> j.put(k, v) } })
+        o.put("bookmarkDone", JSONArray(s.bookmarkDone.toList()))
+        o.put("bookmarkRemoveWhenDone", s.bookmarkRemoveWhenDone)
+        o.put("bookmarkAutoHighlight", s.bookmarkAutoHighlight)
+        s.koSsh?.let { k -> o.put("koSsh", k.toJson(k.privateKey?.let { secrets.seal(it) })) }
+        o.put("koSshOkAt", s.koSshOkAt)
+        o.put("koSshError", s.koSshError ?: JSONObject.NULL)
+        o.put("koSshInfo", s.koSshInfo ?: JSONObject.NULL)
+        o.put("koSshBooks", JSONObject().also { j -> s.koSshBooks.forEach { (k, v) -> j.put(k, v) } })
+        o.put("koSshSent", JSONArray(s.koSshSent.toList()))
         o.put("cpToKoOkAt", s.cpToKoOkAt)
         o.put("cpToKoNote", s.cpToKoNote ?: JSONObject.NULL)
         o.put("moonOkAt", s.moonOkAt)
@@ -272,6 +286,8 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("cpClips", clips(s.cpClips))
         o.put("kindleClips", clips(s.kindleClips))
         o.put("libbyClips", clips(s.libbyClips))
+        o.put("hooplaClips", clips(s.hooplaClips))
+        o.put("everandClips", clips(s.everandClips))
         o.put("moonClips", clips(s.moonClips))
         o.put("koClips", clips(s.koClips))
         o.put("historyClips", clips(s.historyClips))
@@ -280,6 +296,8 @@ class Store(private val file: File, private val secrets: Secrets) {
         })
         o.put("moonMods", JSONObject().also { j -> s.moonMods.forEach { (k, v) -> j.put(k, v) } })
         s.libby?.let { o.put("libby", it.toJson(secrets.seal(it.identity))) }
+        s.hoopla?.let { o.put("hoopla", it.toJson(secrets.seal(it.token))) }
+        s.everand?.let { o.put("everand", it.toJson(secrets.seal(it.cookies))) }
         s.audible?.let { o.put("audible", it.toJson(secrets.seal(it.refreshToken))) }
         s.mihon?.let { o.put("mihon", it.toJson()) }
         o.put("mihonOkAt", s.mihonOkAt)
@@ -319,6 +337,10 @@ class Store(private val file: File, private val secrets: Secrets) {
         o.put("audibleOkAt", s.audibleOkAt)
         o.put("audibleError", s.audibleError ?: JSONObject.NULL)
         o.put("libbyOkAt", s.libbyOkAt)
+        o.put("hooplaOkAt", s.hooplaOkAt)
+        o.put("everandOkAt", s.everandOkAt)
+        o.put("everandError", s.everandError ?: JSONObject.NULL)
+        o.put("hooplaError", s.hooplaError ?: JSONObject.NULL)
         o.put("libbyError", s.libbyError ?: JSONObject.NULL)
         o.put("libbyNoPages", org.json.JSONArray(s.libbyNoPages.toList()))
         o.put("kindleTriedAt", s.kindleTriedAt)
@@ -491,6 +513,23 @@ class Store(private val file: File, private val secrets: Secrets) {
             koSeenAt = o.long("koSeenAt") ?: 0L,
             koNudgeOff = o.optBoolean("koNudgeOff", false),
             cpSentKo = o.optJSONArray("cpSentKo")?.strings()?.toSet() ?: emptySet(),
+            cpBmSentKo = o.obj("cpBmSentKo")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            cpBookmarks = o.obj("cpBookmarks")?.let { r -> r.keys().asSequence().associateWith { d -> (r.optJSONArray(d)?.objects() ?: emptyList()).mapNotNull { bookmarkFrom(it) } } } ?: emptyMap(),
+            koBookmarks = o.obj("koBookmarks")?.let { r -> r.keys().asSequence().associateWith { d -> (r.optJSONArray(d)?.objects() ?: emptyList()).mapNotNull { b -> b.str("page")?.let { io.github.prithirajn.readync.source.KoBookmark(it, b.str("label"), b.long("at") ?: 0L) } } } } ?: emptyMap(),
+            koBmSentCp = o.optJSONArray("koBmSentCp")?.strings()?.toSet() ?: emptySet(),
+            cpBookmarksAt = o.obj("cpBookmarksAt")?.let { r -> r.keys().asSequence().associateWith { r.optLong(it) } } ?: emptyMap(),
+            bookmarkDone = o.optJSONArray("bookmarkDone")?.strings()?.toSet() ?: emptySet(),
+            bookmarkRemoveWhenDone = o.optBoolean("bookmarkRemoveWhenDone", false),
+            bookmarkAutoHighlight = o.optBoolean("bookmarkAutoHighlight", false),
+            koSsh = o.obj("koSsh")?.let { k ->
+                val key = k.str("privateKey")
+                if (key == null) KoSshAccount.fromJson(k, null) else secrets.open(key)?.let { KoSshAccount.fromJson(k, it) }
+            },
+            koSshOkAt = o.long("koSshOkAt") ?: 0L,
+            koSshError = o.str("koSshError"),
+            koSshInfo = o.str("koSshInfo"),
+            koSshBooks = o.obj("koSshBooks")?.let { r -> r.keys().asSequence().associateWith { r.optString(it) } } ?: emptyMap(),
+            koSshSent = o.optJSONArray("koSshSent")?.strings()?.toSet() ?: emptySet(),
             cpToKoOkAt = o.long("cpToKoOkAt") ?: 0L,
             cpToKoNote = o.str("cpToKoNote"),
             koClips = (o.optJSONArray("koClips")?.objects() ?: emptyList()).mapNotNull { c ->
@@ -530,6 +569,38 @@ class Store(private val file: File, private val secrets: Secrets) {
                 )
             },
             libby = libby,
+            hoopla = o.obj("hoopla")?.let { h -> h.str("token")?.let(secrets::open)?.let { HooplaAccount.fromJson(h, it) } },
+            hooplaOkAt = o.long("hooplaOkAt") ?: 0L,
+            everand = o.obj("everand")?.let { e -> e.str("cookies")?.let(secrets::open)?.let { EverandAccount.fromJson(e, it) } },
+            everandOkAt = o.long("everandOkAt") ?: 0L,
+            everandError = o.str("everandError"),
+            hooplaError = o.str("hooplaError"),
+            hooplaClips = (o.optJSONArray("hooplaClips")?.objects() ?: emptyList()).mapNotNull { c ->
+                io.github.prithirajn.readync.source.Clipping(
+                    c.str("id") ?: return@mapNotNull null,
+                    c.str("document") ?: return@mapNotNull null,
+                    c.str("text") ?: return@mapNotNull null,
+                    c.str("note"),
+                    c.str("chapter"),
+                    c.long("createdAt") ?: 0L,
+                    spine = c.int("spine"),
+                    percent = c.optDouble("percent").takeIf { !it.isNaN() },
+                    page = c.int("page"),
+                )
+            },
+            everandClips = (o.optJSONArray("everandClips")?.objects() ?: emptyList()).mapNotNull { c ->
+                io.github.prithirajn.readync.source.Clipping(
+                    c.str("id") ?: return@mapNotNull null,
+                    c.str("document") ?: return@mapNotNull null,
+                    c.str("text") ?: return@mapNotNull null,
+                    c.str("note"),
+                    c.str("chapter"),
+                    c.long("createdAt") ?: 0L,
+                    spine = c.int("spine"),
+                    percent = c.optDouble("percent").takeIf { !it.isNaN() },
+                    page = c.int("page"),
+                )
+            },
             audible = o.obj("audible")?.let { a -> secrets.open(a.optString("refreshToken"))?.let { AudibleAccount.fromJson(a, it) } },
             audibleOkAt = o.long("audibleOkAt") ?: 0L,
             mihon = o.obj("mihon")?.let { MihonSource.fromJson(it) },
@@ -760,4 +831,19 @@ class Store(private val file: File, private val secrets: Secrets) {
         fun encode(s: Snapshot, secrets: Secrets): JSONObject = Codec.encode(s, secrets)
         fun decode(o: JSONObject, secrets: Secrets): Snapshot = Codec.decode(o, secrets)
     }
+}
+
+
+internal fun bookmarkJson(b: io.github.prithirajn.readync.source.CrossPointClient.Bookmark): JSONObject = JSONObject()
+    .put("id", b.id).put("xpath", b.xpath ?: JSONObject.NULL).put("percentage", b.percentage ?: JSONObject.NULL)
+    .put("summary", b.summary ?: JSONObject.NULL).put("spine", b.spine ?: JSONObject.NULL).put("name", b.name ?: JSONObject.NULL)
+    .put("updatedAt", b.updatedAt).put("page", b.page ?: JSONObject.NULL).put("pages", b.pages ?: JSONObject.NULL).put("vo", b.vo ?: JSONObject.NULL)
+
+internal fun bookmarkFrom(o: JSONObject): io.github.prithirajn.readync.source.CrossPointClient.Bookmark? {
+    val id = o.str("id") ?: return null
+    return io.github.prithirajn.readync.source.CrossPointClient.Bookmark(
+        id = id, xpath = o.str("xpath"), percentage = o.optDouble("percentage").takeIf { !it.isNaN() }, summary = o.str("summary"),
+        spine = o.int("spine"), name = o.str("name"), deleted = false, updatedAt = o.long("updatedAt") ?: 0L,
+        page = o.int("page"), pages = o.int("pages"), vo = o.int("vo"),
+    )
 }

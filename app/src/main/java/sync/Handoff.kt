@@ -85,6 +85,8 @@ object Handoff {
                 paperClips = s.paperClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
                 kindleClips = s.kindleClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
                 libbyClips = s.libbyClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
+                hooplaClips = s.hooplaClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
+                everandClips = s.everandClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
                 moonClips = s.moonClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
                 historyClips = s.historyClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },
                 koClips = s.koClips.map { if (it.document == physical) it.copy(document = cpDoc) else it },

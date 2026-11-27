@@ -162,6 +162,7 @@ fun QuoteShareSheet(
         text = content.text, author = content.author, title = content.title,
         chapter = clip.chapter?.takeIf { it.isNotBlank() }, page = content.page,
         others = others, note = content.note, coverColor = seed, sectors = sectors, standalone = standalone,
+        pageCount = book?.pageCount, at = clip.percent?.toFloat(),
     ).let { sc ->
         val found = if (standalone) null else page?.let { io.github.prithirajn.readync.sync.PageContext.find(it, text) }
         if (found != null) sc.copy(before = found.before, after = found.after) else sc
@@ -347,7 +348,12 @@ fun QuoteShareSheet(
                 androidx.compose.foundation.lazy.LazyRow(Modifier.riseIn(2).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(presets.filter { it.group == group }.size) { i ->
                         val p = presets.filter { it.group == group }[i]
-                        PresetKey(p, shotContent.copy(coverColor = seed), studioBase, dark, source, p == preset) {
+                        PresetKey(p, shotContent.copy(coverColor = seed), studioBase, dark, source, p == preset, onLongClick = {
+                            // A long press opens the studio on this look, as "Use as reference" does.
+                            preset = p
+                            BookShot.save(context, p.apply(studioBase, dark, source).copy(format = formatOf(size)))
+                            studio = true
+                        }) {
                             if (p != preset) { val mine = presets.filter { it.group == group }; dir = if (mine.indexOf(p) > mine.indexOf(preset)) 1 else -1; preset = p; tick() }
                         }
                     }
@@ -367,7 +373,7 @@ fun QuoteShareSheet(
                     preset?.let { BookShot.save(context, it.apply(studioBase, dark, source).copy(format = formatOf(size))) }
                     studio = true
                 }, filled = false)
-                Quiet("Opens the studio with this look, to change anything in it.", color = c.faint)
+                Quiet("Opens the studio with this look, to change anything in it. Or hold any look to open it there.", color = c.faint)
             }
             if (look == QuoteCard.Look.PAGE) {
                 VSpace(12)
@@ -502,7 +508,7 @@ fun QuoteShareSheet(
  * lit when it's the one. Drawn in the background, one at a time.
  */
 @Composable
-private fun PresetKey(p: BookShot.Preset, content: BookShot.Content, base: BookShot.Options, dark: Boolean, source: Boolean, on: Boolean, onClick: () -> Unit) {
+private fun PresetKey(p: BookShot.Preset, content: BookShot.Content, base: BookShot.Options, dark: Boolean, source: Boolean, on: Boolean, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = Cp.colors
     val context = LocalContext.current
     val thumb by androidx.compose.runtime.produceState<Bitmap?>(null, p.name, dark, source, content.text) {
@@ -514,7 +520,7 @@ private fun PresetKey(p: BookShot.Preset, content: BookShot.Content, base: BookS
         }
     }
     val sink by androidx.compose.animation.core.animateDpAsState(if (on) 2.dp else 0.dp, androidx.compose.animation.core.spring(dampingRatio = 0.5f, stiffness = 700f), label = "presetSink")
-    Key(onClick, Modifier.size(width = 92.dp, height = 118.dp).offset(y = sink), shape = RoundedCornerShape(14.dp), ledge = if (on) 1.dp else 3.dp, role = Role.RadioButton, label = p.name) {
+    Key(onClick, Modifier.size(width = 92.dp, height = 118.dp).offset(y = sink), shape = RoundedCornerShape(14.dp), ledge = if (on) 1.dp else 3.dp, role = Role.RadioButton, label = p.name, onLongClick = onLongClick) {
         Column(Modifier.fillMaxSize().padding(7.dp), verticalArrangement = Arrangement.SpaceBetween, horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(76.dp).clip(RoundedCornerShape(8.dp)).background(c.track)) {
                 thumb?.let { Image(it.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }

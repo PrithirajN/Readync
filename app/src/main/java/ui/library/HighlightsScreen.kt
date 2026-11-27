@@ -53,6 +53,7 @@ fun HighlightsScreen(vm: AppViewModel, state: Snapshot) {
     var checking by remember { mutableStateOf(false) }
     var reviewing by remember { mutableStateOf(false) }
     var reviewRound by remember { mutableStateOf(0) }
+    var bookmarks by remember { mutableStateOf(false) }
     val toCheck = remember(state.checkHighlights, state.clipChecked, state.sentClippings, state.cpClips, state.paperClips, state.kindleClips, state.koClips, state.clipEdits) {
         val ids = io.github.prithirajn.readync.sync.SpoilerCheck.waiting(state)
         if (ids.isEmpty()) emptyList() else Highlights.all(state).associateBy { it.clip.id }.let { m -> ids.mapNotNull { m[it] } }
@@ -98,6 +99,13 @@ fun HighlightsScreen(vm: AppViewModel, state: Snapshot) {
                 item(key = "extras") {
                     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
                         ExtraRow(R.drawable.lucide_refresh_cw, "Daily review", if (reviewLeft > 0) "$reviewLeft passages to look back on today" else "Done for today", signal = reviewLeft > 0) { reviewing = true }
+                        // The same bookmarks the list shows (ones whose book is gone aren't counted).
+                        val all = allBookmarks(state)
+                        val marks = all.count { (bk, b) -> !bookmarkDone(state, bk.document, b) }
+                        if (all.isNotEmpty()) {
+                            Spacer(Modifier.size(8.dp))
+                            ExtraRow(R.drawable.lucide_bookmark, "Bookmarks", if (marks > 0) "$marks to turn into highlights" else "All done", signal = marks > 0) { bookmarks = true }
+                        }
                         if (nextPosts.isNotEmpty()) {
                             Spacer(Modifier.size(8.dp))
                             ExtraRow(R.drawable.lucide_calendar_days, "Going out next", nextPosts.take(2).joinToString("  ·  ") { (w, where, _) -> "$where $w" }, signal = false) {
@@ -130,6 +138,7 @@ fun HighlightsScreen(vm: AppViewModel, state: Snapshot) {
 
     if (checking) HighlightCheckSheet(vm, state) { checking = false }
     if (reviewing) DailyReviewSheet(vm, state) { reviewing = false; reviewRound++ }
+    if (bookmarks) AllBookmarksSheet(vm, state) { bookmarks = false }
     editing?.let { e -> EditHighlightSheet(vm, state, e) { editing = null } }
     sharing?.let { h ->
         QuoteShareSheet(

@@ -18,6 +18,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -214,6 +215,7 @@ enum class KeyKind { PLAIN, SIGNAL, DANGER, INK }
  * A physical key: its face sits [ledge] above a darker ledge and sinks onto it while pressed, with
  * a click on the way down and up. [content] is drawn on the face.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun Key(
     onClick: () -> Unit,
@@ -224,6 +226,8 @@ fun Key(
     enabled: Boolean = true,
     role: Role? = Role.Button,
     label: String? = null,
+    /** A long press, when the key has a second thing to do (a haptic marks it). */
+    onLongClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val c = Cp.colors
@@ -274,7 +278,10 @@ fun Key(
     val misX = if (kind == KeyKind.SIGNAL) 2.dp else 0.dp
     Box(
         modifier
-            .clickable(source, indication = null, enabled = enabled, role = role, onClickLabel = label, onClick = onClick)
+            .then(
+                if (onLongClick != null) Modifier.combinedClickable(source, indication = null, enabled = enabled, role = role, onClickLabel = label, onLongClick = { Haptics.done(view); onLongClick() }, onClick = onClick)
+                else Modifier.clickable(source, indication = null, enabled = enabled, role = role, onClickLabel = label, onClick = onClick),
+            )
             .padding(bottom = ledge)
             // The second ink (or shadow): the key's own shape, nudged down and a touch across.
             .drawBehind {

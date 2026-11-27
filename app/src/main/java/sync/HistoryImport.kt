@@ -397,7 +397,7 @@ object HistoryImport {
 
     /** Every highlight a book has here, whatever it came from. */
     internal fun clipsOf(s: Snapshot, doc: String): List<Clipping> =
-        (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == doc }
+        (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == doc }
 
     /** [e]'s highlights that [doc] doesn't have yet. */
     internal fun newQuotes(s: Snapshot, doc: String, e: Entry): List<ImportedQuote> {

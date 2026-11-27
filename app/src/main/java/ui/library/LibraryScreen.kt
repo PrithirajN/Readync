@@ -1,5 +1,6 @@
 package io.github.prithirajn.readync.ui
 
+import io.github.prithirajn.readync.data.finishDay
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.border
@@ -81,7 +82,15 @@ import io.github.prithirajn.readync.ui.theme.CpType
  * later rating or a tracker touching the record isn't reading; otherwise its last update.
  */
 fun lastReadAt(book: Book): Long =
-    book.finishedAt?.takeIf { book.status == ReadStatus.FINISHED && it > 0 } ?: book.timestamp
+    if (book.status == ReadStatus.FINISHED) book.finishDay ?: 0L else book.timestamp
+
+/**
+ * The row's "when": how long ago it was finished or last read. A finished book brought in from a
+ * tracker with no finish date says so, rather than counting from when it was brought in (or when
+ * the tracker last touched it), which read as "131d ago" for a book read years before.
+ */
+fun lastReadLabel(book: Book): String =
+    if (book.status == ReadStatus.FINISHED && book.finishDay == null) "no date" else ago(lastReadAt(book) * 1000)
 
 fun ago(millis: Long): String {
     if (millis <= 0) return "never"
@@ -538,7 +547,7 @@ fun LibraryScreen(vm: AppViewModel, state: Snapshot, home: Int = 0) {
                         IndexRow(
                             book,
                             status = book.status?.label ?: "Reading",
-                            lastRead = ago(lastReadAt(book) * 1000),
+                            lastRead = lastReadLabel(book),
                             where = where,
                             held = book.held,
                             place = book.place?.takeIf { book.status != ReadStatus.FINISHED },
@@ -799,7 +808,7 @@ private fun BookRow(book: Book, state: Snapshot, linked: List<Tracker>, modifier
                 else -> null
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AnimatedQuiet("${book.percent}% · ${book.status?.label ?: "Reading"} · ${ago(lastReadAt(book) * 1000)}" + (where?.let { " · $it" } ?: ""), Modifier.weight(1f))
+                AnimatedQuiet("${book.percent}% · ${book.status?.label ?: "Reading"} · ${lastReadLabel(book)}" + (where?.let { " · $it" } ?: ""), Modifier.weight(1f))
             }
             val targets = if (book.held) emptyList() else linked.filter { it.id != book.origin }
             if (book.held) {
@@ -1001,7 +1010,7 @@ private fun BookSheet(
                                 style = CpType.eyebrow, color = c.accentText,
                             )
                             VSpace(6)
-                            Text(book.displayTitle, fontFamily = io.github.prithirajn.readync.ui.theme.Display, fontWeight = androidx.compose.ui.text.font.FontWeight.Black,
+                            Text(book.displayTitle.wholeWords(), fontFamily = io.github.prithirajn.readync.ui.theme.Display, fontWeight = androidx.compose.ui.text.font.FontWeight.Black,
                                 fontSize = 27.sp, lineHeight = 31.sp, color = c.text, maxLines = 4, overflow = TextOverflow.Ellipsis)
                             VSpace(6)
                             book.author?.let { Text(it, style = CpType.body.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic), color = c.textMid, maxLines = 2) }
@@ -1080,11 +1089,15 @@ private fun BookSheet(
             val needsSync = linked.any { t -> state.link(t.id, book.document)?.let { it.externalId != null && !it.confirmed && it.source != LinkSource.NONE } == true }
             var tab by rememberSaveable(book.document) { mutableStateOf(0) }
             VSpace(18)
-            PageTabs(listOf("Book" + if (needsSync) " \u2022" else "", "Highlights" + (if (clipCount > 0) " $clipCount" else "")), tab) { tab = it }
+            val markCount = allBookmarks(state).count { it.first.document == book.document }
+            val withMarks = book.origin == null && state.account != null
+            PageTabs(listOfNotNull("Book" + if (needsSync) " \u2022" else "", "Highlights" + (if (clipCount > 0) " $clipCount" else ""), if (withMarks) "Bookmarks" + (if (markCount > 0) " $markCount" else "") else null), tab) { tab = it }
             // The two pages fade across; the sheet stays its full height, so nothing jumps.
             androidx.compose.animation.Crossfade(tab, animationSpec = androidx.compose.animation.core.tween(220), label = "bookTab") { t ->
             Column(Modifier.fillMaxWidth()) {
-            if (t == 1) {
+            if (t == 2) {
+                    BookmarksSection(vm, state, book)
+            } else if (t == 1) {
                     // Whether this book's new highlights go to Threads, with its highlights.
                     ThreadsHighlightsToggle(vm, state, book)
                     HighlightsSection(vm, state, book)
@@ -1175,6 +1188,7 @@ private fun BookSheet(
                                 Column(Modifier.weight(1f)) {
                                     Text(t.name, style = CpType.bodyStrong, color = c.text)
                                     val line = when {
+                                        book.held && (link == null || link.externalId == null) -> "Not sent; matched when you send the book"
                                         link == null -> "Not matched yet; matches on the next sync"
                                         link.source == LinkSource.NONE -> "Not synced"
                                         link.externalId == null -> link.note ?: "Needs a match"
@@ -1458,6 +1472,8 @@ internal fun originLabel(origin: String): String? = when (origin.lowercase()) {
     "kindle" -> "Kindle"
     "libby" -> "Libby"
     "audible" -> "Audible"
+    "hoopla" -> "hoopla"
+    "everand" -> "Everand"
     "mihon" -> "Mihon"
     "anilist" -> "AniList"
     "logged" -> "your log"

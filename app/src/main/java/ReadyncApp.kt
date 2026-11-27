@@ -120,6 +120,25 @@ class ReadyncApp : Application(), androidx.work.Configuration.Provider {
         // Mihon's automatic backups, from the folder you chose.
         io.github.prithirajn.readync.ui.MihonFolder.install(this)
         io.github.prithirajn.readync.ui.KoSidecarFolder.install(this)
+        io.github.prithirajn.readync.source.BookFiles.dir = filesDir
+        // A book's copy kept for quotes counts as its book file too (bookmarks' pages, exact places).
+        run {
+            val ids = java.util.concurrent.ConcurrentHashMap<String, String>()
+            val app = this
+            io.github.prithirajn.readync.sync.KoPlacement.copyFor = { doc ->
+                io.github.prithirajn.readync.source.BookCopies.get(app, doc)?.let { c ->
+                    val f = java.io.File(io.github.prithirajn.readync.source.BookCopies.dir(app), c.file)
+                    val id = ids.getOrPut(c.file + "|" + f.length()) {
+                        runCatching {
+                            java.io.RandomAccessFile(f, "r").use { r ->
+                                io.github.prithirajn.readync.source.EpubText.partialMd5(r.length()) { o, n -> ByteArray(n).also { b -> r.seek(o); r.readFully(b) } }
+                            }
+                        }.getOrDefault("")
+                    }
+                    io.github.prithirajn.readync.sync.KoPlacement.Found(io.github.prithirajn.readync.sync.KoPlacement.COPY + doc, id == doc)
+                }
+            }
+        }
         io.github.prithirajn.readync.ui.ExportFolder.install(this)
         Thread({
             // Which phone sends (with one phone, this one, without a word).

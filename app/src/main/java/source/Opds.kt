@@ -519,6 +519,7 @@ object Opds {
     /** Opens [href] on [server], following redirects by hand (the sign-in goes only to the server's own host). */
     private fun connect(
         server: Server, href: String, cancel: java.util.concurrent.atomic.AtomicBoolean, progress: (Progress) -> Unit,
+        from: Long = 0,
     ): Pair<HttpURLConnection, String> {
         var url = href
         var conn: HttpURLConnection
@@ -531,6 +532,7 @@ object Opds {
                 connectTimeout = 20_000; readTimeout = 60_000
                 setRequestProperty("User-Agent", Http.defaultUserAgent)
                 auth(server, url)["Authorization"]?.let { setRequestProperty("Authorization", it) }
+                if (from > 0) setRequestProperty("Range", "bytes=$from-")
             }
             val code = conn.responseCode
             if (code in 300..399 && hops++ < 5) {
@@ -556,19 +558,37 @@ object Opds {
         cancel: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false),
         progress: (Progress) -> Unit = {},
     ): Long {
-        val (conn, _) = connect(server, acq.href, cancel, progress)
-        val total = conn.contentLengthLong.coerceAtLeast(0)
         val part = File(file.parentFile, file.name + ".part")
-        try {
-            part.parentFile?.mkdirs()
-            val written = conn.inputStream.use { input -> part.outputStream().use { out -> copy(input, out, file.name, total, cancel, progress) } }
-            if (!part.renameTo(file)) { part.copyTo(file, overwrite = true); part.delete() }
-            return written
-        } catch (e: Exception) {
-            runCatching { part.delete() }
-            throw if (e is OpdsException) e else OpdsException(if (cancel.get()) "Cancelled" else "The download stopped: ${e.message ?: "connection lost"}")
-        } finally {
-            conn.disconnect()
+        part.parentFile?.mkdirs()
+        runCatching { part.delete() }
+        var have = 0L
+        var total = 0L
+        var tries = 0
+        // A dropped connection (the phone switching networks, or going to sleep) carries on from where
+        // it stopped, a few times, when the server can; else it starts over.
+        while (true) {
+            val (conn, _) = try { connect(server, acq.href, cancel, progress, from = have) } catch (e: Exception) {
+                if (e is OpdsException || cancel.get() || tries >= 4) { runCatching { part.delete() }; throw if (e is OpdsException) e else OpdsException(if (cancel.get()) "Cancelled" else "The download stopped: ${e.message ?: "connection lost"}") }
+                tries++; Thread.sleep(2_000L * tries); continue
+            }
+            try {
+                val resumed = have > 0 && conn.responseCode == 206
+                if (!resumed) { have = 0; total = conn.contentLengthLong.coerceAtLeast(0) }
+                conn.inputStream.use { input -> java.io.FileOutputStream(part, resumed).use { out -> have += copy(input, out, file.name, total, cancel, progress) } }
+                if (total > 0 && have < total) throw java.io.IOException("connection closed early")
+                if (!part.renameTo(file)) { part.copyTo(file, overwrite = true); part.delete() }
+                return have
+            } catch (e: Exception) {
+                if (e is OpdsException || cancel.get() || tries >= 4) {
+                    runCatching { part.delete() }
+                    throw if (e is OpdsException) e else OpdsException(if (cancel.get()) "Cancelled" else "The download stopped: ${e.message ?: "connection lost"}")
+                }
+                tries++
+                have = part.length()
+                Thread.sleep(2_000L * tries)
+            } finally {
+                conn.disconnect()
+            }
         }
     }
 

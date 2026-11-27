@@ -467,6 +467,20 @@ object BookCopies {
             .filter { !triedRecently(context, it.document) }
             .maxByOrNull { it.timestamp }
             ?: return
+        // The same book under another entry (another file of it on the device, say) already has a
+        // copy: that file serves this one too, with no second download.
+        fun key(t: String) = t.lowercase().filter { it.isLetterOrDigit() }
+        have.values.firstOrNull { c -> key(c.title).isNotEmpty() && key(c.title) == key(next.displayTitle) }?.let { c ->
+            val made = runCatching {
+                val name = "copy-" + Integer.toHexString(next.document.hashCode()) + "-" + System.currentTimeMillis() / 1000 + ".epub"
+                File(dir(context), c.file).copyTo(File(dir(context), name))
+                val all = LinkedHashMap(load(context))
+                all[next.document] = c.copy(document = next.document, file = name, at = System.currentTimeMillis() / 1000)
+                save(context, all)
+            }.isSuccess
+            noteTried(context, next.document)
+            if (made) return
+        }
         val r = runCatching { get(context, next) }
         runCatching { onBackground?.invoke(next, r.getOrNull(), r.exceptionOrNull()?.message) }
     }

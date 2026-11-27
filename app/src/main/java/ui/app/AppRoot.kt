@@ -191,6 +191,23 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                     }
                     // A tab gone to before its turn is made at once.
                     LaunchedEffect(pager.targetPage) { if (pager.targetPage !in built) built = built + pager.targetPage }
+                    // Swiping between tabs: a small click as each tab takes over (half way across),
+                    // only for a swipe of your finger (a tap on the tab bar clicks there already).
+                    val swipeView = androidx.compose.ui.platform.LocalView.current
+                    LaunchedEffect(pager) {
+                        var byFinger = false
+                        launch {
+                            pager.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) byFinger = true }
+                        }
+                        launch {
+                            androidx.compose.runtime.snapshotFlow { pager.isScrollInProgress }.collect { moving -> if (!moving) byFinger = false }
+                        }
+                        var last = pager.currentPage
+                        androidx.compose.runtime.snapshotFlow { pager.currentPage }.collect { p ->
+                            if (p != last && byFinger) io.github.prithirajn.readync.ui.Haptics.tick(swipeView)
+                            last = p
+                        }
+                    }
                     Box(Modifier.weight(1f)) {
                     HorizontalPager(
                         state = pager,

@@ -25,7 +25,7 @@ object AccountData {
     /** What goes in the file: the saved fields that are reading data, never sign-ins or device state. */
     internal val KEYS = listOf(
         "books", "links", "removedBooks", "rereads",
-        "paperClips", "cpClips", "kindleClips", "libbyClips", "moonClips", "historyClips", "koClips", "readingDays", "clipEdits", "clipPages", "clipRemote", "clipHidden", "sentClippings",
+        "paperClips", "cpClips", "kindleClips", "libbyClips", "hooplaClips", "everandClips", "moonClips", "historyClips", "koClips", "readingDays", "clipEdits", "clipPages", "clipRemote", "clipHidden", "sentClippings",
         "seekquelRatings", "seekquelDates",
         "webNovels", "kosyncIds", "logged", "seriesRead", "pagesPer", "comicPerVolume", "comicCustom", "facts",
     )
@@ -72,7 +72,7 @@ object AccountData {
         return Read(
             incoming = snap,
             books = snap.books.size,
-            highlights = snap.paperClips.size + snap.cpClips.size + snap.kindleClips.size + snap.libbyClips.size + snap.moonClips.size + snap.historyClips.size + snap.koClips.size,
+            highlights = snap.paperClips.size + snap.cpClips.size + snap.kindleClips.size + snap.libbyClips.size + snap.hooplaClips.size + snap.everandClips.size + snap.moonClips.size + snap.historyClips.size + snap.koClips.size,
             fromVersion = o.optJSONObject("app")?.optString("version")?.takeIf { it.isNotBlank() },
             exportedAt = o.optLong("exportedAt"),
             newer = o.optInt("schema", 1) > SCHEMA,
@@ -106,18 +106,20 @@ object AccountData {
         val cp = byId(current.cpClips, incoming.cpClips) { it.id }
         val kindle = byId(current.kindleClips, incoming.kindleClips) { it.id }
         val libby = byId(current.libbyClips, incoming.libbyClips) { it.id }
+        val hoopla = byId(current.hooplaClips, incoming.hooplaClips) { it.id }
+        val everand = byId(current.everandClips, incoming.everandClips) { it.id }
         val moon = byId(current.moonClips, incoming.moonClips) { it.id }
         val hist = byId(current.historyClips, incoming.historyClips) { it.id }
         val kos = byId(current.koClips, incoming.koClips) { it.id }
         val newClips = (paper.size - current.paperClips.size) + (cp.size - current.cpClips.size) +
-            (kindle.size - current.kindleClips.size) + (libby.size - current.libbyClips.size) + (moon.size - current.moonClips.size) + (hist.size - current.historyClips.size) + (kos.size - current.koClips.size)
+            (kindle.size - current.kindleClips.size) + (libby.size - current.libbyClips.size) + (hoopla.size - current.hooplaClips.size) + (everand.size - current.everandClips.size) + (moon.size - current.moonClips.size) + (hist.size - current.historyClips.size) + (kos.size - current.koClips.size)
         // Maps: what this phone has wins; the file fills in the rest.
         val s = current.copy(
             books = books,
             links = incoming.links + current.links,
             removedBooks = (incoming.removedBooks + current.removedBooks).filterKeys { it !in books },
             rereads = incoming.rereads + current.rereads,
-            paperClips = paper, cpClips = cp, kindleClips = kindle, libbyClips = libby, moonClips = moon, historyClips = hist, koClips = kos,
+            paperClips = paper, cpClips = cp, kindleClips = kindle, libbyClips = libby, hooplaClips = hoopla, everandClips = everand, moonClips = moon, historyClips = hist, koClips = kos,
             readingDays = (incoming.readingDays.keys + current.readingDays.keys).associateWith { d -> (incoming.readingDays[d] ?: emptyMap()) + (current.readingDays[d] ?: emptyMap()) },
             clipEdits = incoming.clipEdits + current.clipEdits,
             clipPages = incoming.clipPages + current.clipPages,

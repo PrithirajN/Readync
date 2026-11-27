@@ -1,5 +1,6 @@
 package io.github.prithirajn.readync.sync
 
+import io.github.prithirajn.readync.data.finishDay
 import io.github.prithirajn.readync.data.Book
 import io.github.prithirajn.readync.data.LinkSource
 import io.github.prithirajn.readync.data.ReadStatus
@@ -61,7 +62,7 @@ object Insights {
         val finished = s.books.values.filter { b ->
             // Books brought in from a tracker's history or an export count too (held only means they aren't sent anywhere).
             b.status == ReadStatus.FINISHED &&
-                (b.finishedAt ?: b.timestamp).let { t -> t > 0 && Instant.ofEpochSecond(t).atZone(zone).year == y }
+                b.finishDay?.let { t -> Instant.ofEpochSecond(t).atZone(zone).year == y } == true
         }.sortedByDescending { it.finishedAt ?: it.timestamp }
         // Books set aside this year, when you've chosen to count them (their pages as far as you got).
         val setAside = if (!io.github.prithirajn.readync.ui.DnfPrefs.counts(s)) emptyList() else s.books.values.filter { b ->
@@ -95,7 +96,7 @@ object Insights {
                 day(b.timestamp)?.takeIf { !it.isBefore(since) && !it.isAfter(today) }?.let { out += Event(it, Kind.DNF, b.document, at = b.timestamp) }
             }
         }
-        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips)
+        val clips = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips)
             .filter { it.id !in s.clipHidden && it.document in s.books }
             .distinctBy { it.id }
         clips.mapNotNull { c -> day(c.createdAt)?.takeIf { !it.isBefore(since) && !it.isAfter(today) }?.let { (it to c.document) to c.createdAt } }
@@ -128,6 +129,8 @@ object Insights {
         }
         s.kindleError?.takeIf { s.kindle != null }?.let { out += Need.Source("Kindle", it, "kindle") }
         s.libbyError?.takeIf { s.libby != null }?.let { out += Need.Source("Libby", it, "libby") }
+        s.hooplaError?.takeIf { s.hoopla != null }?.let { out += Need.Source("hoopla", it, "hoopla") }
+        s.everandError?.takeIf { s.everand != null }?.let { out += Need.Source("Everand", it, "everand") }
         s.kosyncError?.takeIf { s.kosync != null }?.let { out += Need.Source("KOSync", it, "kosync") }
         val linked = Trackers.all.filter { s.service(it.id).let { v -> v.linked && v.enabled } }.map { it.id }.toSet()
         val unmatched = s.links.values

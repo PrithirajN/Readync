@@ -299,13 +299,24 @@ object EpubText {
 
         /** The visible offset a KOReader position points at, or null when it isn't one of this chapter's. */
         fun offsetOf(xpointer: String): Int? {
-            val m = Regex("""^/body/DocFragment\[(\d+)]/body((?:/[^/\[.]+(?:\[\d+])?)*)/text\(\)(?:\[(\d+)])?\.(\d+)$""").find(xpointer.trim()) ?: return null
+            val m = Regex("""^/body/DocFragment\[(\d+)]/body((?:/[^/\[.]+(?:\[\d+])?)*?)(?:/text\(\)(?:\[(\d+)])?\.(\d+))?(?:\.\d+)?$""").find(xpointer.trim()) ?: return null
             if (m.groupValues[1].toInt() != spine + 1) return null
             var el = body
             for (seg in m.groupValues[2].split('/').filter { it.isNotEmpty() }) {
                 val name = seg.substringBefore('[')
                 val n = seg.substringAfter('[', "1]").removeSuffix("]").toInt()
                 el = el.kids.filter { it is El && it.name == name }.getOrNull(n - 1) as? El ?: return null
+            }
+            // No text node named (CrossPoint's "/body/DocFragment[N]/body/p[5]"): the element's first text.
+            if (m.groupValues[4].isEmpty()) {
+                fun first(e: El): Int? {
+                    for (k in e.kids) when (k) {
+                        is Tx -> if (k.start >= 0 && !k.ws) return k.start
+                        is El -> first(k)?.let { return it }
+                    }
+                    return null
+                }
+                return first(el) ?: if (el === body) 0 else null
             }
             val n = m.groupValues[3].ifEmpty { "1" }.toInt()
             val runs = el.kids.filterIndexed { i, k -> k is Tx && !(i == 0 && k.ws && el.name in BLOCK) }

@@ -69,6 +69,86 @@ data class LibbyAccount(
     }
 }
 
+/**
+ * hoopla: the sign-in token the hoopla website got when you signed in (kept sealed on the phone),
+ * for your borrows, how far in you are, and your highlights and notes.
+ */
+data class HooplaAccount(
+    val token: String,
+    val enabled: Boolean = true,
+    val syncHighlights: Boolean = true,
+) {
+    fun toJson(sealedToken: String? = null): JSONObject = JSONObject()
+        .put("token", sealedToken ?: token)
+        .put("enabled", enabled)
+        .put("syncHighlights", syncHighlights)
+
+    companion object {
+        fun fromJson(o: JSONObject, unsealedToken: String? = null) = HooplaAccount(
+            token = unsealedToken ?: o.optString("token"),
+            enabled = o.optBoolean("enabled", true),
+            syncHighlights = o.optBoolean("syncHighlights", true),
+        )
+    }
+}
+
+/**
+ * KOReader on another device (a Kindle, Kobo or PocketBook), reached over your Wi-Fi through
+ * KOReader's own SSH server: where it is, and how Readync signs in ([privateKey], kept sealed, with
+ * [publicKey] added to KOReader's settings/SSH/authorized_keys; or KOReader's "Login without
+ * password"). [koDir] is KOReader's folder there, found on the first connection.
+ */
+data class KoSshAccount(
+    val host: String,
+    val port: Int = 2222,
+    val user: String = "root",
+    val privateKey: String? = null,
+    val publicKey: String? = null,
+    val noPassword: Boolean = false,
+    val enabled: Boolean = true,
+    val koDir: String? = null,
+) {
+    fun toJson(sealedKey: String? = null): JSONObject = JSONObject()
+        .put("host", host).put("port", port).put("user", user)
+        .put("privateKey", (sealedKey ?: privateKey) ?: JSONObject.NULL)
+        .put("publicKey", publicKey ?: JSONObject.NULL)
+        .put("noPassword", noPassword).put("enabled", enabled)
+        .put("koDir", koDir ?: JSONObject.NULL)
+
+    companion object {
+        fun fromJson(o: JSONObject, unsealedKey: String? = null) = KoSshAccount(
+            host = o.optString("host"),
+            port = o.optInt("port", 2222),
+            user = o.optString("user", "root").ifBlank { "root" },
+            privateKey = unsealedKey ?: o.str("privateKey"),
+            publicKey = o.str("publicKey"),
+            noPassword = o.optBoolean("noPassword", false),
+            enabled = o.optBoolean("enabled", true),
+            koDir = o.str("koDir"),
+        )
+    }
+}
+
+/** Everand: the everand.com sign-in (its cookies, kept sealed on the phone), for your Saved titles and progress. */
+data class EverandAccount(
+    val cookies: String,
+    val enabled: Boolean = true,
+    val syncHighlights: Boolean = true,
+) {
+    fun toJson(sealedCookies: String? = null): JSONObject = JSONObject()
+        .put("cookies", sealedCookies ?: cookies)
+        .put("enabled", enabled)
+        .put("syncHighlights", syncHighlights)
+
+    companion object {
+        fun fromJson(o: JSONObject, unsealedCookies: String? = null) = EverandAccount(
+            cookies = unsealedCookies ?: o.optString("cookies"),
+            enabled = o.optBoolean("enabled", true),
+            syncHighlights = o.optBoolean("syncHighlights", true),
+        )
+    }
+}
+
 /** An Amazon Kindle account session for Whispersync progress and notebook highlights. */
 /**
  * Audible: this phone registered as one of your Audible devices (on your store), with its own
@@ -1725,6 +1805,30 @@ data class Snapshot(
     val koSeenAt: Long = 0L,
     val koNudgeOff: Boolean = false,
     val cpSentKo: Set<String> = emptySet(),
+    /** KOReader's page bookmarks, by book (from its files), and the ones already added to CrossPoint ("document|position"). */
+    val koBookmarks: Map<String, List<io.github.prithirajn.readync.source.KoBookmark>> = emptyMap(),
+    val koBmSentCp: Set<String> = emptySet(),
+    /** CrossPoint bookmarks given to KOReader's AnnotationSync file: "document|bookmark id" -> its key there. */
+    val cpBmSentKo: Map<String, String> = emptyMap(),
+    /** Your CrossPoint bookmarks, by book (deleted ones left out), and when each book's were last read. */
+    val cpBookmarks: Map<String, List<io.github.prithirajn.readync.source.CrossPointClient.Bookmark>> = emptyMap(),
+    val cpBookmarksAt: Map<String, Long> = emptyMap(),
+    /** Bookmarks ticked off once turned into a highlight ("document|bookmark id"). */
+    val bookmarkDone: Set<String> = emptySet(),
+    /** Remove a bookmark (on CrossPoint, so on the device and in KOReader) once it's turned into a highlight. */
+    val bookmarkRemoveWhenDone: Boolean = false,
+    /** Every new CrossPoint bookmark becomes a highlight of its page by itself (for readers without touch). */
+    val bookmarkAutoHighlight: Boolean = false,
+    /** KOReader on another device over its SSH server: the sign-in, how it's doing, what it holds. */
+    val koSsh: KoSshAccount? = null,
+    val koSshOkAt: Long = 0L,
+    val koSshError: String? = null,
+    /** "KOReader v2025.08 · 23 books" and the like, from the last connection. */
+    val koSshInfo: String? = null,
+    /** The book files there: path -> "modified|size|document id". */
+    val koSshBooks: Map<String, String> = emptyMap(),
+    /** CrossPoint highlights (their ids) and bookmarks ("bm:document|id") already given to KOReader that way. */
+    val koSshSent: Set<String> = emptySet(),
     val cpToKoOkAt: Long = 0L,
     val cpToKoNote: String? = null,
     val kindle: KindleAccount? = null,
@@ -1784,6 +1888,16 @@ data class Snapshot(
     val libbyOkAt: Long = 0L,
     val libbyError: String? = null,
     val libbyClips: List<io.github.prithirajn.readync.source.Clipping> = emptyList(),
+    /** hoopla: the sign-in, when it last worked or what went wrong, and your highlights from its reader. */
+    val hoopla: HooplaAccount? = null,
+    val hooplaOkAt: Long = 0L,
+    val hooplaError: String? = null,
+    val hooplaClips: List<io.github.prithirajn.readync.source.Clipping> = emptyList(),
+    /** Everand: the sign-in, and when it last worked or what went wrong. */
+    val everand: EverandAccount? = null,
+    val everandOkAt: Long = 0L,
+    val everandError: String? = null,
+    val everandClips: List<io.github.prithirajn.readync.source.Clipping> = emptyList(),
     /** Highlights from Moon+ Reader's sync files (its ".an" files), on the books they're from. */
     val moonClips: List<io.github.prithirajn.readync.source.Clipping> = emptyList(),
     /**
@@ -1953,3 +2067,13 @@ data class Snapshot(
     fun service(id: String): ServiceState = services[id] ?: ServiceState(id)
     fun link(service: String, document: String): Link? = links[Link.key(service, document)]
 }
+
+
+/**
+ * When a finished book counts as finished, for goals, months, Wrapped and the poster: its finish
+ * date; without one, when it was last read, but only for a book read through Readync's own sources.
+ * One brought in from a tracker's library or history with no finish date counts in no year (its
+ * "last read" is only when it was brought in, which put old books into this year's goal).
+ */
+val Book.finishDay: Long?
+    get() = finishedAt?.takeIf { it > 0 } ?: timestamp.takeIf { it > 0 && origin == null }

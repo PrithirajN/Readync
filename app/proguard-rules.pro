@@ -21,3 +21,12 @@
 -dontwarn kotlinx.coroutines.debug.**
 -dontwarn com.google.errorprone.annotations.**
 -dontwarn org.slf4j.**
+
+# JSch picks its ciphers, key exchanges and signatures by class name at runtime.
+-keep class com.jcraft.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.newsclub.**
+-dontwarn com.sun.jna.**
+-dontwarn org.ietf.jgss.**
+-dontwarn org.apache.logging.**

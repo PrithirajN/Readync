@@ -556,7 +556,7 @@ object ThreadsAuto {
             }
             val spoiler = !book.review.isNullOrBlank() && spoils(s, book, listOf(QuoteCard.cleanReview(book.review.orEmpty())))
             val words = credited(store.snapshot, reviewText(book, wording))
-            ThreadsClient.postCarousel(user, token, words, images, topic(store, book), spoiler)
+            ThreadsClient.postCarousel(user, token, words, images, topic(store, book), spoiler, store = store)
             mirror(context, store, words, images.map { it.second }, spoiler, topic(store, book), "your review of \u201C${book.displayTitle}\u201D", kind = "review", book = book)
             store.update { it.copy(threadsReviewed = it.threadsReviewed + (document to System.currentTimeMillis() / 1000), threadsError = null) }
             store.log(null, "Posted your review of \u201C${book.displayTitle}\u201D to Threads")
@@ -587,7 +587,7 @@ object ThreadsAuto {
             }
             val spoiler = spoils(s, book, listOfNotNull(passage, book.review?.let { QuoteCard.cleanReview(it) }).filter { it.isNotBlank() })
             val words = credited(store.snapshot, text.take(480))
-            ThreadsClient.postCarousel(user, token, words, images, topic(store, book), spoiler)
+            ThreadsClient.postCarousel(user, token, words, images, topic(store, book), spoiler, store = store)
             mirror(context, store, words, images.map { it.second }, spoiler, topic(store, book), "your recap of \u201C${book.displayTitle}\u201D", kind = "recap", book = book)
             store.update { it.copy(threadsError = null) }
             store.log(null, "Posted your recap of \u201C${book.displayTitle}\u201D to Threads")
@@ -624,7 +624,7 @@ object ThreadsAuto {
                     else postText(item, x.book, st.threadsWithNote, picture = true)
                 val spoiler = io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, x.book, listOf(item.clip.text))
                 val text = credited(store.snapshot, words)
-                ThreadsClient.post(user, token, text, imageUrl, altText(item, x.book), topic(store, x.book), spoiler)
+                ThreadsClient.post(user, token, text, imageUrl, altText(item, x.book), topic(store, x.book), spoiler, store = store)
                 mirror(context, store, text, listOf(altText(item, x.book)), spoiler, topic(store, x.book), "a highlight from \u201C${x.book.displayTitle}\u201D", kind = "highlight", book = x.book, highlights = listOf(item))
                 usedKey = look.key
             } else {
@@ -639,7 +639,7 @@ object ThreadsAuto {
                 val words = aiCaption(context, st, x.book, x.items.map { it.clip })?.let { it + "\n\n" + bookLine(x.book) } ?: sessionText(x)
                 val spoiler = x.items.any { io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, it.clip.id) } || spoils(st, x.book, passages)
                 val text = credited(store.snapshot, words)
-                ThreadsClient.postCarousel(user, token, text, images, topic(store, x.book), spoiler)
+                ThreadsClient.postCarousel(user, token, text, images, topic(store, x.book), spoiler, store = store)
                 mirror(context, store, text, images.map { it.second }, spoiler, topic(store, x.book), "${x.items.size} highlights from \u201C${x.book.displayTitle}\u201D", kind = "highlight", book = x.book, highlights = x.items)
                 usedKey = order.last().key
             }
@@ -669,8 +669,10 @@ object ThreadsAuto {
                 return "Threads didn't confirm the post; check your profile"
             }
             // No connection isn't Threads saying no: the highlights wait, never counted as a failed try.
+            // No connection (the phone asleep or between networks): one quiet line, not an error each check.
+            val said = store.snapshot.threadsError == problem
             store.update { s -> s.copy(threadsFails = if (offline) s.threadsFails else s.threadsFails + ids.associateWith { (s.threadsFails[it] ?: 0) + 1 }, threadsError = problem) }
-            store.log(null, "Threads: ${e.message}", error = true)
+            if (!offline) store.log(null, "Threads: ${e.message}", error = true) else if (!said) store.log(null, "Threads: $problem")
             problem
         }
     }
@@ -750,7 +752,7 @@ object ThreadsAuto {
                     look = drawn
                     val spoiler = io.github.prithirajn.readync.sync.SpoilerCheck.isSpoiler(st, item.clip.id) || spoils(st, book, listOf(item.clip.text))
                     val text = credited(st, postText(item, book, st.threadsWithNote, picture = true))
-                    ThreadsClient.post(st.threadsUserId!!, token, text, imageUrl, altText(item, book), topic(store, book), spoiler)
+                    ThreadsClient.post(st.threadsUserId!!, token, text, imageUrl, altText(item, book), topic(store, book), spoiler, store = store)
                     mirror(context, store, text, listOf(altText(item, book)), spoiler, topic(store, book), "a highlight from \u201C${book.displayTitle}\u201D", kind = "highlight", book = book, highlights = listOf(item))
                     posted++
                     store.update { x ->
@@ -776,8 +778,9 @@ object ThreadsAuto {
                         store.log(null, "Threads didn't answer after posting a highlight from “${book.displayTitle}”; counted as posted so it can't go up twice (check Threads)", error = true)
                         break
                     }
+                    val said = store.snapshot.threadsError == problem
                     store.update { x -> x.copy(threadsFails = if (offline) x.threadsFails else x.threadsFails + (id to ((x.threadsFails[id] ?: 0) + 1)), threadsError = problem) }
-                    store.log(null, "Threads: ${e.message}", error = true)
+                    if (!offline) store.log(null, "Threads: ${e.message}", error = true) else if (!said) store.log(null, "Threads: $problem")
                     // The rest wait, so highlights still go up in the order they were made.
                     break
                 }

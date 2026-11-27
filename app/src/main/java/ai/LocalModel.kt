@@ -211,7 +211,9 @@ object LocalModel {
     fun get(context: Context): TextModel? {
         val f = file(context) ?: return null
         if (!supported()) throw IllegalStateException("This phone's processor isn't supported by the on-device model (it needs a 64-bit phone)")
-        val eng = synchronized(lock) {
+        // Loaded when needed, and let go a little after the last answer (it takes most of a gigabyte,
+        // and Android closes an app holding that much in the background).
+        fun live(): Engine = synchronized(lock) {
             if (engine == null || loadedFrom != f.path) {
                 runCatching { engine?.close() }
                 engine = null
@@ -219,8 +221,10 @@ object LocalModel {
                     ?: throw IllegalStateException("The model didn't load on this phone")
                 loadedFrom = f.path
             }
-            engine
-        } ?: return null
+            touch()
+            engine!!
+        }
+        live()
         // Qwen3 reasons out loud first unless asked not to; the answers here are short and direct.
         val noThinking = f.name.lowercase().contains("qwen3")
         // Gemma 4 runs with an 8,192-token context here: room for several pages of the book.
@@ -237,6 +241,7 @@ object LocalModel {
                 val tuned = thinkingOff != false
                 val config = if (tuned) ConversationConfig(samplerConfig = sampler, thinkingConfig = ThinkingConfig(enableThinking = false), maxOutputToken = MAX_ANSWER)
                     else ConversationConfig(samplerConfig = sampler)
+                val eng = live()
                 try {
                     eng.createConversation(config).use { conversation -> conversation.sendMessage(text).toString() }.also { if (tuned) thinkingOff = true }
                 } catch (e: Exception) {
@@ -244,7 +249,7 @@ object LocalModel {
                     if (!tuned || thinkingOff == true) throw e
                     thinkingOff = false
                     eng.createConversation(ConversationConfig(samplerConfig = sampler)).use { conversation -> conversation.sendMessage(text).toString() }
-                }
+                } finally { touch() }
             }
 
             // A picture and a question (Gemma 4 only: the others read text alone).
@@ -254,10 +259,28 @@ object LocalModel {
                     samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.1),
                     thinkingConfig = ThinkingConfig(enableThinking = false), maxOutputToken = 600,
                 )
-                eng.createConversation(config).use { conversation ->
-                    conversation.sendMessage(Message.of(Content.ImageFile(imagePath), Content.Text(prompt))).toString()
-                }
+                try {
+                    live().createConversation(config).use { conversation ->
+                        conversation.sendMessage(Message.of(Content.ImageFile(imagePath), Content.Text(prompt))).toString()
+                    }
+                } finally { touch() }
             }
+        }
+    }
+
+    private const val IDLE_MS = 90_000L
+    @Volatile private var lastUsed = 0L
+    private val idle = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "model-idle").apply { isDaemon = true } }
+    private var closing: java.util.concurrent.ScheduledFuture<*>? = null
+
+    /** Used just now: the model is let go [IDLE_MS] after the last use. */
+    private fun touch() {
+        lastUsed = System.currentTimeMillis()
+        synchronized(idle) {
+            closing?.cancel(false)
+            closing = idle.schedule({
+                synchronized(lock) { if (System.currentTimeMillis() - lastUsed >= IDLE_MS - 500) close() }
+            }, IDLE_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
         }
     }
 

@@ -90,7 +90,7 @@ object Socials {
                 .onFailure { e -> store.log(null, "Couldn't post to $name" + (post.label.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: "") + ": ${e.message}", error = true) }
         }
         if (c.bluesky.on && c.bluesky.handle.isNotBlank() && c.bluesky.appPassword.isNotBlank()) attempt("Bluesky") { BlueskyClient.post(store, c.bluesky, post) }
-        if (c.mastodon.on && c.mastodon.server.isNotBlank() && c.mastodon.token.isNotBlank()) attempt("Mastodon") { MastodonClient.post(c.mastodon, post) }
+        if (c.mastodon.on && c.mastodon.server.isNotBlank() && c.mastodon.token.isNotBlank()) attempt("Mastodon") { MastodonClient.post(c.mastodon, post, store) }
         if (c.x.on) runCatching { XQueue.add(context, post) }
     }
 
@@ -160,6 +160,20 @@ object BlueskyClient {
         val base = b.pds.trimEnd('/')
         // Bluesky has no tap-to-reveal for spoilers: the post says so first.
         val words = Socials.fit((if (post.spoiler) "⚠️ Spoilers\n\n" else "") + post.text, MAX)
+        // Never twice: your last 50 posts read back (pictures' descriptions too); one that's this post is left as it is.
+        runCatching {
+            val feed = json("GET", "$base/xrpc/app.bsky.feed.getAuthorFeed?actor=${Http.enc(did)}&limit=50&filter=posts_no_replies", null, jwt).optJSONArray("feed")
+            val seen = (0 until (feed?.length() ?: 0)).mapNotNull { feed!!.optJSONObject(it)?.optJSONObject("post") }.map { p ->
+                val imgs = p.optJSONObject("embed")?.optJSONArray("images")
+                DupGuard.Seen(p.optString("uri"), p.optJSONObject("record")?.optString("text"),
+                    (0 until (imgs?.length() ?: 0)).mapNotNull { imgs!!.optJSONObject(it)?.optString("alt")?.takeIf { a -> a.isNotBlank() } },
+                    DupGuard.time(p.optJSONObject("record")?.optString("createdAt")))
+            }
+            DupGuard.find(seen, words, post.pictures.map { it.second })
+        }.getOrNull()?.let { hit ->
+            store.log(null, "Already on Bluesky, so not posted again: “${words.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(70)}”")
+            return hit.id
+        }
         val images = JSONArray()
         for ((png, alt) in post.pictures.take(4)) {
             val (jpg, size) = Socials.jpeg(png)
@@ -238,9 +252,26 @@ object MastodonClient {
         return id
     }
 
-    fun post(m: Socials.Mastodon, post: Socials.Post): String {
-        val ids = post.pictures.take(4).map { (png, alt) -> upload(m, png, alt) }
+    fun post(m: Socials.Mastodon, post: Socials.Post, store: Store? = null): String {
         val words = Socials.fit(post.text, MAX)
+        // Never twice: your last 40 posts read back (pictures' descriptions too); one that's this post is left as it is.
+        runCatching {
+            val auth = mapOf("Authorization" to "Bearer ${m.token.trim()}", "Accept" to "application/json")
+            val me = JSONObject(Http.request("GET", "${base(m)}/api/v1/accounts/verify_credentials", auth, timeoutMs = 20_000).body).optString("id")
+            val r = Http.request("GET", "${base(m)}/api/v1/accounts/$me/statuses?limit=40&exclude_replies=true&exclude_reblogs=true", auth, timeoutMs = 20_000)
+            val a = org.json.JSONArray(r.body)
+            val seen = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { p ->
+                val media = p.optJSONArray("media_attachments")
+                DupGuard.Seen(p.optString("url"), android.text.Html.fromHtml(p.optString("content"), android.text.Html.FROM_HTML_MODE_LEGACY).toString(),
+                    (0 until (media?.length() ?: 0)).mapNotNull { media!!.optJSONObject(it)?.optString("description")?.takeIf { d -> d.isNotBlank() && d != "null" } },
+                    DupGuard.time(p.optString("created_at")))
+            }
+            DupGuard.find(seen, words, post.pictures.map { it.second })
+        }.getOrNull()?.let { hit ->
+            store?.log(null, "Already on Mastodon, so not posted again: “${words.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(70)}”")
+            return hit.id
+        }
+        val ids = post.pictures.take(4).map { (png, alt) -> upload(m, png, alt) }
         val form = StringBuilder()
         fun add(k: String, v: String) { if (form.isNotEmpty()) form.append('&'); form.append(Http.enc(k)).append('=').append(Http.enc(v)) }
         add("status", words)

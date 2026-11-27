@@ -119,6 +119,10 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
     var linkingAl by remember { mutableStateOf(false) }
     var removingAl by remember { mutableStateOf(false) }
     var removingAudible by remember { mutableStateOf(false) }
+    var linkingHoopla by remember { mutableStateOf(false) }
+    var removingHoopla by remember { mutableStateOf(false) }
+    var linkingEverand by remember { mutableStateOf(false) }
+    var removingEverand by remember { mutableStateOf(false) }
     var removingLibby by remember { mutableStateOf(false) }
     var page by remember { mutableStateOf<String?>(null) }
     var readingLog by remember { mutableStateOf(false) }
@@ -187,12 +191,15 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                             Health.kindle(state)?.takeIf { full }?.let { "Kindle" to level(it) },
                             Health.libby(state)?.takeIf { full }?.let { "Libby" to level(it) },
                             Health.audible(state)?.takeIf { full }?.let { "Audible" to level(it) },
+                            Health.hoopla(state)?.takeIf { full }?.let { "hoopla" to level(it) },
+                            Health.koSsh(state)?.let { "KOReader" to level(it) },
+                            Health.everand(state)?.takeIf { full }?.let { "Everand" to level(it) },
                             (Health.mihon(state) ?: Health.anilist(state))?.let { "Manga" to level(it) },
                             Health.kosync(state)?.let { "KOSync" to level(it) },
                             Health.moon(state)?.let { "Moon+" to level(it) },
                         ) + linkedApps.map { trackerLight(it) },
                         (listOf(state.sourceOkAt, state.kosyncOkAt, state.moonOkAt) +
-                            (if (full) listOf(state.kindleOkAt, state.libbyOkAt, state.audibleOkAt) else emptyList()) +
+                            (if (full) listOf(state.kindleOkAt, state.libbyOkAt, state.audibleOkAt, state.hooplaOkAt, state.everandOkAt) else emptyList()) +
                             linkedApps.map { state.service(it.id).lastSync }).max().takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Not checked yet",
                     )
                     else -> Triple(
@@ -308,6 +315,28 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                                 summaryWarn = state.audible != null && state.audibleError != null,
                                 trailing = { Health.audible(state)?.let { h -> HealthLight(h) { vm.checkAudible() } } },
                             ) { page = "audible" }
+                            RowDivider()
+                            NavRow(
+                                R.drawable.lucide_library_big, "hoopla",
+                                when {
+                                    state.hoopla == null -> "Not linked"
+                                    state.hooplaError != null -> "Needs you to sign in again"
+                                    else -> state.hooplaOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
+                                },
+                                summaryWarn = state.hoopla != null && state.hooplaError != null,
+                                trailing = { Health.hoopla(state)?.let { h -> HealthLight(h) { vm.checkHoopla() } } },
+                            ) { page = "hoopla" }
+                            RowDivider()
+                            NavRow(
+                                R.drawable.lucide_headphones, "Everand",
+                                when {
+                                    state.everand == null -> "Not linked"
+                                    state.everandError != null -> "Needs you to sign in again"
+                                    else -> state.everandOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Linked"
+                                },
+                                summaryWarn = state.everand != null && state.everandError != null,
+                                trailing = { Health.everand(state)?.let { h -> HealthLight(h) { vm.checkEverand() } } },
+                            ) { page = "everand" }
                             RowDivider()
                         }
                         NavRow(
@@ -443,7 +472,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
         val socialPages = SocialNets.all().map { "social:${it.id}" }
         SettingsSheet(
             when (p) {
-                "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"; "kohl" -> "KOReader highlights"
+                "crosspoint" -> "CrossPoint account"; "kindle" -> "Amazon Kindle"; "libby" -> "Libby"; "audible" -> "Audible"; "hoopla" -> "hoopla"; "everand" -> "Everand"; "mihon" -> "Manga & comics"; "kosync" -> "KOSync server"; "moon" -> "Moon+ Reader"; "kohl" -> "KOReader highlights & bookmarks"
                 "sync" -> "Sync settings"; "ai" -> "On-device AI"; "backup" -> "Backup & import"; "threads" -> "Threads"; "socials" -> "Post elsewhere"; in socialPages -> SocialNets.title(p.removePrefix("social:")); "exports" -> "Export highlights"; "readwise" -> "Readwise"; "notion" -> "Notion"; "obsidian" -> "Obsidian"; "storage" -> "Storage"; else -> "App update"
             },
             onClose = { page = null },
@@ -462,7 +491,7 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                         Health.source(state)?.let { h -> HealthLight(h) { vm.checkCrossPoint() } }
                     }
                     RowDivider()
-                    KoHlHint(state, "Reading in KOReader too? Your position comes through sync, but its highlights and notes don't. They can come from KOReader's own files instead.") { page = "kohl" }
+                    KoHlHint(state, "Reading in KOReader too? Your position comes through sync, but its highlights, notes and bookmarks don't. They can come from KOReader's own files instead, and your CrossPoint ones can go to KOReader.") { page = "kohl" }
                     RowDivider()
                     Box(Modifier.padding(16.dp)) { BigButton("Sign out", { page = null; signingOut = true }, filled = false, danger = true) }
                 }
@@ -470,11 +499,13 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
                 "mihon" -> MihonCard(vm, state, onRemove = { removingMihon = true }, onLinkMu = { linkingMu = true }, onRemoveMu = { removingMu = true }, onLinkAl = { linkingAl = true }, onRemoveAl = { removingAl = true })
                 "audible" -> AudibleCard(vm, state, onLink = { linkingAudible = true }, onRemove = { page = null; removingAudible = true })
                 "libby" -> LibbyCard(vm, state, onLink = { linkingLibby = true }, onRemove = { page = null; removingLibby = true })
+                "hoopla" -> HooplaCard(vm, state, onLink = { linkingHoopla = true }, onRemove = { page = null; removingHoopla = true })
+                "everand" -> EverandCard(vm, state, onLink = { linkingEverand = true }, onRemove = { page = null; removingEverand = true })
                 "kosync" -> Column {
                     KosyncCard(vm, state, onAdd = { addingKosync = true }, onRemove = { page = null; removingKosync = true })
                     if (state.kosync != null) {
                         VSpace(12)
-                        CpCard { KoHlHint(state, "KOSync carries only your reading position, so KOReader's highlights and notes don't come with it. They can come from KOReader's own files instead.") { page = "kohl" } }
+                        CpCard { KoHlHint(state, "KOSync carries only your reading position, so KOReader's highlights, notes and bookmarks don't come with it. They can come from KOReader's own files instead.") { page = "kohl" } }
                     }
                 }
                 "kohl" -> KoHlCard(vm, state, onAdd = { addingKoHl = true }, onRemove = { page = null; removingKoHl = true })
@@ -566,6 +597,26 @@ fun ServicesScreen(vm: AppViewModel, state: Snapshot) {
         )
     }
     if (linkingLibby) LibbySignInSheet(vm) { linkingLibby = false }
+    if (linkingHoopla) HooplaSignInSheet(vm) { linkingHoopla = false }
+    if (linkingEverand) EverandWebDialog(vm) { linkingEverand = false }
+    if (removingEverand) {
+        ConfirmSheet(
+            title = "Disconnect Everand?",
+            body = "${io.github.prithirajn.readync.Edition.name} stops reading your Everand titles, and the highlights it brought from Everand are removed. Your books remain in your library.",
+            action = "Disconnect",
+            onConfirm = { vm.removeEverand() },
+            onClose = { removingEverand = false },
+        )
+    }
+    if (removingHoopla) {
+        ConfirmSheet(
+            title = "Disconnect hoopla?",
+            body = "${io.github.prithirajn.readync.Edition.name} stops reading your hoopla borrows, and the highlights it brought from hoopla are removed. Your books remain in your library.",
+            action = "Disconnect",
+            onConfirm = { vm.removeHoopla() },
+            onClose = { removingHoopla = false },
+        )
+    }
     if (removingLibby) {
         ConfirmSheet(
             title = "Disconnect Libby?",
@@ -2050,6 +2101,361 @@ private fun LibbyWebDialog(onDone: (String, String?) -> Unit, onClose: () -> Uni
     }
 }
 
+/** Everand: your Saved titles and reading history, with progress, merged into the books you already have. */
+@Composable
+private fun EverandCard(vm: AppViewModel, state: Snapshot, onLink: () -> Unit, onRemove: () -> Unit) {
+    val c = Cp.colors
+    val e = state.everand
+    CpCard {
+        if (e == null) {
+            Column(Modifier.padding(16.dp)) {
+                Quiet("Read or listen on Everand? Link it and the titles in your Saved list and reading history come in with how far you are, and finished ones as finished, with your highlights and notes. A title you also have elsewhere stays one book, at whichever place is further along, and your trackers get it.")
+                VSpace(12)
+                PillButton("Link Everand", onLink)
+            }
+        } else {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ServiceTile("Everand", 40.dp, muted = !e.enabled)
+                    HSpace(12)
+                    Column(Modifier.weight(1f)) {
+                        Text("Everand", style = CpType.bodyStrong, color = c.text)
+                        val err = state.everandError
+                        if (err != null) AnimatedQuiet(err, color = c.errorText, maxLines = 2)
+                        else AnimatedQuiet(state.everandOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Not checked yet", color = c.faint, maxLines = 1)
+                    }
+                    Health.everand(state)?.let { st -> HealthLight(st) { vm.checkEverand() } }
+                }
+                VSpace(10)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state.everandError != null) PillButton("Sign in again", onLink)
+                    PillButton("Disconnect", onRemove, danger = true)
+                }
+                VSpace(10)
+                RowDivider()
+                VSpace(10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Sync from Everand", style = CpType.body, color = c.text)
+                        Quiet("Read your titles and progress on each sync", color = c.faint)
+                    }
+                    CpToggle(e.enabled, { vm.setEverandEnabled(it) }, "Sync from Everand")
+                }
+                VSpace(10)
+                RowDivider()
+                VSpace(10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Sync highlights & notes", style = CpType.body, color = c.text)
+                        Quiet("From Everand's reader, for ebooks and comics", color = c.faint)
+                    }
+                    CpToggle(e.syncHighlights, { vm.setEverandHighlights(it) }, "Sync highlights")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * everand.com in a web view: you sign in there (email, Google or Facebook, as on Everand), and the
+ * sign-in the website keeps is used for reading your titles. Done appears once your Saved list answers.
+ */
+@Composable
+private fun EverandWebDialog(vm: AppViewModel, onClose: () -> Unit) {
+    val c = Cp.colors
+    var loaded by remember { mutableStateOf(false) }
+    var linking by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var signedIn by remember { mutableStateOf(false) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+
+    LaunchedEffect(webViewRef) {
+        val wv = webViewRef ?: return@LaunchedEffect
+        while (!signedIn) {
+            kotlinx.coroutines.delay(2000)
+            // Signed in once the Saved list answers from the page itself (a signed-out one answers 401).
+            wv.evaluateJavascript(
+                "(function(){try{var x=new XMLHttpRequest();x.open('GET','/saved/items/mixed/1',false);x.setRequestHeader('Accept','application/json');x.setRequestHeader('X-Requested-With','XMLHttpRequest');x.send();return x.status;}catch(e){return 0;}})()"
+            ) { raw -> if (raw?.trim() == "200" && wv.url?.contains("everand.com") == true) signedIn = true }
+        }
+    }
+
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Sign in to Everand", style = CpType.bodyStrong, color = c.text)
+                    Quiet(
+                        when {
+                            error != null -> error!!
+                            linking -> "Linking…"
+                            signedIn -> "Signed in. Tap Done."
+                            loaded -> "Sign in the way you do on Everand. Your password isn't seen or kept here."
+                            else -> "Loading everand.com…"
+                        },
+                        color = if (error != null) c.errorText else c.quiet,
+                    )
+                }
+                HSpace(8)
+                if (signedIn && !linking) {
+                    PillButton("Done", {
+                        val cookies = CookieManager.getInstance().getCookie(io.github.prithirajn.readync.source.EverandClient.BASE)
+                        if (cookies.isNullOrBlank()) { error = "Couldn't read the sign-in. Try signing in again."; return@PillButton }
+                        linking = true
+                        error = null
+                        vm.connectEverand(cookies) { err -> linking = false; if (err == null) onClose() else error = err }
+                    })
+                    HSpace(6)
+                }
+                PillButton("Close", onClose)
+            }
+            AndroidView(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        layoutParams = android.view.ViewGroup.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        CookieManager.getInstance().setAcceptCookie(true)
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.javaScriptCanOpenWindowsAutomatically = true
+                        settings.loadWithOverviewMode = true
+                        settings.useWideViewPort = true
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageFinished(view: WebView?, url: String?) { loaded = true }
+                        }
+                        webViewRef = this
+                        loadUrl(io.github.prithirajn.readync.source.EverandClient.SIGN_IN_URL)
+                    }
+                },
+            )
+        }
+    }
+}
+
+/** hoopla: your borrows, how far in you are, and your highlights, merged into the books you already have. */
+@Composable
+private fun HooplaCard(vm: AppViewModel, state: Snapshot, onLink: () -> Unit, onRemove: () -> Unit) {
+    val c = Cp.colors
+    val h = state.hoopla
+    CpCard {
+        if (h == null) {
+            Column(Modifier.padding(16.dp)) {
+                Quiet("Borrow ebooks, audiobooks or comics on hoopla? Link it and what you're reading comes in, with your highlights and notes. A title you also have elsewhere stays one book, at whichever place is further along, and your trackers get it.")
+                VSpace(12)
+                PillButton("Link hoopla", onLink)
+            }
+        } else {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ServiceTile("hoopla", 40.dp, muted = !h.enabled)
+                    HSpace(12)
+                    Column(Modifier.weight(1f)) {
+                        Text("hoopla", style = CpType.bodyStrong, color = c.text)
+                        val err = state.hooplaError
+                        if (err != null) AnimatedQuiet(err, color = c.errorText, maxLines = 2)
+                        else AnimatedQuiet(state.hooplaOkAt.takeIf { it > 0 }?.let { "Checked ${ago(it)}" } ?: "Not checked yet", color = c.faint, maxLines = 1)
+                    }
+                    Health.hoopla(state)?.let { st -> HealthLight(st) { vm.checkHoopla() } }
+                }
+                VSpace(10)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state.hooplaError != null) PillButton("Sign in again", onLink)
+                    PillButton("Disconnect", onRemove, danger = true)
+                }
+                VSpace(10)
+                RowDivider()
+                VSpace(10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Sync from hoopla", style = CpType.body, color = c.text)
+                        Quiet("Read your borrows and progress on each sync", color = c.faint)
+                    }
+                    CpToggle(h.enabled, { vm.setHooplaEnabled(it) }, "Sync from hoopla")
+                }
+                VSpace(10)
+                RowDivider()
+                VSpace(10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Sync highlights & notes", style = CpType.body, color = c.text)
+                        Quiet("From hoopla's reader, for ebooks and comics", color = c.faint)
+                    }
+                    CpToggle(h.syncHighlights, { vm.setHooplaHighlights(it) }, "Sync highlights")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Links hoopla through hoopladigital.com: you sign in there (with your library card or hoopla
+ * email), and the sign-in the website gets is kept for reading your borrows. A token can be
+ * pasted instead.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HooplaSignInSheet(vm: AppViewModel, onClose: () -> Unit) {
+    val c = Cp.colors
+    var inWeb by remember { mutableStateOf(false) }
+    var showToken by remember { mutableStateOf(false) }
+    var token by remember { mutableStateOf("") }
+    var linking by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    fun link(t: String) {
+        linking = true
+        error = null
+        vm.connectHoopla(t) { err -> linking = false; if (err == null) onClose() else error = err }
+    }
+    if (inWeb) {
+        HooplaWebDialog(onDone = { t -> inWeb = false; link(t) }, onClose = { inWeb = false })
+    }
+    GuardedSheet(
+        dragHandle = { SheetGrip() },
+        onDismissRequest = onClose,
+        sheetState = rememberSheetState(skipPartiallyExpanded = true),
+        shape = CpShapes.sheet,
+        containerColor = c.page,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, bottom = 32.dp)
+        ) {
+            Text("Link hoopla", style = CpType.section, color = c.text)
+            VSpace(12)
+            CpCard {
+                Column(Modifier.padding(16.dp)) {
+                    Text("1  Tap Sign in on hoopladigital.com below", style = CpType.body, color = c.text)
+                    VSpace(6)
+                    Text("2  Sign in the way you do in hoopla: your library card, or your hoopla email", style = CpType.body, color = c.text)
+                    VSpace(6)
+                    Text("3  When it says you're signed in, tap Done at the top", style = CpType.body, color = c.text)
+                }
+            }
+            VSpace(8)
+            Quiet("Your password is typed into hoopla's own page and isn't seen or kept here.", color = c.faint)
+            VSpace(16)
+            BigButton(if (linking) "Linking…" else "Sign in on hoopladigital.com", { inWeb = true }, busy = linking, enabled = !linking)
+            error?.let {
+                VSpace(8)
+                Quiet(it, color = c.errorText)
+            }
+            VSpace(12)
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                PillButton(if (showToken) "Hide token" else "Have a token? Paste it", { showToken = !showToken })
+            }
+            if (showToken) {
+                VSpace(12)
+                CpTextField(token, { token = it; error = null }, "hoopla token", placeholder = "Bearer …", mono = true)
+                VSpace(10)
+                BigButton(
+                    if (linking) "Linking…" else "Link",
+                    { link(token.trim()) },
+                    busy = linking,
+                    enabled = io.github.prithirajn.readync.source.HooplaClient.tokenFrom(token) != null && !linking,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * hoopladigital.com in a web view. Once you're signed in, the website sends its sign-in with each
+ * request to hoopla's gateway; that's caught here (and looked for in the site's saved sign-in).
+ */
+@Composable
+private fun HooplaWebDialog(onDone: (String) -> Unit, onClose: () -> Unit) {
+    val c = Cp.colors
+    var found by remember { mutableStateOf<String?>(null) }
+    var loaded by remember { mutableStateOf(false) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var wentToHistory by remember { mutableStateOf(false) }
+
+    LaunchedEffect(webViewRef) {
+        val wv = webViewRef ?: return@LaunchedEffect
+        while (found == null) {
+            kotlinx.coroutines.delay(1500)
+            // The website keeps your sign-in in its "token" cookie once you've signed in.
+            val t = io.github.prithirajn.readync.source.HooplaClient.tokenFromCookies(CookieManager.getInstance().getCookie("https://www.hoopladigital.com"))
+            if (t != null) found = t
+        }
+    }
+
+    Dialog(onDismissRequest = onClose, properties = FullScreen) {
+        Column(Modifier.fillMaxSize().background(c.page).fullScreenSafe()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Sign in to hoopla", style = CpType.bodyStrong, color = c.text)
+                    Quiet(
+                        when {
+                            found != null -> "Signed in. Tap Done."
+                            loaded -> "Sign in with your library card or hoopla email."
+                            else -> "Loading hoopladigital.com…"
+                        }
+                    )
+                }
+                HSpace(8)
+                found?.let { t ->
+                    PillButton("Done", { onDone(t) })
+                    HSpace(6)
+                }
+                PillButton("Close", onClose)
+            }
+            AndroidView(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        layoutParams = android.view.ViewGroup.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        CookieManager.getInstance().setAcceptCookie(true)
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.loadWithOverviewMode = true
+                        settings.useWideViewPort = true
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
+                                val r = request ?: return null
+                                if (r.url?.host?.endsWith("hoopladigital.com") == true) {
+                                    val auth = r.requestHeaders?.entries?.firstOrNull { it.key.equals("Authorization", ignoreCase = true) }?.value
+                                    io.github.prithirajn.readync.source.HooplaClient.tokenFrom(auth ?: "")?.let { t ->
+                                        if (auth?.startsWith("Bearer", ignoreCase = true) == true) view?.post { if (found == null) found = t }
+                                    }
+                                }
+                                return null
+                            }
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                loaded = true
+                                // Signed in and away from the sign-in page: open your history, which asks the gateway with the sign-in.
+                                if (found == null && !wentToHistory && url != null && !url.contains("/login") && url.contains("hoopladigital.com")) {
+                                    wentToHistory = true
+                                    view?.loadUrl(io.github.prithirajn.readync.source.HooplaClient.HISTORY_URL)
+                                }
+                            }
+                        }
+                        webViewRef = this
+                        loadUrl(io.github.prithirajn.readync.source.HooplaClient.SIGN_IN_URL)
+                    }
+                },
+            )
+        }
+    }
+}
+
 /** Audible: what you're listening to, merged into the books you already have. */
 @Composable
 private fun AudibleCard(vm: AppViewModel, state: Snapshot, onLink: () -> Unit, onRemove: () -> Unit) {
@@ -2832,7 +3238,7 @@ private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRem
     Column {
         CpCard {
             Column(Modifier.padding(16.dp)) {
-                Quiet("KOReader sends only your reading position to CrossPoint Sync or a KOSync server; its highlights and notes stay in KOReader. Bring them in here, from wherever KOReader runs.")
+                Quiet("KOReader sends only your reading position to CrossPoint Sync or a KOSync server; its highlights, notes and bookmarks stay in KOReader. Bring them in here, from wherever KOReader runs.")
                 VSpace(10)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton("Which do I need?", { guide = true }, outlined = false)
@@ -2971,21 +3377,24 @@ private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRem
                 }
             }
         }
+        // ---- 3. KOReader on another device, over its own SSH server (no plugin) ----
+        VSpace(12)
+        KoSshCard(vm, state)
         // ---- KOReader's highlights on to a CrossPoint reader ----
-        if (state.account != null && (state.koHl != null || state.koLocal != null)) {
+        if (state.account != null && (state.koHl != null || state.koLocal != null || state.koSsh != null)) {
             VSpace(12)
             CpCard {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f).padding(end = 12.dp)) {
                         Text("Also add them to CrossPoint", style = CpType.label, color = c.text)
                         Text(
-                            "If you also read on a CrossPoint device (Xteink), KOReader's highlights go on to crosspoint-sync so the device has them too. " +
-                                "When the book's EPUB is in KOReader's books folder on this phone (the same file as on the device), they go on their exact words and the device draws them on the page; otherwise they're listed under their chapter." +
+                            "If you also read on a CrossPoint device (Xteink), KOReader's highlights and bookmarks go on to crosspoint-sync so the device has them too. " +
+                                "When Readync has the book's EPUB (the same file as on the device), highlights go on their exact words and the device draws them on the page; otherwise they're listed under their chapter. Bookmarks need the EPUB, to know their page." +
                                 (if (state.koSentCp.isNotEmpty()) " ${state.koSentCp.size} added so far" + (if (state.koPlaced.isNotEmpty()) ", ${state.koPlaced.size} on their exact words." else ".") else ""),
                             style = CpType.small, color = c.quiet,
                         )
                     }
-                    CpToggle(state.koToCrossPoint, { vm.setKoToCrossPoint(it) }, "Also add KOReader highlights to CrossPoint")
+                    CpToggle(state.koToCrossPoint, { vm.setKoToCrossPoint(it) }, "Also add KOReader highlights and bookmarks to CrossPoint")
                 }
             }
         }
@@ -2996,19 +3405,21 @@ private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRem
                 Column(Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("Also give CrossPoint highlights to KOReader", style = CpType.label, color = c.text)
+                            Text("Also give CrossPoint highlights and bookmarks to KOReader", style = CpType.label, color = c.text)
                             Text(
-                                "Highlights you make on a CrossPoint device are added to the HighlightSync plugin's file on your storage, and KOReader takes them in on its next sync. " +
-                                    "Only for books whose EPUB is in KOReader's books folder on this phone (the same file as on the device), and only when the exact place is sure. " +
-                                    "Each goes once, so one you delete in KOReader stays deleted, and a copy of the file as it was is kept next to it. AnnotationSync's files aren't written to.",
+                                "Highlights you make on a CrossPoint device are added to KOReader's sync file for the book on your storage (AnnotationSync's or HighlightSync's), and KOReader takes them in when it syncs that book (with AnnotationSync: open the book and sync it). " +
+                                    "Only for books whose EPUB is in KOReader's books folder (on this phone, or a books folder on that storage; the same file as on the device), and only when the exact place is sure. " +
+                                    "Your CrossPoint bookmarks go too (into AnnotationSync's file), on the same page; one you delete on the device is deleted in KOReader as well. " +
+                                    "A book with no AnnotationSync file on your storage yet: they wait, and go once you've synced that book in KOReader once (which makes the file). " +
+                                    "Each goes once, so one you delete in KOReader stays deleted, and a copy of the file as it was is kept next to it.",
                                 style = CpType.small, color = c.quiet,
                             )
                         }
-                        CpToggle(state.cpToKo, { vm.setCpToKo(it) }, "Also give CrossPoint highlights to KOReader")
+                        CpToggle(state.cpToKo, { vm.setCpToKo(it) }, "Also give CrossPoint highlights and bookmarks to KOReader")
                     }
                     if (state.cpToKo) {
                         val status = state.cpToKoNote
-                            ?: if (state.koLocal == null) "Pick KOReader's books folder under KOReader on this device first."
+                            ?: if (state.koLocal == null && state.koDavBooks == null) "Pick KOReader's books folder (on this phone, or on your storage) first."
                             else if (state.cpSentKo.isNotEmpty()) "${state.cpSentKo.size} CrossPoint highlight${if (state.cpSentKo.size == 1) "" else "s"} looked at so far" + (state.cpToKoOkAt.takeIf { it > 0 }?.let { " · checked ${ago(it)}." } ?: ".")
                             else null
                         status?.let { VSpace(8); Quiet(it, color = c.faint) }
@@ -3021,31 +3432,183 @@ private fun KoHlCard(vm: AppViewModel, state: Snapshot, onAdd: () -> Unit, onRem
 }
 
 /**
+ * KOReader on a Kindle, Kobo or PocketBook, reached over your Wi-Fi through KOReader's own SSH
+ * server: no plugin. Its highlights, notes and position come in, and CrossPoint highlights and
+ * bookmarks go to it (KOReader takes them in when you next open the book).
+ */
+@Composable
+private fun KoSshCard(vm: AppViewModel, state: Snapshot) {
+    val c = Cp.colors
+    val k = state.koSsh
+    var setting by remember { mutableStateOf(false) }
+    var copying by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var removing by remember { mutableStateOf(false) }
+    CpCard {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Over Wi-Fi, no plugin", style = CpType.label, color = c.text, modifier = Modifier.weight(1f))
+                Health.koSsh(state)?.let { h -> HealthLight(h) { vm.checkKoSsh() } }
+            }
+            VSpace(4)
+            if (k == null) {
+                Quiet("For KOReader on a Kindle, Kobo or PocketBook at home: Readync reaches it through KOReader's own SSH server, so nothing needs installing. Its highlights, notes and where you are come in; your CrossPoint highlights and bookmarks go to it, and KOReader takes them in when you next open the book.")
+                VSpace(10)
+                PillButton("Set up", { setting = true }, outlined = false)
+            } else {
+                Text(k.host + ":" + k.port, style = CpType.body, color = c.text)
+                Quiet(
+                    listOfNotNull(
+                        state.koSshInfo,
+                        state.koSshOkAt.takeIf { it > 0 }?.let { "reached ${ago(it)}" } ?: "not reached yet",
+                        if (k.noPassword) "signing in without a password" else "signing in with Readync's key",
+                    ).joinToString(" \u00B7 "),
+                    color = c.faint,
+                )
+                state.koSshError?.let { VSpace(6); Quiet(it, color = c.errorText) }
+                VSpace(10)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Sync with KOReader over Wi-Fi", style = CpType.body, color = c.text)
+                        Quiet("Each sync, whenever the device is awake on this Wi-Fi", color = c.faint)
+                    }
+                    CpToggle(k.enabled, { vm.setKoSshEnabled(it) }, "Sync with KOReader over Wi-Fi")
+                }
+                VSpace(10)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton("Sync now", { vm.checkKoSsh() })
+                    PillButton(if (copying) "Copying\u2026" else "Copy books here", {
+                        if (!copying) { copying = true; msg = null; vm.copyBooksFromKoSsh(null) { m -> copying = false; msg = m } }
+                    })
+                }
+                VSpace(8)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton("Change", { setting = true })
+                    PillButton("Remove", { removing = true }, danger = true)
+                }
+                msg?.let { VSpace(8); Quiet(it, color = c.faint) }
+                VSpace(10)
+                Quiet("A book open in KOReader takes new highlights and bookmarks in once you close it and open it again. \u201CCopy books here\u201D keeps your books' files in Readync, for bookmarks' pages and exact places away from home.", color = c.faint)
+            }
+        }
+    }
+    if (setting) KoSshSheet(vm, state) { setting = false }
+    if (removing) {
+        ConfirmSheet(
+            title = "Disconnect KOReader over Wi-Fi?",
+            body = "Readync stops reaching KOReader on ${k?.host ?: "the device"}. Highlights already brought in stay, and so do book files copied here.",
+            action = "Disconnect",
+            onConfirm = { vm.removeKoSsh() },
+            onClose = { removing = false },
+        )
+    }
+}
+
+/** Setting up KOReader over Wi-Fi: KOReader's SSH server on, its address, and how Readync signs in. */
+@Composable
+private fun KoSshSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
+    val c = Cp.colors
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val k = state.koSsh
+    var host by remember { mutableStateOf(k?.host ?: "") }
+    var port by remember { mutableStateOf((k?.port ?: 2222).toString()) }
+    var noPassword by remember { mutableStateOf(k?.noPassword ?: false) }
+    var busy by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    val pub = remember { vm.koSshKey() }
+    val portNo = port.trim().toIntOrNull()?.takeIf { it in 1..65535 }
+    val ready = host.trim().matches(Regex("[A-Za-z0-9.:\\-]{3,}")) && portNo != null && !busy
+    FlowSheet("KOReader over Wi-Fi", onClose) {
+        VSpace(8)
+        Quiet("On the Kindle (or Kobo, PocketBook), in KOReader:")
+        VSpace(8)
+        CpCard {
+            Column(Modifier.padding(16.dp)) {
+                Text("1  Tools (\u2699) \u203A Network \u203A SSH server: switch it on. It shows the device's address, like 192.168.1.23", style = CpType.body, color = c.text)
+                VSpace(6)
+                Text("2  In the same menu, tick \u201CStart SSH server with KOReader\u201D, so it's on whenever KOReader is", style = CpType.body, color = c.text)
+                VSpace(6)
+                Text("3  Type that address below. The port is 2222 unless you changed it", style = CpType.body, color = c.text)
+            }
+        }
+        VSpace(14)
+        CpTextField(host, { host = it; result = null }, "Device address", placeholder = "192.168.1.23", keyboard = androidx.compose.ui.text.input.KeyboardType.Uri)
+        VSpace(8)
+        CpTextField(port, { port = it.filter { ch -> ch.isDigit() }.take(5); result = null }, "Port", placeholder = "2222", keyboard = androidx.compose.ui.text.input.KeyboardType.Number)
+        VSpace(16)
+        Text("How Readync signs in", style = CpType.label, color = c.text)
+        VSpace(8)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Readync's own key (safer)", style = CpType.body, color = c.text)
+                Quiet("Only Readync gets in. Readync can put its key on the device for you: turn on \u201CLogin without password\u201D in KOReader's SSH menu for a moment, tap Put the key there, then turn it off again.", color = c.faint)
+            }
+            CpToggle(!noPassword, { noPassword = !it; result = null }, "Use Readync's key")
+        }
+        if (!noPassword) {
+            VSpace(10)
+            BigButton(if (busy) "Putting the key there\u2026" else "Put the key there and connect", {
+                busy = true; result = null
+                vm.installKoSshKey(host, portNo ?: 2222) { ok, m -> busy = false; result = ok to m }
+            }, busy = busy, enabled = ready)
+            VSpace(8)
+            Quiet("Or add it yourself: put this line in a file named authorized_keys in koreader/settings/SSH on the device, then tap Connect.", color = c.faint)
+            VSpace(6)
+            Text(pub, style = CpType.small.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace), color = c.textMid, maxLines = 3)
+            VSpace(6)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("Copy", { clipboard.setText(androidx.compose.ui.text.AnnotatedString(pub)) })
+                PillButton("Share", {
+                    runCatching {
+                        context.startActivity(android.content.Intent.createChooser(
+                            android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, pub), "Readync's key"))
+                    }
+                })
+            }
+        } else {
+            VSpace(8)
+            Quiet("Turn on \u201CLogin without password\u201D in KOReader's SSH menu. Anyone on your Wi-Fi could then get into the device, so a key is better.", color = c.faint)
+        }
+        VSpace(14)
+        BigButton(if (busy && noPassword) "Connecting\u2026" else "Connect", {
+            busy = true; result = null
+            vm.connectKoSsh(host, portNo ?: 2222, noPassword) { ok, m -> busy = false; result = ok to m }
+        }, filled = noPassword, busy = busy && noPassword, enabled = ready)
+        result?.let { (ok, m) ->
+            VSpace(10)
+            Quiet(m, color = if (ok) c.accentText else c.errorText)
+            if (ok) { VSpace(10); BigButton("Done", onClose, filled = false) }
+        }
+    }
+}
+
+/**
  * KOReader highlights' way in, on the cards of the servers KOReader syncs its position with (it
  * has no row of its own): what it's for until it's set up, then how it's doing.
  */
 @Composable
 private fun KoHlHint(state: Snapshot, text: String, onOpen: () -> Unit) {
     val c = Cp.colors
-    val on = state.koHl != null || state.koLocal != null
+    val on = state.koHl != null || state.koLocal != null || state.koSsh != null
     Column(Modifier.padding(16.dp)) {
         if (on) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("KOReader highlights", style = CpType.label, color = c.text, modifier = Modifier.weight(1f))
-                listOfNotNull(Health.koLocal(state), Health.koHl(state)).let { hs -> hs.firstOrNull { it.level == Health.Level.BAD } ?: hs.firstOrNull { it.level == Health.Level.WARN } ?: hs.firstOrNull() }
+                Text("KOReader highlights & bookmarks", style = CpType.label, color = c.text, modifier = Modifier.weight(1f))
+                listOfNotNull(Health.koLocal(state), Health.koHl(state), Health.koSsh(state)).let { hs -> hs.firstOrNull { it.level == Health.Level.BAD } ?: hs.firstOrNull { it.level == Health.Level.WARN } ?: hs.firstOrNull() }
                     ?.let { h -> HealthLight(h) { onOpen() } }
             }
             Quiet(
                 "${state.koClips.size} highlight${if (state.koClips.size == 1) "" else "s"} \u00B7 from " +
-                    listOfNotNull(state.koLocal?.let { "this device" }, state.koHl?.let { it.server.substringAfter("://").substringBefore('/') }).joinToString(" and "),
+                    listOfNotNull(state.koLocal?.let { "this device" }, state.koHl?.let { it.server.substringAfter("://").substringBefore('/') }, state.koSsh?.let { "KOReader over Wi-Fi" }).joinToString(" and "),
                 maxLines = 1,
             )
             VSpace(8)
-            PillButton("KOReader highlights", onOpen)
+            PillButton("KOReader highlights & bookmarks", onOpen)
         } else {
             Quiet(text)
             VSpace(8)
-            PillButton("Set up KOReader highlights", onOpen)
+            PillButton("Set up KOReader highlights & bookmarks", onOpen)
         }
     }
 }
@@ -3079,18 +3642,33 @@ private fun KoHlGuideSheet(onClose: () -> Unit) {
             GuidePart("3", "KOReader on another device (Kindle, Kobo, a Boox without ${io.github.prithirajn.readync.Edition.name})", listOf(
                 "Install the HighlightSync or AnnotationSync plugin in KOReader and point it at Koofr (or any WebDAV).",
                 "Then connect the same storage under From Koofr / WebDAV.",
+                "Or, with no plugin: switch on KOReader's own SSH server and set up Over Wi-Fi, no plugin. Highlights, notes and bookmarks go both ways while the device is on your Wi-Fi.",
             ))
             VSpace(10)
             GuidePart("4", "A CrossPoint device and KOReader together", listOf(
                 "Set up 1, and 2 or 3: your CrossPoint highlights come through your account, KOReader's through the folder or Koofr. A passage you highlighted in both comes in once.",
-                "Want KOReader's highlights on the CrossPoint device too? Turn on Also add them to CrossPoint.",
-                "With the book's EPUB in KOReader's books folder on this phone (the same file as on the device), they go on their exact words, so the device draws them on the page.",
-                "The other way (CrossPoint highlights into KOReader) is an opt-in: it needs the HighlightSync plugin on Koofr and that books folder, and only adds highlights whose place is sure.",
+                "Want KOReader's highlights and bookmarks on the CrossPoint device too? Turn on Also add them to CrossPoint.",
+                "With the book's EPUB in Readync (the same file as on the device), they go on their exact words, so the device draws them on the page. With another edition, only where your own highlights or bookmarks on the device, before and after them in the chapter, confirm the place; the rest go under their chapter.",
+                "The other way (CrossPoint highlights and bookmarks into KOReader): Over Wi-Fi, no plugin does it by itself; with a plugin on Koofr it's an opt-in (Also give CrossPoint highlights and bookmarks to KOReader). Only places that are sure are added.",
                 "Read the same file on both so the book is the same here (or link its KOSync document from the book's ⋯ menu).",
             ))
             VSpace(10)
             GuidePart("5", "KOReader on this device and elsewhere", listOf(
                 "Use both; a highlight found in both places comes in once.",
+            ))
+            VSpace(10)
+            GuidePart("6", "Bookmarks between a CrossPoint device (Xteink) and KOReader", listOf(
+                "From the device: it sends a book's bookmarks when it syncs that book (Sync in the reader menu, or Sync On Sleep with Wi-Fi). Each carries its place in KOReader's own form and the opening words of its page.",
+                "Readync reads them on every sync for the 25 books you read most lately (or one book, with Check again on its Bookmarks tab). The first time for a book it reads them all; they show in the book's Bookmarks tab, and the sync log says how many came.",
+                "With “every new bookmark highlights its page” on, only ones made after you switched it on become highlights; older ones stay bookmarks. Ones that came from KOReader, ones you marked done, and books without their file here are left alone.",
+                "To KOReader with AnnotationSync on Koofr (Also give CrossPoint highlights and bookmarks to KOReader): they're added to the book's AnnotationSync file there (a copy of the file as it was is kept next to it), and KOReader takes them in when AnnotationSync syncs the open book.",
+                "No AnnotationSync file for the book on Koofr yet? Nothing is lost: they wait in Readync, and go the first time the file is there. Open the book in KOReader and sync it with AnnotationSync once to make it. (Readync doesn't make the file itself: it's named after KOReader's ID for its own copy of the book, and a wrong name would never be read.)",
+                "Over Wi-Fi, no plugin needs no such file: Readync leaves them beside the book on the Kindle (copying the book's file from there first when it needs it), and KOReader takes them in when the book is next opened. A book open in KOReader takes them in once you close it and open it again.",
+                "From KOReader to the device (Also add them to CrossPoint): KOReader's bookmarks go to CrossPoint with KOReader's own place, and the device finds the page in its own file the next time it syncs that book.",
+                "Each bookmark goes once, and one isn't added where the other side has a bookmark on the same page already. One you delete on the device is deleted in KOReader too (through AnnotationSync).",
+                "Both directions need the book's file in Readync (for the page, its opening words and spotting duplicates). Places point at the right page when the Kindle and the device have the same edition.",
+                "The device's bookmarks also help put highlights on their exact words: where its page starts is known, so a highlight that went under its chapter is tried again when new bookmarks arrive around it.",
+                "Readync only reads bookmarks from the device; it never changes or removes anything there unless you remove a bookmark in Readync.",
             ))
         }
     }
@@ -3114,7 +3692,7 @@ private fun KoHlSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
         containerColor = c.page,
     ) {
         Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
-            Text("Connect KOReader highlights", style = CpType.section, color = c.text)
+            Text("Connect KOReader highlights & bookmarks", style = CpType.section, color = c.text)
             Quiet("The same storage the HighlightSync or AnnotationSync plugin syncs to in KOReader. Koofr's address is filled in.")
             state.moon?.let { m ->
                 VSpace(10)
@@ -3147,7 +3725,7 @@ private fun KoHlSheet(vm: AppViewModel, state: Snapshot, onClose: () -> Unit) {
                 "AnnotationSync: Tools \u203A Cloud storage+ (KOReader 2026.07 or later) to add Koofr, then Tools \u203A Annotation Sync \u203A Settings \u203A Cloud settings to choose it.",
                 "Sync a book once in KOReader so its file appears, then connect here. Leave the folder empty and Readync looks for it; type it if it isn't found.",
                 "Both of the plugin's naming styles work. AnnotationSync's default (KOReader's document ID) matches books exactly; file names are matched by title and author.",
-                "Readync only reads the plugin's files; it never changes anything in KOReader or on Koofr.",
+                "Readync only reads the plugin's files, unless you turn on Also give CrossPoint highlights and bookmarks to KOReader: then it adds to the book's file there (a copy of it as it was is kept next to it). It never makes new files.",
             )) Text("\u2022 $line", style = CpType.body, color = c.textMid, modifier = Modifier.padding(bottom = 4.dp))
         }
     }
@@ -3731,7 +4309,7 @@ private fun ThreadsCard(vm: AppViewModel, state: Snapshot) {
                     BigButton("Disconnect", { vm.disconnectThreads() }, Modifier.weight(1f), filled = false, danger = true)
                 }
                 VSpace(10)
-                Text("Pictures go up briefly on a public file host (Litterbox, Uguu or tmpfiles.org) for Threads to copy.", style = CpType.small, color = c.faint)
+                Text("Pictures go up briefly on a public file host (Litterbox, Uguu, tmpfiles.org, qu.ax or x0.at) for Threads to copy.", style = CpType.small, color = c.faint)
             } else msg?.let { VSpace(6); Text(it, style = CpType.small, color = c.errorText) }
         }
     }

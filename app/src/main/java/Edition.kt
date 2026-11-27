@@ -1,7 +1,7 @@
 package io.github.prithirajn.readync
 
 /**
- * Which edition this is: the full app, or the one to share (no Kindle, Libby or Audible). Both
+ * Which edition this is: the full app, or the one to share (no Kindle, Libby, Audible, hoopla or Everand). Both
  * are called Readync; the shared one has its own app ID and a dog-eared corner on its icon.
  */
 object Edition {

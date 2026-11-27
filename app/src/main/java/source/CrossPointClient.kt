@@ -367,6 +367,31 @@ class CrossPointClient(private val account: Account) {
         return ids
     }
 
+    /** A highlight's place as the device keeps it: chapter (spine) and its text's start and end there. */
+    data class Placed(val id: String, val spine: Int, val start: Int, val end: Int, val text: String, val layout: Long)
+
+    /** [document]'s highlights that carry an exact place (not deleted). */
+    fun placedClippings(document: String): List<Placed> {
+        val out = ArrayList<Placed>()
+        var cursor = 0L
+        var pages = 0
+        while (pages < 20) {
+            pages++
+            val o = get("/api/v1/clippings/${doc(document)}?cursor=$cursor&limit=500")
+            val items = o.arr("items")?.objects() ?: emptyList()
+            for (c in items) {
+                if (c.optInt("deleted") == 1 || c.optBoolean("deleted")) continue
+                val id = c.str("id") ?: continue
+                val spine = c.int("spine") ?: continue
+                val start = c.int("start_offset") ?: continue
+                val end = c.int("end_offset")?.takeIf { it > start } ?: continue
+                out += Placed(id, spine, start, end, c.str("text") ?: continue, c.long("layout_signature") ?: 0L)
+            }
+            if (o.optBoolean("more") && items.isNotEmpty()) cursor = o.long("cursor") ?: break else break
+        }
+        return out
+    }
+
     fun setClippingNote(document: String, id: String, note: String?) {
         var cursor = 0L
         var found: JSONObject? = null
@@ -388,6 +413,74 @@ class CrossPointClient(private val account: Account) {
         item.put("note", note?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
         send("PUT", "/api/v1/clippings/${doc(document)}", JSONObject().put("items", org.json.JSONArray().put(item)))
     }
+
+    /** A CrossPoint bookmark (crosspoint-sync's /api/v1/bookmarks): a page, by its KOReader-style position. */
+    data class Bookmark(
+        val id: String, val xpath: String?, val percentage: Double?, val summary: String?, val spine: Int?,
+        val name: String?, val deleted: Boolean, val updatedAt: Long,
+        /** The page in its chapter when the device made it ([page] of [pages]), when it said. */
+        val page: Int? = null, val pages: Int? = null,
+        /** Where its page starts in the device's own file (code points into the chapter), when it said. */
+        val vo: Int? = null,
+    )
+
+    /** Every bookmark of [document], deleted ones included (their tombstones). */
+    fun bookmarks(document: String): List<Bookmark> = bookmarksSince(document, 0L).first
+
+    /** [document]'s bookmarks changed after [from] (server seconds), tombstones included, and the time to ask from next. */
+    fun bookmarksSince(document: String, from: Long): Pair<List<Bookmark>, Long> {
+        val out = ArrayList<Bookmark>()
+        var since = from
+        var until = from
+        var pages = 0
+        while (pages < 20) {
+            pages++
+            val o = get("/api/v1/bookmarks/${doc(document)}?since=$since&limit=100")
+            for (b in o.arr("items")?.objects() ?: emptyList()) {
+                val id = b.str("id") ?: continue
+                out += Bookmark(
+                    id = id, xpath = b.str("xpath"), percentage = b.num("percentage"), summary = b.str("summary"),
+                    spine = b.int("si"), name = b.str("name"), deleted = (b.int("deleted") ?: 0) != 0, updatedAt = b.long("updated_at") ?: 0L,
+                    page = b.int("pp"), pages = b.int("pc"), vo = b.int("vo"),
+                )
+            }
+            until = o.long("until") ?: until
+            if (!o.bool("more")) break
+            since = o.long("until") ?: break
+        }
+        return out.groupBy { it.id }.map { (_, v) -> v.maxBy { it.updatedAt } } to until
+    }
+
+    /**
+     * Adds a bookmark to [document] at [xpath] (KOReader-style), the way a CrossPoint device makes
+     * one (its id from the position, so adding the same one again is harmless). Its id.
+     */
+    fun addBookmark(document: String, xpath: String, percentage: Double, summary: String, spine: Int?): String {
+        val id = MessageDigest.getInstance("SHA-256").digest(xpath.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }.take(16)
+        val item = JSONObject().put("id", id).put("xpath", xpath.take(512)).put("percentage", percentage.coerceIn(0.0, 1.0)).put("summary", summary.take(256))
+        spine?.takeIf { it in 0..65535 }?.let { item.put("si", it) }
+        send("PUT", "/api/v1/bookmarks/${doc(document)}", JSONObject().put("items", org.json.JSONArray().put(item)))
+        return id
+    }
+
+    /** Deletes bookmark [id] of [document] (a tombstone, so every device drops it). */
+    fun deleteBookmark(document: String, id: String) {
+        send("PUT", "/api/v1/bookmarks/${doc(document)}", JSONObject().put("items", org.json.JSONArray().put(JSONObject().put("id", id).put("deleted", 1))))
+    }
+
+    /**
+     * How a CrossPoint device last laid out [document]: the chapter it was in and how many pages that
+     * chapter took ("page / pages" of its newest position). Null when no device sent one.
+     */
+    fun devicePages(document: String): Pair<Int, Int>? = runCatching {
+        val o = get("/api/v1/progress/${doc(document)}")
+        (o.arr("devices")?.objects() ?: emptyList()).firstNotNullOfOrNull { d ->
+            val p = d.obj("position") ?: return@firstNotNullOfOrNull null
+            val spine = p.int("spine") ?: return@firstNotNullOfOrNull null
+            val pages = p.int("pages")?.takeIf { it > 0 } ?: return@firstNotNullOfOrNull null
+            spine to pages
+        }
+    }.getOrNull()
 
     fun clippings(): List<Clipping> {
         val o = get("/api/v1/clippings")

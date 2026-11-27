@@ -83,7 +83,9 @@ class AddMode(
     val title: String,
     val button: String,
     val choices: List<String>,
-    val add: (vm: AppViewModel, picked: AppViewModel.AddCandidate?, title: String?, author: String?, pages: Int?, isbn: String?, choice: String, done: (String?, String?) -> Unit) -> Unit,
+    /** Asks what you paid (filled in from the cover or the shops); passed to [add] as paid and where. */
+    val askPrice: Boolean = false,
+    val add: (vm: AppViewModel, picked: AppViewModel.AddCandidate?, title: String?, author: String?, pages: Int?, isbn: String?, choice: String, paid: Double?, where: String?, done: (String?, String?) -> Unit) -> Unit,
 )
 
 @Composable
@@ -124,6 +126,8 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
     }
     val tick = rememberTick()
     var readingLive by remember { mutableStateOf(false) }
+    // The price printed by the barcode, read as it was scanned (only when this sheet asks for a price).
+    var printed by remember { mutableStateOf<Double?>(null) }
     /** The old way, kept for phones where the live scanner can't run: a photo of the barcode. */
     fun photoScan() {
         val p = PageScanner.newPhoto(context)
@@ -153,6 +157,7 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
         onFound = { isbn -> readingLive = false; tick(); scanned = isbn; query = isbn },
         onClose = { readingLive = false },
         onNoCamera = { readingLive = false; googleScan() },
+        onPrinted = if (mode?.askPrice == true) ({ p -> printed = p }) else null,
     )
 
     Sheet(mode?.title ?: "Add a book", onClose) {
@@ -185,9 +190,49 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
                 }
                 VSpace(12)
             }
+            // What you paid: filled in from the price printed on the cover (read with the barcode), else
+            // from the price tracker or a quick look at the shops; yours to change.
+            var paid by remember(pick) { mutableStateOf(printed?.let { fmtPrice(it) } ?: "") }
+            var paidFrom by remember(pick) { mutableStateOf(if (printed != null) "Printed on the cover" else null) }
+            var where by remember(pick) { mutableStateOf<String?>(null) }
+            var quote by remember(pick) { mutableStateOf<io.github.prithirajn.readync.source.BookPrices.Quote?>(null) }
+            var quoting by remember(pick) { mutableStateOf(false) }
+            if (mode?.askPrice == true) {
+                LaunchedEffect(pick, format) {
+                    quoting = true
+                    vm.priceQuote(pick.book.title, pick.book.author, scanned, format.ifBlank { null }) { q ->
+                        quoting = false; quote = q
+                        if (paid.isBlank() && q != null) {
+                            (q.mrp ?: q.now)?.let { v -> paid = fmtPrice(v); paidFrom = if (q.mrp != null) "List price" + (q.mrpAt?.let { " at $it" } ?: "") else "Selling now" + (q.nowAt?.let { " at $it" } ?: "") }
+                        }
+                    }
+                }
+                CpTextField(paid, { v -> paid = v.filter { it.isDigit() || it == '.' }.take(8); paidFrom = null }, "What you paid (₹)", placeholder = "e.g. 399", keyboard = KeyboardType.Number)
+                Quiet(
+                    when {
+                        paidFrom != null -> "$paidFrom. Change it if you paid something else."
+                        quoting -> "Looking up its price…"
+                        else -> "Optional. Used for what your shelves are worth."
+                    },
+                    Modifier.padding(top = 6.dp), color = c.faint,
+                )
+                // The prices found, to tap: the printed one, the list price, today's cheapest.
+                val chips = listOfNotNull(
+                    printed?.let { "Cover ₹${fmtPrice(it)}" to (it to null as String?) },
+                    quote?.mrp?.let { "List ₹${fmtPrice(it)}" to (it to quote?.mrpAt) },
+                    quote?.now?.let { "Now ₹${fmtPrice(it)}" + (quote?.nowAt?.let { s -> " · $s" } ?: "") to (it to quote?.nowAt) },
+                ).distinctBy { it.second.first }
+                if (chips.size > 1) {
+                    VSpace(8)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        for ((label, v) in chips) PillButton(label, { paid = fmtPrice(v.first); where = v.second; paidFrom = label.substringBefore(" ₹").let { k -> if (k == "Cover") "Printed on the cover" else if (k == "List") "List price" else "Selling now" } }, outlined = paid != fmtPrice(v.first))
+                    }
+                }
+                VSpace(14)
+            }
             /** Adds it the way this sheet was opened for. */
             fun add(done: (String?, String?) -> Unit) =
-                if (mode != null) mode.add(vm, pick, null, null, pages.toIntOrNull(), scanned, format, done)
+                if (mode != null) mode.add(vm, pick, null, null, pages.toIntOrNull(), scanned, format, paid.toDoubleOrNull(), where, done)
                 else vm.addPhysicalBook(pick, pages.toIntOrNull(), isbn = scanned, done = done)
             BigButton(mode?.button ?: "Add to my library", {
                 busy = true
@@ -204,7 +249,7 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
                             scanned = null
                             query = ""
                             searched = ""
-                            readingLive = true
+                            printed = null; readingLive = true
                         }
                     }
                 }, busy = busy, filled = false)
@@ -216,7 +261,7 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
 
         // The quickest way: the barcode on the back cover finds the exact edition.
         VSpace(8)
-        BigButton(if (scanning) "Reading the barcode…" else "Scan the ISBN", { error = null; readingLive = true }, busy = scanning)
+        BigButton(if (scanning) "Reading the barcode…" else "Scan the ISBN", { error = null; printed = null; readingLive = true }, busy = scanning)
         if (scanned == null) {
             Quiet("Point at the barcode, or the ISBN printed on the copyright page or back cover; it's read the moment it's in the box.", Modifier.padding(top = 6.dp), color = c.faint)
 
@@ -291,7 +336,7 @@ fun AddBookSheet(vm: AppViewModel, initialQuery: String = "", onClose: () -> Uni
             VSpace(14)
             BigButton(mode?.button ?: "Add to my library", {
                 busy = true
-                if (mode != null) mode.add(vm, null, title, author, pages.toIntOrNull(), null, format) { doc, err -> busy = false; if (err == null && doc != null) onAdded(doc) }
+                if (mode != null) mode.add(vm, null, title, author, pages.toIntOrNull(), null, format, null, null) { doc, err -> busy = false; if (err == null && doc != null) onAdded(doc) }
                 else vm.addTypedBook(title, author, pages.toIntOrNull()) { doc, err -> busy = false; if (err == null && doc != null) onAdded(doc) }
             }, busy = busy, enabled = title.isNotBlank())
         }
@@ -795,3 +840,7 @@ fun AddOnSiteScreen(vm: AppViewModel, book: Book, tracker: io.github.prithirajn.
         }
     }
 }
+
+
+/** A rupee amount as typed: "399", or "399.5" when it has paise. */
+internal fun fmtPrice(v: Double): String = if (v % 1.0 == 0.0) v.toLong().toString() else String.format(java.util.Locale.US, "%.2f", v).trimEnd('0').trimEnd('.')

@@ -50,7 +50,7 @@ import io.github.prithirajn.readync.ui.theme.CpType
 fun rememberAllHighlights(state: Snapshot): List<Highlights.Item> {
     // Gathered off the screen's thread (every highlight from every source, tidied: slow with many),
     // so the Library shows up at once; the last ones gathered stand in for the moment until then.
-    val key = listOf<Any?>(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.clipHidden, state.sentClippings, state.resend, state.books)
+    val key = listOf<Any?>(state.cpClips, state.paperClips, state.kindleClips, state.libbyClips, state.hooplaClips, state.everandClips, state.moonClips, state.historyClips, state.koClips, state.clipEdits, state.clipHidden, state.sentClippings, state.resend, state.books)
     val ready = AllHighlightsCache.get(key)
     return androidx.compose.runtime.produceState(ready ?: AllHighlightsCache.last, *key.toTypedArray()) {
         if (ready != null) { value = ready; return@produceState }

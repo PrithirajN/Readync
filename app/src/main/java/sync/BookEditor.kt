@@ -247,11 +247,15 @@ class BookEditor(private val store: Store) {
                 books = s.books - duplicate + (into to merged),
                 links = links,
                 pending = s.pending.filterValues { it.document != duplicate },
-                cpClips = moved(s.cpClips), koClips = moved(s.koClips), kindleClips = moved(s.kindleClips), libbyClips = moved(s.libbyClips),
+                cpClips = moved(s.cpClips), koClips = moved(s.koClips), kindleClips = moved(s.kindleClips), libbyClips = moved(s.libbyClips), hooplaClips = moved(s.hooplaClips), everandClips = moved(s.everandClips),
                 moonClips = moved(s.moonClips), historyClips = moved(s.historyClips), paperClips = moved(s.paperClips),
                 koHlDocs = s.koHlDocs.mapValues { (_, d) -> if (d == duplicate) into else d },
                 koSameAs = s.koSameAs.mapValues { (_, d) -> if (d == duplicate) into else d } + (duplicate to into),
                 progressAsks = s.progressAsks - duplicate, rereadAsks = s.rereadAsks - duplicate,
+                // Its CrossPoint bookmarks too, under the one book.
+                cpBookmarks = s.cpBookmarks[duplicate]?.let { dupMarks ->
+                    s.cpBookmarks - duplicate + (into to ((s.cpBookmarks[into] ?: emptyList()) + dupMarks).distinctBy { it.id }.sortedBy { it.percentage ?: 0.0 })
+                } ?: s.cpBookmarks,
             )
         }
         queueEverywhere(into)

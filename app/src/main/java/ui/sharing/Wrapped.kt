@@ -1,5 +1,6 @@
 package io.github.prithirajn.readync.ui
 
+import io.github.prithirajn.readync.data.finishDay
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -170,7 +171,7 @@ object Wrapped {
         val byWeekday = days.filter { it.second > 0 }.groupBy({ it.first.dayOfWeek }, { it.second }).mapValues { it.value.sum() }
         // Books brought in from a tracker's history count too: held only means they aren't sent anywhere.
         val books = s.books.values.toList()
-        val finished = books.filter { it.status == ReadStatus.FINISHED && inside(day(it.finishedAt ?: it.timestamp)) }
+        val finished = books.filter { it.status == ReadStatus.FINISHED && inside(day(it.finishDay)) }
             .sortedBy { it.finishedAt ?: it.timestamp }
         val fastest = finished.mapNotNull { b ->
             val st = day(b.startedAt); val fi = day(b.finishedAt)
@@ -202,16 +203,16 @@ object Wrapped {
         val moods = top(facts.flatMap { it.moods.take(3) }, 4)
         val pace = facts.mapNotNull { it.pace?.lowercase()?.trim() }.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
         // Authors you hadn't finished a book by before this stretch.
-        val before = books.filter { it.status == ReadStatus.FINISHED && (day(it.finishedAt ?: it.timestamp)?.isBefore(from) == true) }
+        val before = books.filter { it.status == ReadStatus.FINISHED && (day(it.finishDay)?.isBefore(from) == true) }
             .mapNotNull { it.author?.lowercase()?.trim() }.toSet()
         val authorsHere = finished.mapNotNull { it.author?.trim()?.takeIf { a -> a.isNotBlank() } }.distinctBy { it.lowercase() }
         val newAuthors = authorsHere.filter { it.lowercase() !in before }
         val withFacts = finished.filter { s.facts[it.document] != null }
         val inSeries = withFacts.count { !s.facts[it.document]?.series.isNullOrBlank() }
-        val dnf = books.count { it.status == ReadStatus.DNF && inside(day(it.finishedAt ?: it.timestamp)) }
+        val dnf = books.count { it.status == ReadStatus.DNF && inside(day(it.finishDay)) }
         // A year, month by month: books finished and pages read (with history books' pages in the month they were finished).
         val months = if (period == Period.THIS_YEAR || period == Period.LAST_YEAR) (1..12).map { m ->
-            val inMonth = finished.filter { day(it.finishedAt ?: it.timestamp)?.monthValue == m }
+            val inMonth = finished.filter { day(it.finishDay)?.monthValue == m }
             val logged = days.filter { it.first.monthValue == m }.sumOf { it.second }
             Triple(m, inMonth.size, logged + inMonth.filter { s.readingDays[it.document].isNullOrEmpty() }.sumOf { it.pageCount ?: 0 })
         } else emptyList()

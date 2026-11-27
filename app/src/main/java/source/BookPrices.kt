@@ -26,7 +26,18 @@ object BookPrices {
         Shop("atlantic", "Atlantic Books", "https://atlanticbooks.com"),
     )
 
-    fun shop(id: String): Shop? = shops.firstOrNull { it.id == id }
+    /** Bengali books' shop: asked only for a Bengali book (its title or author in Bengali script, or found there by ISBN) or one you've pointed at it. */
+    val boichitro = Shop("boichitro", "Boichitro", "https://boichitro.in")
+
+    /** Whether [book] is a Bengali book: its title or author written in Bengali script. */
+    fun bengali(book: Book): Boolean = listOfNotNull(book.title, book.author).any { s -> s.any { it in '\u0980'..'\u09FF' } }
+
+    /** The shops to ask for [book]: the three, and Boichitro for a Bengali book or one already followed there. */
+    fun shopsFor(book: Book, watch: PriceWatch?): List<Shop> =
+        if (bengali(book) || watch?.links?.containsKey("boichitro") == true || watch?.history?.any { it.store == "boichitro" && it.price != null } == true ||
+            (watch?.title?.let { t -> t.any { it in '\u0980'..'\u09FF' } } == true)) shops + boichitro else shops
+
+    fun shop(id: String): Shop? = shops.firstOrNull { it.id == id } ?: boichitro.takeIf { it.id == id }
         ?: id.takeIf { it.startsWith("site:") }?.removePrefix("site:")?.let { h -> Shop(id, siteName(h), "https://$h") }
 
     /** Other bookshops' own names, by address (any shop's page works; these are just named nicely). */
@@ -79,6 +90,7 @@ object BookPrices {
             "amazon.in" in u || "amzn.in" in u || "amzn.to" in u -> "amazon"
             "bookswagon.com" in u -> "bookswagon"
             "atlanticbooks.com" in u -> "atlantic"
+            "boichitro.in" in u -> "boichitro"
             else -> null
         }
     }
@@ -353,13 +365,14 @@ object BookPrices {
         val problems = ArrayList<String>()
         strictEdition.set(watch.document.startsWith("price:"))
         listings.set(HashMap())
-        for (s in shops) {
+        for (s in shopsFor(book, watch)) {
             try {
                 // What the stores read so far found, to tell this store's right listing (see Clue).
                 clue.set(clueFrom(book, out))
                 out += when (s.id) {
                     "amazon" -> amazon(book, watch.links["amazon"], now, "amazon" in watch.pinned)
                     "bookswagon" -> bookswagon(book, watch.links["bookswagon"], now, "bookswagon" in watch.pinned)
+                    "boichitro" -> boichitro(book, watch.links["boichitro"], now, "boichitro" in watch.pinned)
                     else -> atlantic(book, watch.links["atlantic"], now, "atlantic" in watch.pinned)
                 }
             } catch (e: Exception) {
@@ -378,6 +391,109 @@ object BookPrices {
             }
         }
         return out to problems
+    }
+
+    /** What a book sells for now, for filling in what you paid: the printed (list) price, and the cheapest in stock where. */
+    data class Quote(val mrp: Double?, val mrpAt: String?, val now: Double?, val nowAt: String?)
+
+    /**
+     * A quick look at the shops for one edition, without tracking it: its list price (MRP) and the
+     * cheapest in-stock price, print only, in [format] when the shops say. Null when none answered.
+     */
+    fun quote(title: String, author: String?, isbn: String?, format: String?): Quote? {
+        val doc = "quote:" + (isbn ?: title)
+        val book = Book(doc, title, author, 0.0, null, 0L, isbn = isbn)
+        val (points, _) = check(book, PriceWatch(doc))
+        val print = points.filter { p -> p.price != null && p.format?.contains("kindle", ignoreCase = true) != true }
+        val same = print.filter { p -> format == null || p.format == null || p.format.contains(format, ignoreCase = true) }.ifEmpty { print }
+        if (same.isEmpty()) return null
+        val withMrp = same.filter { it.mrp != null }.maxByOrNull { it.mrp!! }
+        val cheapest = same.filter { it.inStock }.minByOrNull { it.price!! }
+        return Quote(withMrp?.mrp, withMrp?.let { shop(it.store)?.name }, cheapest?.price, cheapest?.let { shop(it.store)?.name })
+    }
+
+    // ---- Boichitro (Bengali books; WooCommerce) ----
+
+    /** What a Boichitro product page says: its title in parts ("English || Author || বাংলা || লেখক"), price, MRP, stock, binding, ISBN, cover. */
+    internal data class BcPage(val url: String, val title: String, val parts: List<String>, val author: String?, val price: Double?, val mrp: Double?,
+        val inStock: Boolean, val binding: String?, val isbn: String?, val cover: String?, val publisher: String?)
+
+    /** An amount after Woo's currency symbol ("<span class=…currencySymbol>&#8377;</span>450"), or after "₹". */
+    private fun bcAmount(s: String): Double? =
+        Regex("""(?:&#8377;|&#x20b9;|₹)\s*(?:</span>)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)""", RegexOption.IGNORE_CASE).find(s)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull()
+
+    internal fun bcRead(url: String, html: String): BcPage? {
+        val raw = meta(html, "og:title")
+            ?: Regex("""(?is)<h1[^>]*product_title[^>]*>(.*?)</h1>""").find(html)?.groupValues?.get(1)
+            ?: Regex("""(?is)<title>(.*?)</title>""").find(html)?.groupValues?.get(1)
+            ?: return null
+        val title = unescape(raw.replace(Regex("<[^>]+>"), "")).substringBefore(" – Boichitro").substringBefore(" - Boichitro").trim()
+        if (title.isBlank()) return null
+        val parts = title.split("||").map { it.trim() }.filter { it.isNotEmpty() }
+        // Price: WooCommerce's own words for a sale ("Original price was: ₹600. Current price is: ₹450."), else the first amount in the price block.
+        // Only the product itself (not the related books under it, which have prices and stock too).
+        val main = html.substringAfter("product_title", html).let { m -> listOf("class=\"related", "class=\"upsells", "class=\"up-sells", "Related products").map { k -> m.indexOf(k) }.filter { it > 0 }.minOrNull()?.let { m.substring(0, it) } ?: m }
+        val was = Regex("""(?is)Original price was:\s*(.{0,80}?)\.""").find(main)?.groupValues?.get(1)?.let(::bcAmount)
+        val now = Regex("""(?is)Current price is:\s*(.{0,80}?)\.""").find(main)?.groupValues?.get(1)?.let(::bcAmount)
+        val block = Regex("""(?is)<p[^>]*class="[^"]*\bprice\b[^"]*"[^>]*>(.*?)</p>""").find(main)?.groupValues?.get(1)
+            ?: Regex("""(?is)<span[^>]*class="[^"]*\bprice\b[^"]*"[^>]*>(.*?)</span>\s*</span>""").find(main)?.groupValues?.get(1)
+        val price = now ?: block?.let { b -> Regex("""(?is)<ins[^>]*>(.*?)</ins>""").find(b)?.groupValues?.get(1)?.let(::bcAmount) ?: bcAmount(b) }
+        val mrp = was ?: block?.let { b -> Regex("""(?is)<del[^>]*>(.*?)</del>""").find(b)?.groupValues?.get(1)?.let(::bcAmount) }
+        val out = Regex("""(?i)class="[^"]*\bstock\s+out-of-stock|Out of stock right now|>\s*Out of stock\s*<""").containsMatchIn(main)
+        val preorder = Regex("""(?i)pre-?order""").containsMatchIn(main)
+        fun attr(tax: String) = Regex("""(?is)href="[^"]*/$tax/[^"]+"[^>]*>([^<]{1,120})</a>""").find(html)?.groupValues?.get(1)?.let(::unescape)
+        val author = attr("authorname") ?: Regex("""(?is)\bby\s+(?:<[^>]+>\s*)*([^<(]{2,80}?)\s*(?:<[^>]+>\s*)*\(Author\)""").find(html)?.groupValues?.get(1)?.let(::unescape)
+            ?: parts.getOrNull(1)
+        val isbn = Regex("""/isbn/([0-9Xx]{10,13})/""").find(html)?.groupValues?.get(1)
+        return BcPage(url, title, parts, author, price, mrp, !out || preorder, attr("binding"), isbn, meta(html, "og:image"), attr("publisher"))
+    }
+
+    /** A page of Boichitro's, from the app's own request, else the unseen browser (the site turns some plain requests away). */
+    private fun bcGet(url: String): String? =
+        runCatching { get(url) }.getOrNull()?.takeIf { it.contains("boichitro", ignoreCase = true) && !it.contains("cf-challenge") }
+            ?: browser?.invoke(url)
+
+    /** The /product/ pages a Boichitro listing (an ISBN's page, a search) links to, each once. */
+    private fun bcProducts(html: String): List<String> =
+        Regex("""href="(https://boichitro\.in/product/[^"/?#]+/)"""").findAll(html).map { it.groupValues[1] }.distinct().toList()
+
+    /** Whether a Boichitro page is [book]: its English or Bengali title, by the same author. */
+    private fun bcIs(book: Book, p: BcPage): Boolean {
+        val titles = listOfNotNull(p.parts.getOrNull(0), p.parts.getOrNull(2), p.title)
+        val names = listOfNotNull(p.author, p.parts.getOrNull(1), p.parts.getOrNull(3)).joinToString(" ")
+        return titles.any { matches(book, it, p.isbn) } && authorsAgree(book.author, names.ifBlank { null })
+    }
+
+    private fun bcListing(p: BcPage) = PriceListing("boichitro", p.url, p.parts.firstOrNull() ?: p.title, p.binding?.let(::formatName), p.publisher, null, editionOf(p.title), p.price, p.inStock)
+
+    private fun formatName(b: String): String = when {
+        b.contains("hard", true) -> "Hardcover"
+        b.contains("paper", true) || b.contains("soft", true) -> "Paperback"
+        else -> b.trim()
+    }
+
+    /**
+     * Boichitro: the page you follow, else the book's ISBN page there (/isbn/<isbn>/), else a search by
+     * title. Its titles carry English and Bengali (and the author's name both ways); either matches.
+     */
+    private fun boichitro(book: Book, link: String?, now: Long, pinned: Boolean = false): List<PricePoint> {
+        fun point(p: BcPage) = PricePoint("boichitro", now, p.price, p.mrp?.takeIf { m -> p.price == null || m > p.price }, p.inStock && p.price != null, p.binding?.let(::formatName), p.url, p.parts.firstOrNull() ?: p.title)
+        link?.let { u -> bcGet(u)?.let { h -> bcRead(u, h) } }?.let { p -> if (pinned || bcIs(book, p)) return listOf(point(p)) }
+        val pages = ArrayList<BcPage>()
+        val isbn = isbn13(book)
+        if (isbn != null) bcGet("https://boichitro.in/isbn/$isbn/")?.let { h -> for (u in bcProducts(h).take(4)) bcGet(u)?.let { bcRead(u, it) }?.let { pages += it } }
+        if (pages.isEmpty()) {
+            val q = java.net.URLEncoder.encode(Matcher.baseTitle(book.displayTitle), "UTF-8")
+            bcGet("https://boichitro.in/?s=$q&post_type=product")?.let { h ->
+                // A search that lands straight on the one product it found.
+                if (h.contains("product_title")) bcRead("https://boichitro.in/?s=$q", h)?.let { pages += it }
+                else for (u in bcProducts(h).take(6)) bcGet(u)?.let { bcRead(u, it) }?.let { pages += it }
+            }
+        }
+        val ours = pages.filter { (isbn != null && it.isbn == isbn) || bcIs(book, it) }
+        if (ours.isEmpty()) return listOf(PricePoint("boichitro", now, null, inStock = false, url = if (link != null) "drop" else null))
+        val chosen = pick("boichitro", ours.map(::bcListing)) ?: return emptyList()
+        return listOf(point(ours.first { it.url == chosen.url }))
     }
 
     // ---- Atlantic Books (Shopify) ----
@@ -942,6 +1058,15 @@ object BookPrices {
                 val isbn = Regex("/(\\d{13})").find(url)?.groupValues?.get(1) ?: data?.isbn ?: isbnIn(html)
                 val fake = Book(document = "x", title = title, author = author, percentage = 0.0, status = null, timestamp = 0, isbn = isbn)
                 Found("bookswagon", url, title, author, isbn, bwCover(meta(html, "og:image")), bookswagon(fake, url, now, pinned = true))
+            }
+            "boichitro" -> {
+                val url = link.trim().substringBefore('?').let { if (it.endsWith("/")) it else "$it/" }
+                val html = bcGet(url) ?: throw PriceException("Couldn't read that Boichitro page")
+                val p = bcRead(url, html) ?: throw PriceException("No book on that page")
+                val title = p.parts.firstOrNull() ?: p.title
+                val author = p.author ?: p.parts.getOrNull(1)
+                val fake = Book(document = "x", title = title, author = author, percentage = 0.0, status = null, timestamp = 0, isbn = p.isbn)
+                Found("boichitro", url, title, author, p.isbn, p.cover, boichitro(fake, url, now, pinned = true))
             }
             else -> {
                 // A short link (amzn.in/d/…, amzn.to/…): its redirects followed one by one, so the

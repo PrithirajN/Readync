@@ -114,7 +114,7 @@ private fun DeskBook(book: Book, tilt: Float, onClick: () -> Unit) {
         Spacer(Modifier.height(12.dp))
         SegmentBar(book.percentage.toFloat(), height = 4.dp, on = ink)
         Spacer(Modifier.height(6.dp))
-        Text(book.displayTitle, fontFamily = DisplaySmall, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 17.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(book.displayTitle.wholeWords(), fontFamily = DisplaySmall, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 17.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Text("${book.percent}%", style = CpType.mono, color = c.quiet)
     }
 }
@@ -146,7 +146,7 @@ internal fun Ledger(
                 Column(Modifier.weight(1f)) {
                     Text(
                         if (streak <= 1) "Day one" else "$streak days running",
-                        // (the stamps show the last week; the figure is the whole run)
+                        // (the stamps show this week, Monday to Sunday; the figure is the whole run)
                         fontFamily = Display, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = c.text,
                     )
                     if (!readToday) Text(if (streak >= 1) "read a page today to keep it going" else "read a page today to start one", style = CpType.mono, color = c.quiet)
@@ -172,27 +172,44 @@ private fun Rule() {
     Box(Modifier.width(1.dp).height(58.dp).background(Cp.colors.text.copy(alpha = 0.2f)))
 }
 
-/** The last seven days as ink stamps; today an empty ring that breathes while it's still to do. */
+/** This week, Monday to Sunday, as ink stamps; today an empty ring that blinks slowly while it's still to do. */
 @Composable
 private fun Stamps(streak: Int, readToday: Boolean) {
     val c = Cp.colors
-    val lit = if (readToday) streak.coerceAtMost(7) else streak.coerceAtMost(6)
-    val breathe = if (!readToday && LocalTabVisible.current && LocalAnimationsOn.current) {
+    // This week, Monday to Sunday: a stamp on each day of the run so far, today's ring blinking slowly until you read.
+    val todayIdx = java.time.LocalDate.now().dayOfWeek.value - 1
+    val blink = if (!readToday && LocalTabVisible.current && LocalAnimationsOn.current) {
         androidx.compose.animation.core.rememberInfiniteTransition(label = "today").animateFloat(
-            0.35f, 1f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(900), androidx.compose.animation.core.RepeatMode.Reverse), label = "breathe",
+            0.12f, 1f,
+            androidx.compose.animation.core.infiniteRepeatable(
+                androidx.compose.animation.core.tween(1500, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                androidx.compose.animation.core.RepeatMode.Reverse,
+            ),
+            label = "blink",
         )
     } else null
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
         for (i in 0 until 7) {
-            val on = i < lit
-            val isToday = !readToday && i == lit
+            val back = todayIdx - i
+            val on = when {
+                back < 0 -> false
+                back == 0 -> readToday
+                readToday -> back < streak
+                else -> back <= streak
+            }
+            val isToday = back == 0 && !readToday
+            val future = back < 0
             val turn = remember(i) { listOf(-8f, 5f, -3f, 9f, -6f, 4f, -2f)[i] }
             Box(
                 Modifier
                     .size(14.dp)
                     .graphicsLayer {
                         rotationZ = turn
-                        alpha = if (isToday) breathe?.value ?: 1f else 1f
+                        alpha = when {
+                            isToday -> blink?.value ?: 1f
+                            future -> 0.45f
+                            else -> 1f
+                        }
                     }
                     .drawBehind {
                         val r = size.minDimension / 2f
@@ -351,7 +368,7 @@ internal fun IndexRow(
             ) { BookCover(book.coverUrl, book.displayTitle, 52.dp, 78.dp) }
             Spacer(Modifier.width(18.dp))
             Column(Modifier.weight(1f)) {
-                Text(book.displayTitle, fontFamily = DisplaySmall, fontWeight = FontWeight.Bold, fontSize = 18.sp, lineHeight = 21.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(book.displayTitle.wholeWords(), fontFamily = DisplaySmall, fontWeight = FontWeight.Bold, fontSize = 18.sp, lineHeight = 21.sp, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 book.author?.let { Text(it, style = CpType.small.copy(fontStyle = FontStyle.Italic), color = c.textMid, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 place?.let { Text(it, style = CpType.small, color = c.accentText, maxLines = 1) }
                 Spacer(Modifier.height(8.dp))

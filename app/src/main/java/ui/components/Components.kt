@@ -478,6 +478,8 @@ fun serviceColor(name: String): Color = when (name.lowercase().substringBefore('
     "kindle" -> Color(0xFF1F7FA6)
     "libby" -> Color(0xFFB0285A)
     "audible" -> Color(0xFFE88A12)
+    "hoopla" -> Color(0xFF1B8FD1)
+    "everand" -> Color(0xFF1E7B85)
     "mihon" -> Color(0xFF3D6FD8)
     "anilist" -> Color(0xFF0B8FD9)
     "mangaupdates" -> Color(0xFFD9542B)
@@ -541,3 +543,6 @@ fun HSpace(w: Int) = Spacer(Modifier.width(w.dp))
 /** A service tile's cut: so a ring drawn around one (stacked tiles) follows its corners. */
 internal fun serviceTileShape(size: androidx.compose.ui.unit.Dp) =
     RoundedCornerShape(topStart = size * 0.36f, topEnd = size * 0.14f, bottomEnd = size * 0.36f, bottomStart = size * 0.14f)
+
+/** Keeps a word with an apostrophe in it (Cookbook's, Anarchist’s) on one line: a word joiner after the apostrophe. */
+fun String.wholeWords(): String = replace(Regex("([’'])(?=\\p{L})"), "$1\u2060")

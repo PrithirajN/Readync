@@ -69,7 +69,7 @@ Five tabs: **Library** (your shelves, book pages and anything that needs you), *
 
 ### 📖 Any way you read
 - **E-readers**: CrossPoint Sync, or KOReader through a KOSync server (your own included: a certificate you made is trusted once it's installed on the phone).
-- **KOReader highlights** from its own files on the same phone, or from HighlightSync / AnnotationSync on WebDAV.
+- **KOReader highlights, notes and bookmarks** from its own files on the same phone, over your Wi-Fi from KOReader on a Kindle, Kobo or PocketBook (its built-in SSH server, no plugin), or from HighlightSync / AnnotationSync on WebDAV.
 - **Moon+ Reader** through its WebDAV sync.
 - **Paper books**: photograph the page you're on, or point the camera at its ISBN to add one: the barcode, or the number printed on the copyright page, read live (with the torch if the room's dim). A copyright page listing several print editions (hardback, paperback, collector's) shows them all to tap yours.
 - **Web novels and fan fiction** (Royal Road, AO3, Scribble Hub, Wattpad…) with new-chapter alerts.
@@ -78,7 +78,8 @@ Five tabs: **Library** (your shelves, book pages and anything that needs you), *
 <details>
 <summary>More on sources</summary>
 
-- KOReader highlights can be put on a CrossPoint device **on their exact words**, and CrossPoint highlights can go back to KOReader through HighlightSync. A book known only by KOReader's ID can be named from its highlights' own words.
+- KOReader highlights and bookmarks can be put on a CrossPoint device (highlights **on their exact words**), and CrossPoint highlights and bookmarks go back to KOReader: over Wi-Fi with no plugin (KOReader takes them in when you next open the book, KOReader 2025.04 or later), or through HighlightSync / AnnotationSync. A book known only by KOReader's ID can be named from its highlights' own words.
+- **Bookmarks**: your CrossPoint bookmarks on each book, with their page from the book's EPUB; turn one into a highlight by tapping its first and last word, the whole page, a photo of the screen, or typed words. Handy on readers without touch. Add a book's EPUB yourself, or copy it from KOReader.
 - Web novels are linked from the link inside your EPUB (FanFicFare, WebToEpub) or found by title. The book page shows your chapter and how many are out past your copy.
 - Audiobooks keep pace with the ebook **chapter by chapter**: the audiobook's chapters are matched to the book's by their titles (from the server's ebook or a copy kept on the phone; the audio is never downloaded), so intros and credits don't throw the place off. **Match chapters** sets them by hand, **Resume in Spotify** starts from your place, and **Not the right spot?** fixes the match. A service also linked on your crosspoint-sync server is never sent the same thing twice.
 </details>
@@ -117,7 +118,7 @@ Five tabs: **Library** (your shelves, book pages and anything that needs you), *
 - **Discover › Catalogs**: the 50 newest books across all your OPDS servers, and every server searched at once, with download details and paste-a-list setup.
 - **Books in a post**: paste or share a TikTok, Instagram, Threads or YouTube post (or screenshots or a screen recording of one, read on your phone frame by frame) and the books it names are found (caption, the words on every picture of a carousel, hashtags; comparisons like "X meets Y" left out), checked against Google Books (a book the caption and cover both name is kept even before Google lists it), then added to Want to Read or price-tracked; tap a cover for Details (a short description, the rating on each of your sites and overall, and genres). Read in the background with a notification when done, so you can share and go back to scrolling. Missed one? Tap it among the words read on the picture, or type its title.
 - **Copies for quotes**: books you're reading kept privately inside the app, for the lines around your quotes.
-- **Price tracker** for Amazon.in, Bookswagon and Atlantic Books, plus any other bookshop's page you give it (Flipkart, Crossword…), with your own target price. Only the book's own author counts (a different book of the same name is left out), and an edition the shop can sell you comes before a sold-out one.
+- **Price tracker** for Amazon.in, Bookswagon and Atlantic Books (and Boichitro for Bengali books), plus any other bookshop's page you give it (Flipkart, Crossword…), with your own target price. Only the book's own author counts (a different book of the same name is left out), and an edition the shop can sell you comes before a sold-out one.
 - **Discover › Releases**: one page. At the top, the **waiting room**: the next book you're waiting for (or any one you tap), its cover big, the days to go, your series drawn as a strip (read, still to read, this one), how long ago you read the one before, its Goodreads rating and pages and today's price. Under it, your releases stand face-out on two ledges, out now and coming: the next book in each series you read, new books by authors you've finished (from Goodreads, with each book's expected day), and new manga and web-novel chapters. Each one shows where you are in the series (and what to read first), your highlights from the book before it as a catch-up, and the news that mentions it; want it, watch its price (or have it watched on release day), find it on your servers or put its day in your calendar in a tap. Delays are marked, and what's new since you last looked. **Coming soon**, further down the same page (chips narrow it to yours or to what's coming): every new fantasy, science fiction, horror, YA, romantasy and crossover book from Reactor's monthly lists, upcoming LitRPG and progression fantasy (Aethon's and Shadow Alley Press's catalogues, LitRPG Radar's release calendar and SequelWatch), manga (VIZ and Seven Seas) and comics (Marvel, Dark Horse, and with a free Metron API token, new #1s from every publisher), each book shown once however many places list it. With Metron, your Metron pull list's issues also come into your own releases, counted down and books announced in your News and socials, stood face-out on a ledge a week like a bookshop's new-arrivals wall (bigger the more readers want them), each with a tag giving its series and number or that it stands alone, its Goodreads rating and its day. Take one down for its pages, when it first came out, genres and translators, or sort a week as a deck: swipe right to want it, left to skip, up to watch its price. Comics and manga stand on their own shelf under each week's books. News and releases are looked at every few hours by themselves, even with the app closed.
 - **Discover › News**: SFF news set like a magazine, with a Screen view for films and series, and a clean reader.
 - **Library checks and a rating rubric** on the Stats tab: books whose dates or page counts would throw your numbers off, and scores on what matters to you beside your stars (with a gut-vs-rubric chart).
@@ -187,7 +188,7 @@ Either way, you stay signed in to all your trackers.
 | CrossPoint Sync | ✅ | ✅ | Your CrossPoint Sync account |
 | KOReader (KOSync) | ✅ | — | KOReader's own KOSync server or a self-hosted one |
 | KOReader on the same phone | — | ✅ | Its own files, no plugin needed |
-| KOReader elsewhere | — | ✅ | HighlightSync or AnnotationSync plugin on Koofr or any WebDAV |
+| KOReader elsewhere | — | ✅ | Over Wi-Fi through KOReader's own SSH server (no plugin), or the HighlightSync or AnnotationSync plugin on Koofr or any WebDAV |
 | Moon+ Reader | ✅ | ✅ | Its WebDAV sync (a free Koofr account works), read only |
 | Physical books | ✅ | ✅ | A photo of the page (page number and highlighted passage), barcode to add |
 | Reading timer | ✅ | — | Pages and minutes from a timed session |
@@ -260,6 +261,7 @@ All of them searched at once, with downloads into Downloads, and copies for quot
 | Amazon.in | Print and Kindle edition prices |
 | Bookswagon | Print |
 | Atlantic Books | Print |
+| Boichitro (Bengali books) | Print, for books in Bengali (or by ISBN, or a Boichitro page you share) |
 | Any other bookshop (Flipkart, Crossword, Sapna Online…) | The page you share, read from the price it gives search engines |
 
 ## FAQ
@@ -288,6 +290,18 @@ token it needs.
 <summary><b>Does it work with KOReader?</b></summary>
 
 Yes. Add a KOSync server (KOReader's own, or a self-hosted one) under Sync, alongside your CrossPoint Sync account.
+Its highlights, notes and bookmarks come in from its own files: on the same phone, over your Wi-Fi from a Kindle, Kobo or PocketBook (switch on KOReader's SSH server; no plugin), or through the HighlightSync / AnnotationSync plugins on WebDAV. Your CrossPoint highlights and bookmarks can go to KOReader the same ways.
+</details>
+
+<details>
+<summary><b>How do bookmarks go between a CrossPoint device and KOReader?</b></summary>
+
+- The device sends a book's bookmarks when it syncs that book (Sync in the reader menu, or Sync On Sleep). Readync reads them for the books you read lately (or one book, with **Check again** on its Bookmarks tab); the first time for a book it reads them all.
+- With "every new bookmark highlights its page" on, only bookmarks made after you switched it on become highlights.
+- To KOReader through AnnotationSync, they're added to the book's AnnotationSync file on your storage (a copy of the file as it was is kept beside it), and KOReader takes them in when AnnotationSync syncs the open book. If the book has no AnnotationSync file yet, they wait until you've synced that book in KOReader once. Readync never makes the file itself, because it's named after KOReader's ID for its own copy of the book.
+- Over Wi-Fi with no plugin, no such file is needed: KOReader takes them in the next time the book is opened.
+- KOReader's bookmarks go to the device too (with "Also add them to CrossPoint"); the device finds the page in its own file.
+- Each bookmark goes once, a page that already has a bookmark on the other side isn't marked twice, and one deleted on the device is deleted in KOReader too (through AnnotationSync). Both directions need the book's EPUB in Readync, the same edition on both readers.
 </details>
 
 <details>

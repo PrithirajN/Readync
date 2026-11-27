@@ -258,10 +258,12 @@ class SyncEngine(private val store: Store) {
                     ("Kindle" to { Primary.within("kindle") { pullKindle() } }).takeIf { store.snapshot.kindle != null },
                     ("Libby" to { Primary.within("libby") { pullLibby() } }).takeIf { store.snapshot.libby != null },
                     ("Audible" to { Primary.within("audible") { pullAudible() } }).takeIf { store.snapshot.audible != null },
+                    ("hoopla" to { Primary.within("hoopla") { pullHoopla() } }).takeIf { store.snapshot.hoopla != null },
+                    ("Everand" to { Primary.within("everand") { pullEverand() } }).takeIf { store.snapshot.everand != null },
                     "Manga" to { Primary.within("mihon") { pullManga() } },
                     ("KOSync" to { Primary.within("kosync") { pullKosync() } }).takeIf { store.snapshot.kosync != null },
                     ("Moon+ Reader" to { Primary.within("moonreader") { runCatching { pullMoon() } }; Unit }).takeIf { store.snapshot.moon != null },
-                    ("KOReader highlights" to { Primary.within("koreader") { runCatching { pullKoHighlights() } }; Unit }).takeIf { store.snapshot.koHl != null || store.snapshot.koLocal != null },
+                    ("KOReader highlights" to { Primary.within("koreader") { runCatching { pullKoHighlights() } }; Unit }).takeIf { store.snapshot.koHl != null || store.snapshot.koLocal != null || store.snapshot.koSsh?.enabled == true },
                 )) { (name, pull) -> timed(name) { pull() } }
                 step("Tracker shelves")
                 // Books from trackers (Seekquel's…): each from the tracker it came from.
@@ -276,7 +278,9 @@ class SyncEngine(private val store: Store) {
                 }
                 runCatching { Handoff.find(store) }
                 timed("Back to CrossPoint") { runCatching { pushToCrossPoint() }; runCatching { pushKoToCrossPoint() } }
+                if (store.snapshot.account != null) timed("Bookmarks") { runCatching { pullCpBookmarks() } }
                 if (store.snapshot.cpToKo) timed("To KOReader") { runCatching { pushCrossPointToKo() } }
+                if (store.snapshot.koSsh?.enabled == true) timed("To KOReader over Wi-Fi") { runCatching { pushToKoSsh() } }
                 timed("Highlights") { refreshClips() }
                 runCatching { deleteHighlights() }
                 step("Sending to trackers")
@@ -377,6 +381,10 @@ class SyncEngine(private val store: Store) {
                 initialBook?.aliases?.any { it.startsWith("libby:") } == true
             val isAudible = origin == "audible" || document.startsWith("audible:") ||
                 initialBook?.aliases?.any { it.startsWith("audible:") } == true
+            val isHoopla = origin == "hoopla" || document.startsWith("hoopla:") ||
+                initialBook?.aliases?.any { it.startsWith("hoopla:") } == true
+            val isEverand = origin == "everand" || document.startsWith("everand:") ||
+                initialBook?.aliases?.any { it.startsWith("everand:") } == true
 
             when {
                 isKindle && store.snapshot.kindle?.enabled == true -> {
@@ -390,6 +398,14 @@ class SyncEngine(private val store: Store) {
                 isAudible && store.snapshot.audible?.enabled == true -> {
                     step("Checking Audible for $bookTitle")
                     runCatching { pullAudible() }
+                }
+                isHoopla && store.snapshot.hoopla?.enabled == true -> {
+                    step("Checking hoopla for $bookTitle")
+                    runCatching { pullHoopla() }
+                }
+                isEverand && store.snapshot.everand?.enabled == true -> {
+                    step("Checking Everand for $bookTitle")
+                    runCatching { pullEverand() }
                 }
                 origin == null -> {
                     // CrossPoint reader book: check CrossPoint and KOSync if linked
@@ -889,7 +905,7 @@ class SyncEngine(private val store: Store) {
         if (denied == theirs) return null
         if (sendingThere || link?.lastPercent == theirs) return null
         // Libby books carry Libby's own position: no tracker's position is offered over it.
-        if (b.origin == "libby" || b.document.startsWith("libby:") || b.origin == "audible" || b.document.startsWith("audible:") || b.origin == "mihon" || b.origin == "anilist" || b.origin == "logged") return null
+        if (b.origin == "libby" || b.document.startsWith("libby:") || b.origin == "audible" || b.document.startsWith("audible:") || b.origin == "hoopla" || b.document.startsWith("hoopla:") || b.origin == "everand" || b.document.startsWith("everand:") || b.origin == "mihon" || b.origin == "anilist" || b.origin == "logged") return null
         val isKindle = b.origin == "kindle" || b.document.startsWith("kindle:") ||
             (store.snapshot.kindle != null && b.aliases.any { it.startsWith("kindle:") })
         if (isKindle) return null
@@ -924,7 +940,7 @@ class SyncEngine(private val store: Store) {
             if (got.isEmpty()) continue
             store.update { s ->
                 val ours = s.clipRemote.filterKeys { it.startsWith("${t.id}|") }.values.toSet()
-                val have = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips)
+                val have = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips)
                     .filter { it.document == link.document }
                 val ids = have.map { it.id }.toSet()
                 val texts = have.joinToString("\n") { it.text }
@@ -1102,7 +1118,7 @@ class SyncEngine(private val store: Store) {
                     }
                 }
                 val kindleMatch = books.values.firstOrNull { b ->
-                    (b.origin == "kindle" || b.origin == "libby" || b.origin == "audible") && b.title != null && (
+                    (b.origin == "kindle" || b.origin == "libby" || b.origin == "audible" || b.origin == "hoopla" || b.origin == "everand") && b.title != null && (
                         item.keys.contains("asin:${b.document.removePrefix("kindle:")}") ||
                             Matcher.sameBook(item.title, item.author, b.title, b.author)
                         )
@@ -1441,17 +1457,161 @@ class SyncEngine(private val store: Store) {
     /** The EPUB of [document] from KOReader's books folder on this device, opened, or null. */
     private fun koEpub(s: Snapshot, document: String): Pair<io.github.prithirajn.readync.source.EpubText.Book, Boolean>? {
         val found = KoPlacement.bookFor(s, document) ?: return null
-        val bytes = if (found.path.startsWith("dav:")) {
+        val bytes = when {
+            // The copy kept for quotes.
+            found.path.startsWith(KoPlacement.COPY) -> io.github.prithirajn.readync.source.BookCopies.appContext?.let { ctx ->
+                io.github.prithirajn.readync.source.BookCopies.get(ctx, document)?.let { c -> runCatching { java.io.File(io.github.prithirajn.readync.source.BookCopies.dir(ctx), c.file).readBytes() }.getOrNull() }
+            }
+            // Kept by Readync (added by you, or copied from KOReader over Wi-Fi).
+            found.path.startsWith(io.github.prithirajn.readync.source.BookFiles.PREFIX) -> io.github.prithirajn.readync.source.BookFiles.read(found.path)
             // From the books folder on WebDAV (KOReader on another device).
-            s.koHl?.let { io.github.prithirajn.readync.source.KoHighlightsClient(it).bytes(found.path.removePrefix("dav:")) }
-        } else {
-            val tree = s.koLocal ?: return null
-            io.github.prithirajn.readync.source.KoSidecar.bookBytes?.invoke(tree, found.path)
+            found.path.startsWith("dav:") -> s.koHl?.let { io.github.prithirajn.readync.source.KoHighlightsClient(it).bytes(found.path.removePrefix("dav:")) }
+            else -> {
+                val tree = s.koLocal ?: return null
+                io.github.prithirajn.readync.source.KoSidecar.bookBytes?.invoke(tree, found.path)
+            }
         } ?: return null
         return io.github.prithirajn.readync.source.EpubText.open(bytes)?.let { it to found.sameFile }
     }
 
+    /**
+     * KOReader's page bookmarks on to CrossPoint (with "Also add them to CrossPoint"), so the device
+     * has them too, and they show in Readync's bookmarks. Only with the book's file here (to say
+     * where the page is and how it opens); one CrossPoint already has there (or that came from it)
+     * isn't added. Each goes once.
+     */
+    internal fun pushKoBookmarksToCrossPoint() {
+        val s0 = store.snapshot
+        if (!s0.koToCrossPoint || s0.koBookmarks.isEmpty()) return
+        val account = s0.account ?: return
+        val client = CrossPointClient(account)
+        var added = 0
+        for ((doc, list) in s0.koBookmarks) {
+            if (s0.books[doc]?.origin != null || !s0.books.containsKey(doc)) continue
+            val todo = list.filter { "$doc|${it.page}" !in s0.koBmSentCp }
+            if (todo.isEmpty()) continue
+            val (book, _) = runCatching { koEpub(store.snapshot, doc) }.getOrNull() ?: continue
+            val lengths = (0 until book.size).map { book.chapter(it)?.length ?: 0 }
+            val starts = lengths.runningFold(0L) { acc, n -> acc + n }
+            fun at(xp: String): Pair<Int, Int>? {
+                val sp = Regex("""DocFragment\[(\d+)]""").find(xp)?.groupValues?.get(1)?.toIntOrNull()?.minus(1) ?: return null
+                val off = book.chapter(sp)?.offsetOf(xp) ?: return null
+                return sp to off
+            }
+            // Where CrossPoint's own bookmarks of this book are (and the ones given to KOReader from it).
+            val theirs = (store.snapshot.cpBookmarks[doc] ?: emptyList()).mapNotNull { b -> b.xpath?.let { at(it) } }
+            val done = ArrayList<String>()
+            for (m in todo) {
+                done += "$doc|${m.page}"
+                val (sp, off) = at(m.page) ?: continue
+                // Within a short way of one CrossPoint has: the same page.
+                if (theirs.any { (s2, o2) -> s2 == sp && kotlin.math.abs(o2 - off) < 120 }) continue
+                val ch = book.chapter(sp) ?: continue
+                val summary = ch.textOf(off, minOf(ch.length, off + 120)).replace(Regex("\\s+"), " ").trim().take(45)
+                val pct = if (starts.last() > 0) (starts[sp] + off).toDouble() / starts.last() else 0.0
+                try {
+                    client.addBookmark(doc, m.page, pct, summary, sp)
+                    added++
+                } catch (e: NetworkException) { return } catch (e: AuthException) { throw e } catch (e: Exception) { done.removeAt(done.size - 1) }
+            }
+            store.update { it.copy(koBmSentCp = it.koBmSentCp + done) }
+        }
+        if (added > 0) store.log(null, "$added KOReader bookmark${if (added == 1) "" else "s"} added to CrossPoint")
+    }
+
+    /**
+     * Whether places worked out from Readync's copy of [doc] land on the same words on the device.
+     * The device's own highlights of the book are the test: their places must give their words in
+     * this copy. With none to test against, only the very file the device has is trusted. (A copy
+     * from another edition, or laid out differently, puts highlights on the wrong words.)
+     */
+    internal fun placesTrusted(doc: String, book: io.github.prithirajn.readync.source.EpubText.Book, sameFile: Boolean, client: CrossPointClient): Boolean {
+        placeTrust[doc]?.let { return it }
+        val ours = store.snapshot.koSentCp.values.toSet()
+        val theirs = runCatching { client.placedClippings(doc) }.getOrElse { if (it is AuthException || it is NetworkException) throw it else emptyList() }
+            .filter { it.id !in ours && !it.id.startsWith("bm-") && it.layout != 0L }.takeLast(12)
+        fun key(t: String) = t.lowercase().filter { it.isLetterOrDigit() }
+        var matched = 0
+        for (p in theirs) {
+            val got = book.chapter(p.spine)?.textOf(p.start, p.end)?.let(::key) ?: ""
+            val want = key(p.text)
+            if (want.isNotEmpty() && (got == want || (got.length >= 8 && (want.startsWith(got) || got.startsWith(want))))) matched++
+        }
+        val ok = if (theirs.isEmpty()) sameFile else matched * 5 >= theirs.size * 4
+        placeTrust[doc] = ok
+        if (!ok && theirs.isNotEmpty() && store.snapshot.extras["lineup:$doc"] == null) {
+            store.update { it.copy(extras = it.extras + ("lineup:$doc" to "1")) }
+            store.log(null, "${title(doc)}: Readync's copy of the book is laid out differently from the one on your device. Highlights go on their exact words there only where your own highlights or bookmarks on the device, before and after them in the chapter, confirm the place; the rest go under their chapter. The very file your device has puts them all on their words.")
+        }
+        return ok
+    }
+
+    private val placeTrust = HashMap<String, Boolean>()
+
+    /**
+     * The points in [doc] where the device's count is known against this copy's: the device's own
+     * highlights (found by their words here) and its bookmarks (their page's opening words, and
+     * where the page starts on the device).
+     */
+    internal fun anchors(doc: String, book: io.github.prithirajn.readync.source.EpubText.Book, client: CrossPointClient): List<KoPlacement.Anchor> {
+        val out = ArrayList<KoPlacement.Anchor>()
+        val ours = store.snapshot.koSentCp.values.toSet()
+        val theirs = runCatching { client.placedClippings(doc) }.getOrElse { if (it is AuthException || it is NetworkException) throw it else emptyList() }
+            .filter { it.id !in ours && !it.id.startsWith("bm-") && it.layout != 0L }
+        for (p in theirs) {
+            val f = runCatching { io.github.prithirajn.readync.source.EpubText.find(book, p.text, p.spine) }.getOrNull()?.takeIf { it.spine == p.spine } ?: continue
+            out += KoPlacement.Anchor(p.spine, f.start, p.start - f.start, true)
+            out += KoPlacement.Anchor(p.spine, f.end, p.end - f.end, true)
+        }
+        for (b in store.snapshot.cpBookmarks[doc] ?: emptyList()) {
+            val vo = b.vo ?: continue
+            val spine = Regex("""DocFragment\[(\d+)]""").find(b.xpath ?: "")?.groupValues?.get(1)?.toIntOrNull()?.minus(1) ?: b.spine ?: continue
+            val words = b.summary?.trim()?.trimEnd('…', '.', ' ')?.takeIf { it.length >= 20 } ?: continue
+            val f = runCatching { io.github.prithirajn.readync.source.EpubText.find(book, words, spine) }.getOrNull()?.takeIf { it.spine == spine } ?: continue
+            out += KoPlacement.Anchor(spine, f.start, vo - f.start, false)
+        }
+        return out
+    }
+
+    /** What anchors [doc] has (to try unsure highlights again only when there are new ones). */
+    private fun anchorKey(s: Snapshot, doc: String) =
+        "${s.cpClips.count { it.document == doc }}|${(s.cpBookmarks[doc] ?: emptyList()).count { it.vo != null }}"
+
+    /** [raw] places (in this copy) as the device has them: as they are when the copy is trusted, else moved by anchors (unsure ones left out). */
+    private fun devicePlaces(doc: String, book: io.github.prithirajn.readync.source.EpubText.Book, same: Boolean, client: CrossPointClient, raw: Map<String, io.github.prithirajn.readync.source.EpubText.Place>): Map<String, io.github.prithirajn.readync.source.EpubText.Place> {
+        if (raw.isEmpty()) return raw
+        if (runCatching { placesTrusted(doc, book, same, client) }.getOrElse { if (it is AuthException) throw it; false }) return raw
+        val an = runCatching { anchors(doc, book, client) }.getOrElse { if (it is AuthException) throw it; emptyList() }
+        return raw.mapNotNull { (id, p) -> KoPlacement.shifted(p, an)?.let { id to it } }.toMap()
+    }
+
+    /**
+     * Highlights put on exact words from a copy that turned out not to line up: sent again without
+     * the place, so the device stops marking the wrong words (they stay under their chapter).
+     */
+    internal fun unplaceMisplaced() {
+        val s0 = store.snapshot
+        val account = s0.account ?: return
+        // Once: the ones placed before this check existed (new ones are checked before they're placed).
+        if (s0.extras["placeCheck"] == "1") return
+        val client = CrossPointClient(account)
+        val byDoc = s0.koClips.filter { it.id in s0.koPlaced }.groupBy { it.document }
+        for ((doc, clips) in byDoc) {
+            val (book, same) = runCatching { koEpub(s0, doc) }.getOrNull() ?: continue
+            if (placesTrusted(doc, book, same, client)) continue
+            val send = clips.filter { it.spine != null }
+            try {
+                if (send.isNotEmpty()) client.addClippings(doc, send, emptyMap(), keepNote = send.map { it.id }.toSet())
+                store.update { s -> s.copy(koPlaced = s.koPlaced - clips.map { it.id }.toSet(), koUnplaced = s.koUnplaced + clips.map { it.id }) }
+                store.log(null, "${title(doc)}: ${send.size} highlight${if (send.size == 1) "" else "s"} taken off the wrong words on your device")
+            } catch (e: NetworkException) { return } catch (e: AuthException) { throw e } catch (e: Exception) { }
+        }
+        store.update { it.copy(extras = it.extras + ("placeCheck" to "1")) }
+    }
+
     internal fun pushKoToCrossPoint() {
+        runCatching { unplaceMisplaced() }.onFailure { if (it is AuthException) throw it }
+        runCatching { pushKoBookmarksToCrossPoint() }.onFailure { if (it is AuthException) throw it }
         val s0 = store.snapshot
         if (!s0.koToCrossPoint || s0.koClips.isEmpty()) return
         val account = s0.account ?: return
@@ -1460,15 +1620,20 @@ class SyncEngine(private val store: Store) {
         val cpBook = s0.koClips.filter { s0.books[it.document]?.origin == null && s0.books.containsKey(it.document) && !KoHighlightSync.isNote(it.id) }
         // New ones (not on CrossPoint already), and ones sent before that can now go on their exact words.
         val fresh = cpBook.filter { c -> c.id !in s0.koSentCp && key(c.text) !in (onCp[c.document] ?: emptySet()) }
-        val again = cpBook.filter { c -> c.id in s0.koSentCp && c.id !in s0.koPlaced && c.id !in s0.koUnplaced && KoPlacement.bookPath(s0, c.document) != null }
+        // (Ones that couldn't go on their words are tried again when the book has new anchors.)
+        val again = cpBook.filter { c ->
+            c.id in s0.koSentCp && c.id !in s0.koPlaced && KoPlacement.bookPath(s0, c.document) != null &&
+                (c.id !in s0.koUnplaced || s0.extras["anchorKey:${c.document}"] != anchorKey(s0, c.document))
+        }
         if (fresh.isEmpty() && again.isEmpty()) return
         val client = CrossPointClient(account)
         var added = 0
         var placedCount = 0
         for ((doc, group) in (fresh + again).groupBy { it.document }) {
             val book = runCatching { koEpub(s0, doc) }.getOrNull()
-            val places = book?.let { (b, same) -> KoPlacement.forCrossPoint(b, group, same) } ?: emptyMap()
+            val places = book?.let { (b, same) -> devicePlaces(doc, b, same, client, KoPlacement.forCrossPoint(b, group, same)) } ?: emptyMap()
             val unplaced = if (book != null) group.map { it.id }.filter { it !in places } else emptyList()
+            store.update { it.copy(extras = it.extras + ("anchorKey:$doc" to anchorKey(s0, doc))) }
             // Sent before and still not placeable: nothing to send again.
             val send = group.filter { it.id !in s0.koSentCp || it.id in places }.filter { it.spine != null || it.id in places }
             if (send.isEmpty()) { store.update { it.copy(koUnplaced = it.koUnplaced + unplaced) }; continue }
@@ -1487,7 +1652,7 @@ class SyncEngine(private val store: Store) {
                     }
                     s.copy(
                         koSentCp = s.koSentCp + ids, sentClippings = sent, clipRemote = remote,
-                        koPlaced = s.koPlaced + ids.keys.filter { it in places }, koUnplaced = s.koUnplaced + unplaced,
+                        koPlaced = s.koPlaced + ids.keys.filter { it in places }, koUnplaced = s.koUnplaced - ids.keys.filter { it in places }.toSet() + unplaced,
                     )
                 }
             } catch (e: NetworkException) {
@@ -1516,10 +1681,11 @@ class SyncEngine(private val store: Store) {
         if (!s0.cpToKo) return
         val account = s0.account ?: return
         val dav = s0.koHl?.let { io.github.prithirajn.readync.source.MoonReaderClient(it) }
-        if (dav == null || (s0.koLocal == null && s0.koDavBooks == null)) {
-            store.update { it.copy(cpToKoNote = "Needs the HighlightSync plugin on Koofr or WebDAV, and your EPUBs: KOReader's books folder on this phone, or a books folder on that storage") }
+        if (dav == null || s0.koBooks.isEmpty()) {
+            store.update { it.copy(cpToKoNote = "Needs KOReader's AnnotationSync or HighlightSync plugin on Koofr or WebDAV, and your EPUBs: KOReader's books folder on this phone, or a books folder on that storage") }
             return
         }
+        runCatching { pushCpBookmarksToKo(dav, account) }.onFailure { if (it is AuthException) throw it }
         val fromKo = s0.koSentCp.values.toSet()
         val all = try { CrossPointClient(account).clippings() } catch (e: Exception) { if (e is AuthException) throw e; return }
         val todo = all.filter { c ->
@@ -1531,14 +1697,14 @@ class SyncEngine(private val store: Store) {
         val notes = ArrayList<String>()
         for ((doc, group) in todo.groupBy { it.document }) {
             // The plugin's file for this book: one already read that belongs to it.
-            val files = s0.koHlDocs.filter { it.value == doc && !it.key.startsWith("local:") }.keys
+            val files = s0.koHlDocs.filter { it.value == doc && !it.key.startsWith("local:") && !it.key.startsWith("ssh:") }.keys
             if (files.isEmpty()) continue
             val (book, sameFile) = runCatching { koEpub(s0, doc) }.getOrNull() ?: continue
             for (rel in files) {
                 try {
                     val before = dav.fetch(rel)?.let { String(it, Charsets.UTF_8) }
                     val r = KoPlacement.addToHighlightSync(before, book, group, sameFile = sameFile)
-                    if (r == null) { notes += "${title(doc)}: that's an AnnotationSync file, which Readync doesn't write to"; continue }
+                    if (r == null) { notes += "${title(doc)}: KOReader's file for it couldn't be read, so nothing was added"; continue }
                     if (r.added.isNotEmpty()) {
                         if (before != null) dav.put("$rel.readync-backup", before)
                         dav.put(rel, r.json)
@@ -1558,7 +1724,375 @@ class SyncEngine(private val store: Store) {
             }
         }
         store.update { it.copy(cpToKoOkAt = System.currentTimeMillis(), cpToKoNote = notes.firstOrNull()) }
-        if (added > 0) store.log(null, "$added CrossPoint highlight${if (added == 1) "" else "s"} given to KOReader (in after its next HighlightSync)")
+        if (added > 0) store.log(null, "$added CrossPoint highlight${if (added == 1) "" else "s"} given to KOReader (in when KOReader next syncs the book)")
+    }
+
+    /**
+     * CrossPoint bookmarks on to KOReader: added to AnnotationSync's file for each book that has
+     * one (KOReader keeps them as "BOOKMARK|<position>"), on the same page when the book's EPUB is
+     * here to check it against; one deleted on CrossPoint afterwards is deleted there too. Each goes
+     * once, so one deleted in KOReader stays deleted. KOReader takes them in when it syncs the book.
+     */
+    private fun pushCpBookmarksToKo(dav: io.github.prithirajn.readync.source.MoonReaderClient, account: io.github.prithirajn.readync.data.Account) {
+        val s0 = store.snapshot
+        val client = CrossPointClient(account)
+        val docs = s0.koHlDocs.filter { !it.key.startsWith("local:") && !it.key.startsWith("ssh:") && s0.books[it.value]?.origin == null && s0.books.containsKey(it.value) }
+            .entries.groupBy({ it.value }, { it.key })
+        var added = 0
+        var removed = 0
+        for ((doc, files) in docs) {
+            if (KoPlacement.bookPath(s0, doc) == null) continue
+            val marks = try { client.bookmarks(doc) } catch (e: NetworkException) { return } catch (e: AuthException) { throw e } catch (e: Exception) { continue }
+            val sent = store.snapshot.cpBmSentKo.filterKeys { it.startsWith("$doc|") }.mapKeys { it.key.substringAfter('|') }
+            if (marks.none { (!it.deleted && it.id !in sent) || (it.deleted && it.id in sent) }) continue
+            val (book, sameFile) = runCatching { koEpub(s0, doc) }.getOrNull() ?: continue
+            for (rel in files) {
+                try {
+                    val before = dav.fetch(rel)?.let { String(it, Charsets.UTF_8) }
+                    val r = KoPlacement.addBookmarksToAnnotationSync(before, book, marks, sent, sameFile) ?: continue
+                    val had = before?.let { b -> runCatching { org.json.JSONObject(b) }.getOrNull() }
+                    val wrote = r.added.filterKeys { it !in sent }
+                    val fresh = wrote.filterValues { k -> had?.has(k) != true }
+                    if (r.removed.isNotEmpty() || fresh.isNotEmpty()) {
+                        if (before != null) dav.put("$rel.readync-backup", before)
+                        dav.put(rel, r.json)
+                    }
+                    added += fresh.size
+                    removed += r.removed.size
+                    store.update { s ->
+                        s.copy(cpBmSentKo = s.cpBmSentKo + wrote.mapKeys { "$doc|${it.key}" } + r.skipped.associate { "$doc|$it" to "" })
+                    }
+                    break
+                } catch (e: NetworkException) {
+                    return
+                } catch (e: Exception) {
+                    store.log(null, "${title(doc)}: CrossPoint bookmarks not given to KOReader (${e.message})", error = true)
+                }
+            }
+        }
+        val parts = listOfNotNull(
+            added.takeIf { it > 0 }?.let { "$it CrossPoint bookmark${if (it == 1) "" else "s"} given to KOReader" },
+            removed.takeIf { it > 0 }?.let { "$it deleted there too" },
+        )
+        if (parts.isNotEmpty()) store.log(null, parts.joinToString(" \u00B7 ") + " (in when KOReader next syncs the book)")
+    }
+
+    /**
+     * KOReader on another device over its SSH server: its books' settings files that changed (their
+     * highlights, notes and where you are), and its EPUBs with their document IDs (so books can be
+     * matched by the very file, and copied here when a highlight needs placing). Problems only turn
+     * its light red; the rest of the sync carries on.
+     */
+    private fun readKoSsh(
+        acct: io.github.prithirajn.readync.data.KoSshAccount,
+        files: MutableList<io.github.prithirajn.readync.source.KoFile>,
+        positions: MutableList<io.github.prithirajn.readync.source.KoPosition>,
+        stamps: MutableMap<String, String>,
+    ) {
+        try {
+            io.github.prithirajn.readync.source.KoSshClient(acct).connect().use { c ->
+                val d = KoSshSync.probe(c, acct.koDir)
+                val scan = KoSshSync.scan(c, d)
+                val oldBooks = store.snapshot.koSshBooks
+                val books = HashMap<String, String>()
+                for (p in scan.epubs) {
+                    val st = c.stat(p) ?: continue
+                    val stamp = "${st.first}|${st.second}"
+                    val prev = oldBooks[p]
+                    if (prev != null && prev.substringBeforeLast('|') == stamp) { books[p] = prev; continue }
+                    val id = KoSshSync.bookId(c, p, st.second) ?: continue
+                    books[p] = "$stamp|$id"
+                }
+                val read = ArrayList<io.github.prithirajn.readync.source.KoFile>()
+                for (p in scan.sidecars) {
+                    val st = c.stat(p) ?: continue
+                    val key = "ssh:$p"
+                    val stamp = st.first.toString()
+                    stamps[key] = stamp
+                    if (store.snapshot.koHlMods[key] == stamp) continue
+                    val text = c.readOrNull(p)?.toString(Charsets.UTF_8) ?: continue
+                    io.github.prithirajn.readync.source.KoSidecar.parse(key, text)?.let { read += it }
+                    io.github.prithirajn.readync.source.KoSidecar.position(key, text, st.first * 1000)?.let { positions += it.copy(device = "KOReader on ${d.deviceName}") }
+                }
+                files += read
+                // Each book's title and author from its settings, for matching it.
+                val titles = HashMap(store.snapshot.koTitles)
+                for (f in read) {
+                    val t = f.title ?: continue
+                    for (id in KoHighlightSync.idsOf(f)) titles[id] = t + "\t" + (f.author ?: "")
+                }
+                val mine = books.values.map { it.substringAfterLast('|') }.count { store.snapshot.books.containsKey(it) }
+                store.update { s ->
+                    s.copy(
+                        koSsh = s.koSsh?.copy(koDir = d.koDir),
+                        koSshBooks = books, koTitles = titles, koSshOkAt = System.currentTimeMillis(), koSshError = null,
+                        koSshInfo = listOfNotNull(
+                            "KOReader" + (d.version?.substringBefore('-')?.let { " $it" } ?: "") + " on ${d.deviceName}",
+                            "${books.size} book${if (books.size == 1) "" else "s"}" + (if (mine > 0) ", $mine in your library" else ""),
+                            if (!d.canImport) "update KOReader to 2025.04 or later so it can take highlights in" else null,
+                        ).joinToString(" \u00B7 "),
+                    )
+                }
+            }
+        } catch (e: NetworkException) {
+            // Asleep, or not on this Wi-Fi: normal for an e-reader, tried again next sync.
+        } catch (e: Exception) {
+            store.update { it.copy(koSshError = Health.describeKoSsh(e)) }
+            store.log(null, "KOReader over Wi-Fi: ${e.message}", error = true)
+        }
+    }
+
+    /**
+     * CrossPoint highlights and bookmarks on to KOReader on another device, over its SSH server, for
+     * the books it has as the very same file: put in the annotation file KOReader takes in when it
+     * next opens the book (see [KoSshSync]). Each goes once; ones KOReader already has (the same
+     * words) are left out. The book's EPUB is copied here first when it isn't yet, to find the places.
+     */
+    internal fun pushToKoSsh() {
+        val s0 = store.snapshot
+        val acct = s0.koSsh?.takeIf { it.enabled } ?: return
+        val account = s0.account ?: return
+        val onDevice = s0.koSshBooks.entries.mapNotNull { (p, v) ->
+            val id = v.substringAfterLast('|')
+            if (s0.books[id]?.let { it.origin == null } == true) id to p else null
+        }.toMap()
+        if (onDevice.isEmpty()) return
+        val fromKo = s0.koSentCp.values.toSet()
+        val all = try { CrossPointClient(account).clippings() } catch (e: Exception) { if (e is AuthException) throw e; return }
+        val clips = all
+            .filter { it.document in onDevice && it.text.isNotBlank() && it.id !in fromKo && it.id !in s0.koSshSent }
+            .groupBy { it.document }
+        // CrossPoint's bookmarks KOReader doesn't have (ones it gave CrossPoint aren't given back).
+        val marks = onDevice.keys.associateWith { d ->
+            val koPages = (s0.koBookmarks[d] ?: emptyList()).map { it.page }.toSet()
+            (s0.cpBookmarks[d] ?: emptyList()).filter { "bm:$d|${it.id}" !in s0.koSshSent && it.xpath !in koPages }
+        }
+        val docs = onDevice.keys.filter { !clips[it].isNullOrEmpty() || !marks[it].isNullOrEmpty() }
+        if (docs.isEmpty()) return
+        val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        fun time(sec: Long) = fmt.format(java.time.Instant.ofEpochSecond(sec.takeIf { it > 0 } ?: (System.currentTimeMillis() / 1000)).atZone(java.time.ZoneId.systemDefault()))
+        fun key(t: String) = t.lowercase().filter { it.isLetterOrDigit() }
+        var hl = 0
+        var bm = 0
+        try {
+            io.github.prithirajn.readync.source.KoSshClient(acct).connect().use { c ->
+                val d = KoSshSync.probe(c, acct.koDir)
+                if (!d.canImport) {
+                    store.update { it.copy(koSshError = "KOReader ${d.version?.substringBefore('-') ?: ""} on ${d.deviceName} can't take highlights in. Update KOReader to 2025.04 or later.") }
+                    return
+                }
+                for (doc in docs) {
+                    val devicePath = onDevice[doc] ?: continue
+                    // The book's file here (copied from the device, the very same file), to find the places.
+                    if (KoPlacement.bookFor(store.snapshot, doc)?.sameFile != true) {
+                        val bytes = c.readOrNull(devicePath) ?: continue
+                        val (k, v) = io.github.prithirajn.readync.source.BookFiles.save(doc, bytes)
+                        store.update { it.copy(koBooks = it.koBooks + (k to v)) }
+                    }
+                    val (book, _) = runCatching { koEpub(store.snapshot, doc) }.getOrNull() ?: continue
+                    val have = store.snapshot.koClips.filter { it.document == doc }.map { key(it.text) }.filter { it.isNotEmpty() }
+                    val items = ArrayList<KoSshSync.Item>()
+                    val done = ArrayList<String>()
+                    for (cl in clips[doc].orEmpty()) {
+                        done += cl.id
+                        val k = key(cl.text)
+                        if (k.isEmpty() || have.any { it.contains(k) || k.contains(it) }) continue
+                        val (_, p0, p1) = KoPlacement.koreaderPlace(book, cl, true) ?: continue
+                        items += KoSshSync.Item(p0, p1, cl.text, time(cl.createdAt), cl.chapter, cl.note)
+                    }
+                    for (b in marks[doc].orEmpty()) {
+                        done += "bm:$doc|${b.id}"
+                        val p = KoPlacement.bookmarkPlace(book, b, true) ?: continue
+                        val label = b.name?.trim()?.takeIf { it.isNotEmpty() } ?: b.summary?.trim()?.takeIf { it.isNotEmpty() }?.let { it.take(80) + "\u2026" } ?: "Bookmark"
+                        items += KoSshSync.Item(p, null, label, time(b.updatedAt))
+                    }
+                    if (items.isNotEmpty()) {
+                        val path = KoSshSync.importPath(d, devicePath, doc)
+                        val merged = KoSshSync.mergeImport(c.readOrNull(path)?.toString(Charsets.UTF_8), items, path)
+                        if (merged != null) c.write(path, merged.toByteArray(Charsets.UTF_8))
+                        hl += items.count { it.isHighlight }
+                        bm += items.count { !it.isHighlight }
+                    }
+                    store.update { it.copy(koSshSent = it.koSshSent + done) }
+                }
+            }
+        } catch (e: AuthException) {
+            store.update { it.copy(koSshError = Health.describeKoSsh(e)) }
+            return
+        } catch (e: NetworkException) {
+            return
+        } catch (e: Exception) {
+            store.update { it.copy(koSshError = Health.describeKoSsh(e)) }
+            store.log(null, "KOReader over Wi-Fi: ${e.message}", error = true)
+            return
+        }
+        val parts = listOfNotNull(
+            hl.takeIf { it > 0 }?.let { "$it highlight${if (it == 1) "" else "s"}" },
+            bm.takeIf { it > 0 }?.let { "$it bookmark${if (it == 1) "" else "s"}" },
+        )
+        if (parts.isNotEmpty()) store.log(null, parts.joinToString(" and ") + " from CrossPoint given to KOReader (in when you next open the book there)")
+    }
+
+    /** Copies the EPUBs of your library's books from KOReader's device here (the very same files). How many. */
+    internal fun copyBooksFromKoSsh(onlyDoc: String? = null): Int {
+        val s0 = store.snapshot
+        val acct = s0.koSsh ?: throw ServiceException("Connect KOReader over Wi-Fi first")
+        val wanted = s0.koSshBooks.entries.mapNotNull { (p, v) ->
+            val id = v.substringAfterLast('|')
+            if (s0.books.containsKey(id) && (onlyDoc == null || id == onlyDoc) && KoPlacement.bookFor(s0, id)?.sameFile != true) id to p else null
+        }
+        if (wanted.isEmpty()) return 0
+        var n = 0
+        io.github.prithirajn.readync.source.KoSshClient(acct).connect().use { c ->
+            for ((doc, p) in wanted) {
+                val bytes = c.readOrNull(p) ?: continue
+                val (k, v) = io.github.prithirajn.readync.source.BookFiles.save(doc, bytes)
+                store.update { it.copy(koBooks = it.koBooks + (k to v)) }
+                n++
+            }
+        }
+        return n
+    }
+
+    /**
+     * Your CrossPoint bookmarks: for books read lately (and [also]), what changed since they were
+     * last read, kept by book. A new one becomes a highlight of its page when that's switched on.
+     */
+    internal fun pullCpBookmarks(also: Collection<String> = emptyList(), full: Boolean = false) {
+        val s0 = store.snapshot
+        val account = s0.account ?: return
+        val client = CrossPointClient(account)
+        // The books read most lately, every sync (asking only for what changed, so it's cheap).
+        val recent = s0.books.values.filter { it.origin == null }.sortedByDescending { it.timestamp }.map { it.document }
+        val docs = (also.toList() + recent).distinct().take(25)
+        val fresh = ArrayList<Pair<String, CrossPointClient.Bookmark>>()
+        // New since "every bookmark highlights its page" was switched on (the ones before it stay bookmarks).
+        val autoSince = store.snapshot.extras["bookmarkAutoSince"]?.toLongOrNull() ?: Long.MAX_VALUE
+        var got = 0
+        val hex32 = Regex("[0-9a-f]{32}")
+        for (doc in docs) {
+            // The book under its own ID and the other IDs it's known by here (a copy merged into it).
+            val ids = (listOf(doc) + (store.snapshot.books[doc]?.aliases ?: emptyList()).filter { hex32.matches(it) }).distinct()
+            val items = ArrayList<CrossPointClient.Bookmark>()
+            val cursors = HashMap<String, Long>()
+            var failed = false
+            for (id in ids) {
+                val key = if (id == doc) doc else "$doc|$id"
+                // The server's own clock only: a cursor from the phone's or the device's would skip some.
+                // (Cursors saved before 4.29.3 could be ahead of the server's clock: read from the start once.)
+                // Check again reads the book's whole list, so nothing a cursor skipped stays missing.
+                val from = if (full && doc in also) 0L else if (s0.extras["bookmarkCursor"] == "2") store.snapshot.cpBookmarksAt[key] ?: 0L else 0L
+                try {
+                    val (list, until) = client.bookmarksSince(id, from)
+                    items += list
+                    // A little behind the server's "until": one uploaded later in that same second is still read next time.
+                    cursors[key] = maxOf(from, until - 2)
+                } catch (e: NetworkException) {
+                    return
+                } catch (e: AuthException) {
+                    throw e
+                } catch (e: Exception) {
+                    failed = true
+                    store.log(null, "${title(doc)}: couldn't read its bookmarks from CrossPoint (${e.message})", error = true)
+                }
+            }
+            if (failed && items.isEmpty()) continue
+            val known = (store.snapshot.cpBookmarks[doc] ?: emptyList()).map { it.id }.toSet()
+            // Ones that came from KOReader (added there, given to CrossPoint) aren't made into highlights.
+            val fromKo = (store.snapshot.koBookmarks[doc] ?: emptyList()).map { it.page }.toSet()
+            for (bm in items) {
+                if (!bm.deleted && bm.id !in known && bm.updatedAt >= autoSince && "$doc|${bm.id}" !in store.snapshot.bookmarkDone && bm.xpath !in fromKo) fresh += doc to bm
+            }
+            got += items.count { !it.deleted && it.id !in known }
+            store.update { st ->
+                // A whole list read (and read without a failure) is the server's list: replace, so its removals go too.
+                val have = (if (full && doc in also && !failed) emptyMap() else (st.cpBookmarks[doc] ?: emptyList()).associateBy { it.id }).toMutableMap()
+                for (bm in items) if (bm.deleted) have.remove(bm.id) else have[bm.id] = bm
+                val list = have.values.sortedBy { it.percentage ?: 0.0 }
+                st.copy(
+                    cpBookmarks = if (list.isEmpty()) st.cpBookmarks - doc else st.cpBookmarks + (doc to list),
+                    cpBookmarksAt = st.cpBookmarksAt + cursors,
+                    extras = st.extras + ("bookmarksChecked:$doc" to System.currentTimeMillis().toString()),
+                )
+            }
+        }
+        if (s0.extras["bookmarkCursor"] != "2") store.update { it.copy(extras = it.extras + ("bookmarkCursor" to "2")) }
+        if (got > 0) store.log(null, "$got new bookmark${if (got == 1) "" else "s"} from CrossPoint")
+        if (fresh.isNotEmpty() && store.snapshot.bookmarkAutoHighlight) {
+            var made = 0
+            for ((doc, bm) in fresh) if (runCatching { highlightBookmarkPage(doc, bm) }.getOrDefault(false)) made++
+            if (made > 0) store.log(null, "$made bookmark${if (made == 1) "" else "s"} turned into highlights of their page")
+        }
+    }
+
+    /** The text of [b]'s page in the book's EPUB (as a CrossPoint device lays it out, near enough), or null without the file. */
+    internal fun bookmarkPage(doc: String, b: CrossPointClient.Bookmark): BookmarkText? {
+        val (book, _) = runCatching { koEpub(store.snapshot, doc) }.getOrNull() ?: return null
+        val spineOf = Regex("""DocFragment\[(\d+)]""").find(b.xpath ?: "")?.groupValues?.get(1)?.toIntOrNull()?.minus(1) ?: b.spine ?: return null
+        val ch = book.chapter(spineOf) ?: return null
+        // Where the page starts: the exact place, else the page's opening words (the device ends its
+        // summary with "…" when it cuts it), else the page number the device gave in the chapter.
+        val summary = b.summary?.trim()?.trimEnd('…', '.', ' ')?.takeIf { it.length >= 12 }
+        val start = b.xpath?.let { runCatching { ch.offsetOf(it) }.getOrNull() }
+            ?: summary?.let { sm ->
+                listOf(sm, sm.take(80), sm.take(40)).distinct().firstNotNullOfOrNull { q ->
+                    runCatching { io.github.prithirajn.readync.source.EpubText.find(book, q, spineOf) }.getOrNull()?.takeIf { p -> p.spine == spineOf }?.start
+                }
+            }
+            ?: b.page?.let { pg -> b.pages?.takeIf { it > 0 && pg in 0 until it }?.let { (ch.length.toLong() * pg / it).toInt() } }
+            ?: return null
+        // How much a page holds: the chapter's length over the pages the device last split it into.
+        val per = store.snapshot.account?.let { a -> runCatching { CrossPointClient(a).devicePages(doc) }.getOrNull() }
+            ?.let { (sp, pages) -> book.chapter(sp)?.length?.div(pages) }?.coerceIn(150, 2500) ?: 600
+        val end = minOf(ch.length, start + per)
+        // Ends at the end of a word.
+        var e = end
+        while (e < ch.length && e < end + 40 && !ch.textOf(e - 1, e).isBlank()) e++
+        return BookmarkText(spineOf, start, e, ch.textOf(start, e))
+    }
+
+    data class BookmarkText(val spine: Int, val start: Int, val end: Int, val text: String)
+
+    /**
+     * A highlight made from a bookmark's page (or part of it, [from] to [to] within the page's
+     * text): added on CrossPoint on its exact words, so the device shows it, and from there to
+     * KOReader and your trackers like any CrossPoint highlight. Without the book's file, [text] is
+     * added under the bookmark's chapter. Ticks the bookmark off (and removes it, when set to).
+     */
+    internal fun highlightFromBookmark(doc: String, b: CrossPointClient.Bookmark, text: String, place: io.github.prithirajn.readync.source.EpubText.Place?, note: String?): Boolean {
+        val account = store.snapshot.account ?: throw ServiceException("Sign in to CrossPoint first")
+        val clean = text.replace(Regex("\\s+"), " ").trim()
+        if (clean.length < 2) return false
+        val now = System.currentTimeMillis() / 1000
+        // Words from a photo or typed: put on their exact words when the book's file has them (once).
+        val client = CrossPointClient(account)
+        // Where the words are in Readync's copy, then where the device has them (left out when not sure).
+        val place = runCatching {
+            val (book, same) = koEpub(store.snapshot, doc) ?: return@runCatching null
+            val near = Regex("""DocFragment\[(\d+)]""").find(b.xpath ?: "")?.groupValues?.get(1)?.toIntOrNull()?.minus(1) ?: b.spine
+            val here = place ?: io.github.prithirajn.readync.source.EpubText.find(book, clean, near) ?: return@runCatching null
+            devicePlaces(doc, book, same, client, mapOf("x" to here))["x"]
+        }.getOrElse { if (it is AuthException) throw it; null }
+        val spine = place?.spine ?: Regex("""DocFragment\[(\d+)]""").find(b.xpath ?: "")?.groupValues?.get(1)?.toIntOrNull()?.minus(1) ?: b.spine ?: 0
+        val c = Clipping(id = "bm-${b.id}-$now", document = doc, text = clean, note = note?.trim()?.takeIf { it.isNotEmpty() }, chapter = null, createdAt = now, spine = spine)
+        client.addClippings(doc, listOf(c), place?.let { mapOf(c.id to it) } ?: emptyMap())
+        store.update { s -> s.copy(bookmarkDone = s.bookmarkDone + "$doc|${b.id}") }
+        if (store.snapshot.bookmarkRemoveWhenDone) {
+            runCatching { client.deleteBookmark(doc, b.id) }.onSuccess {
+                store.update { s -> s.copy(cpBookmarks = s.cpBookmarks + (doc to (s.cpBookmarks[doc] ?: emptyList()).filter { it.id != b.id })) }
+            }
+        }
+        return true
+    }
+
+    /** "Highlight this page" for bookmark [b]: its whole page. False without the book's file. */
+    internal fun highlightBookmarkPage(doc: String, b: CrossPointClient.Bookmark): Boolean {
+        val page = bookmarkPage(doc, b) ?: return false
+        val t = page.text.trim()
+        if (t.isEmpty()) return false
+        val lead = page.text.length - page.text.trimStart().length
+        val place = io.github.prithirajn.readync.source.EpubText.Place(page.spine, page.start + lead, page.start + lead + t.length)
+        return highlightFromBookmark(doc, b, t, place, null)
     }
 
     /**
@@ -1672,6 +2206,8 @@ class SyncEngine(private val store: Store) {
                 store.log(null, "KOReader folder: ${e.message}", error = true)
             }
         }
+        // KOReader on another device (Kindle, Kobo…), over its own SSH server.
+        store.snapshot.koSsh?.takeIf { it.enabled }?.let { acct -> readKoSsh(acct, files, positions, stamps) }
         if (files.isEmpty() && stamps.isEmpty()) return
         var r: KoHighlightSync.Result? = null
         var m: KoHighlightSync.Moved? = null
@@ -2478,6 +3014,221 @@ class SyncEngine(private val store: Store) {
     }
 
     /**
+     * Reads your Everand titles (Saved and reading history: books, audiobooks and comics) and how
+     * far in you are. A title you also have elsewhere stays one book, at whichever place is further
+     * along; positions only move forward.
+     */
+    internal fun pullEverand() {
+        val account = store.snapshot.everand ?: return
+        if (!account.enabled) return
+        try {
+            val lib = io.github.prithirajn.readync.source.EverandClient(account).library()
+            val sec = System.currentTimeMillis() / 1000
+            val docsToQueue = LinkedHashSet<String>()
+            var added = 0
+            var moved = 0
+            var newHighlights = 0
+            store.update { s ->
+                val clips = ArrayList(s.everandClips)
+                val oldClipIds = s.everandClips.map { it.id }.toSet()
+                val books = s.books.toMutableMap()
+                val links = s.links.toMutableMap()
+                val removed = HashMap(s.removedBooks)
+                fun takeClips(doc: String, t: io.github.prithirajn.readync.source.EverandClient.Title): Int {
+                    if (!account.syncHighlights || t.highlights.isEmpty()) return 0
+                    val mine = t.highlights.map { h ->
+                        io.github.prithirajn.readync.source.Clipping(
+                            id = "everand-${h.id}", document = doc, text = h.text, note = h.note,
+                            chapter = null, createdAt = h.createdAt,
+                        )
+                    }
+                    clips.removeAll { c -> c.id.startsWith("everand-") && (c.document == doc || mine.any { it.id == c.id }) }
+                    clips.addAll(mine)
+                    return mine.count { it.id !in oldClipIds }
+                }
+                for (t in lib.titles) {
+                    val eDoc = "everand:${t.id}"
+                    val existing = books[eDoc]
+                        ?: books.values.firstOrNull { eDoc in it.aliases }
+                        ?: books.values.firstOrNull { b -> !b.held && b.title != null && Matcher.sameBook(t.title, t.author, b.title, b.author) }
+                    if (existing == null) {
+                        // Only what you've started or finished comes in, not every title you saved.
+                        if (t.percent <= 0.0 && !t.finished && t.highlights.isEmpty()) continue
+                        val remPct = removed[eDoc]
+                        if (remPct != null) {
+                            if (t.percent <= remPct + 0.001 && t.status != ReadStatus.FINISHED) continue
+                            removed.remove(eDoc)
+                        }
+                        added++
+                        books[eDoc] = Book(
+                            document = eDoc, title = t.title, author = t.author, percentage = if (t.finished) 1.0 else t.percent,
+                            status = if (t.status == ReadStatus.TO_READ) ReadStatus.READING else t.status, timestamp = sec, coverUrl = t.coverUrl, origin = "everand",
+                            finishedAt = if (t.status == ReadStatus.FINISHED) sec else null,
+                        )
+                        if (s.settings.autoEnableNewBooks) docsToQueue += eDoc
+                        else for (tr in Trackers.all) {
+                            val key = Link.key(tr.id, eDoc)
+                            if (links[key] == null) links[key] = Link(tr.id, eDoc, null, source = LinkSource.NONE, note = "Not synced")
+                        }
+                        newHighlights += takeClips(eDoc, t)
+                        continue
+                    }
+                    val doc = existing.document
+                    val pct = if (t.finished) maxOf(t.percent, existing.percentage) else t.percent
+                    val finished = existing.status == ReadStatus.FINISHED || t.status == ReadStatus.FINISHED
+                    val ahead = pct > existing.percentage + 0.005
+                    val becameFinished = t.status == ReadStatus.FINISHED && existing.status != ReadStatus.FINISHED
+                    var b = existing
+                    if (doc != eDoc && eDoc !in b.aliases) b = b.copy(aliases = b.aliases + eDoc)
+                    if (ahead || becameFinished) {
+                        moved++
+                        val next = if (becameFinished) maxOf(existing.percentage, pct, 1.0) else maxOf(existing.percentage, pct)
+                        val pages = b.pageCount
+                        b = b.copy(
+                            percentage = next,
+                            status = if (finished) ReadStatus.FINISHED else ReadStatus.READING,
+                            timestamp = maxOf(sec, existing.timestamp + 1),
+                            pagesRead = if (pages != null && pages > 0) Math.round(next * pages).toInt().coerceIn(0, pages) else b.pagesRead,
+                            finishedAt = b.finishedAt ?: if (finished) sec else null,
+                            coverUrl = b.coverUrl ?: t.coverUrl,
+                        )
+                        docsToQueue += doc
+                    }
+                    books[doc] = b
+                    newHighlights += takeClips(doc, t)
+                }
+                s.copy(books = books, links = links, removedBooks = removed, everandClips = clips, everandOkAt = System.currentTimeMillis(), everandError = null)
+            }
+            if (docsToQueue.isNotEmpty()) {
+                val snap = store.snapshot
+                for (tr in Trackers.all) if (snap.service(tr.id).let { it.linked && it.enabled }) queue(store, tr.id, docsToQueue)
+            }
+            val parts = listOfNotNull(
+                added.takeIf { it > 0 }?.let { "Brought in $it title${if (it == 1) "" else "s"}" },
+                moved.takeIf { it > 0 }?.let { "$it book${if (it == 1) "" else "s"} moved ahead on Everand" },
+                newHighlights.takeIf { it > 0 }?.let { "$it new highlight${if (it == 1) "" else "s"}" },
+            )
+            if (parts.isNotEmpty()) store.log("everand", parts.joinToString(" \u00B7 "))
+        } catch (e: AuthException) {
+            store.update { it.copy(everandError = Health.describeEverand(e)) }
+            store.log("everand", "Everand: sign in again", error = true)
+        } catch (e: Exception) {
+            store.update { it.copy(everandError = Health.describeEverand(e)) }
+            store.log("everand", "Everand: ${e.message}", error = true)
+        }
+    }
+
+    /**
+     * Reads your hoopla borrows (books, audiobooks and comics), how far in you are, and the
+     * highlights and notes from hoopla's reader. A title you also have elsewhere stays one book,
+     * at whichever place is further along; positions only move forward.
+     */
+    internal fun pullHoopla() {
+        val account = store.snapshot.hoopla ?: return
+        if (!account.enabled) return
+        try {
+            val lib = io.github.prithirajn.readync.source.HooplaClient(account).library()
+            val sec = System.currentTimeMillis() / 1000
+            val docsToQueue = LinkedHashSet<String>()
+            var added = 0
+            var moved = 0
+            var newHighlights = 0
+            store.update { s ->
+                val books = s.books.toMutableMap()
+                val links = s.links.toMutableMap()
+                val removed = HashMap(s.removedBooks)
+                val clips = ArrayList(s.hooplaClips)
+                val oldClipIds = s.hooplaClips.map { it.id }.toSet()
+                for (t in lib.titles) {
+                    val hDoc = "hoopla:${t.titleId}"
+                    val pct = t.percent ?: 0.0
+                    val existing = books[hDoc]
+                        ?: books.values.firstOrNull { hDoc in it.aliases }
+                        ?: books.values.firstOrNull { b -> !b.held && b.title != null && Matcher.sameBook(t.title, t.author, b.title, b.author) }
+                    val doc: String
+                    if (existing == null) {
+                        // Only what you've started, or have highlights in, comes in: not every past borrow.
+                        if (pct <= 0.0 && t.highlights.isEmpty()) continue
+                        // Removed from the library: stays removed unless you've read further since.
+                        val remPct = removed[hDoc]
+                        if (remPct != null) {
+                            if (pct <= remPct + 0.001 && t.status != ReadStatus.FINISHED) continue
+                            removed.remove(hDoc)
+                        }
+                        added++
+                        doc = hDoc
+                        books[hDoc] = Book(
+                            document = hDoc, title = t.title, author = t.author, percentage = pct,
+                            status = if (t.status == ReadStatus.TO_READ) ReadStatus.READING else t.status,
+                            timestamp = sec, coverUrl = t.coverUrl, origin = "hoopla",
+                            startedAt = t.borrowedAt,
+                            finishedAt = if (t.status == ReadStatus.FINISHED) sec else null,
+                        )
+                        if (s.settings.autoEnableNewBooks) docsToQueue += hDoc
+                        else for (tr in Trackers.all) {
+                            val key = Link.key(tr.id, hDoc)
+                            if (links[key] == null) links[key] = Link(tr.id, hDoc, null, source = LinkSource.NONE, note = "Not synced")
+                        }
+                    } else {
+                        doc = existing.document
+                        val finished = existing.status == ReadStatus.FINISHED || t.status == ReadStatus.FINISHED
+                        val ahead = pct > existing.percentage + 0.005
+                        val becameFinished = t.status == ReadStatus.FINISHED && existing.status != ReadStatus.FINISHED
+                        var b = existing
+                        if (doc != hDoc && hDoc !in b.aliases) b = b.copy(aliases = b.aliases + hDoc)
+                        if (ahead || becameFinished) {
+                            moved++
+                            val next = maxOf(existing.percentage, pct)
+                            val pages = b.pageCount
+                            b = b.copy(
+                                percentage = next,
+                                status = if (finished) ReadStatus.FINISHED else ReadStatus.READING,
+                                timestamp = maxOf(sec, existing.timestamp + 1),
+                                pagesRead = if (pages != null && pages > 0) Math.round(next * pages).toInt().coerceIn(0, pages) else b.pagesRead,
+                                startedAt = b.startedAt ?: t.borrowedAt,
+                                finishedAt = b.finishedAt ?: if (finished) sec else null,
+                                coverUrl = b.coverUrl ?: t.coverUrl,
+                            )
+                            docsToQueue += doc
+                        } else if (b.coverUrl == null && t.coverUrl != null) {
+                            b = b.copy(coverUrl = t.coverUrl)
+                        }
+                        books[doc] = b
+                    }
+                    if (account.syncHighlights && t.highlights.isNotEmpty()) {
+                        val mine = t.highlights.map { h ->
+                            io.github.prithirajn.readync.source.Clipping(
+                                id = "hoopla-${h.id}", document = doc, text = h.text, note = h.note,
+                                chapter = null, createdAt = h.createdAt,
+                            )
+                        }
+                        newHighlights += mine.count { it.id !in oldClipIds }
+                        clips.removeAll { c -> c.id.startsWith("hoopla-") && (c.document == doc || mine.any { it.id == c.id }) }
+                        clips.addAll(mine)
+                    }
+                }
+                s.copy(books = books, links = links, removedBooks = removed, hooplaClips = clips, hooplaOkAt = System.currentTimeMillis(), hooplaError = null)
+            }
+            if (docsToQueue.isNotEmpty()) {
+                val snap = store.snapshot
+                for (tr in Trackers.all) if (snap.service(tr.id).let { it.linked && it.enabled }) queue(store, tr.id, docsToQueue)
+            }
+            val parts = listOfNotNull(
+                added.takeIf { it > 0 }?.let { "Brought in $it book${if (it == 1) "" else "s"}" },
+                moved.takeIf { it > 0 }?.let { "$it book${if (it == 1) "" else "s"} moved ahead on hoopla" },
+                newHighlights.takeIf { it > 0 }?.let { "$it new highlight${if (it == 1) "" else "s"}" },
+            )
+            if (parts.isNotEmpty()) store.log("hoopla", parts.joinToString(" \u00B7 "))
+        } catch (e: AuthException) {
+            store.update { it.copy(hooplaError = Health.describeHoopla(e)) }
+            store.log("hoopla", "hoopla: sign in again", error = true)
+        } catch (e: Exception) {
+            store.update { it.copy(hooplaError = Health.describeHoopla(e)) }
+            store.log("hoopla", "hoopla: ${e.message}", error = true)
+        }
+    }
+
+    /**
      * Reads Libby loans, and the reading progress and highlights/notes Libby hands over, from
      * sentry.libbyapp.com; fills in page counts, ISBNs and covers it didn't give.
      */
@@ -2793,7 +3544,7 @@ class SyncEngine(private val store: Store) {
     /** Asks the server to look up covers for a few books that have none, newest first. */
     private fun fillCovers(client: CrossPointClient) {
         val missing = store.snapshot.books.values
-            .filter { (it.origin == null || it.origin in setOf("kindle", "libby", "audible", "seekquel", "mihon", "anilist", "logged") || it.origin?.startsWith(HistoryImport.ORIGIN_PREFIX) == true) && it.coverUrl == null && it.title != null && !it.detailsFetched && it.document !in coverTried }
+            .filter { (it.origin == null || it.origin in setOf("kindle", "libby", "audible", "hoopla", "everand", "seekquel", "mihon", "anilist", "logged") || it.origin?.startsWith(HistoryImport.ORIGIN_PREFIX) == true) && it.coverUrl == null && it.title != null && !it.detailsFetched && it.document !in coverTried }
             .sortedByDescending { it.timestamp }
             .take(COVER_LOOKUPS_PER_RUN)
         val sqSvc = store.snapshot.service("seekquel")
@@ -3049,7 +3800,7 @@ class SyncEngine(private val store: Store) {
         val s = store.snapshot
         if (!highlightsOn(t, s)) return emptyList()
         val since = s.service(t.id).highlightsSince
-        val all = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden && !KoHighlightSync.isNote(it.id) }
+        val all = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden && !KoHighlightSync.isNote(it.id) }
             .map { Highlights.tidy(HighlightPosition.withPage(edited(it, s.clipEdits), s.books[it.document])) }
         val fresh = all
             .filter { val key = "${t.id}|${it.id}"; it.createdAt >= since && key !in s.sentClippings && key !in s.resend }
@@ -3151,7 +3902,7 @@ class SyncEngine(private val store: Store) {
         }
         if (active.isEmpty()) return 0
         // CrossPoint's highlights and ones photographed from paper, as you edited them.
-        val clips = (s0.cpClips + s0.paperClips + s0.kindleClips + s0.libbyClips + s0.moonClips + s0.historyClips + s0.koClips)
+        val clips = (s0.cpClips + s0.paperClips + s0.kindleClips + s0.libbyClips + s0.hooplaClips + s0.everandClips + s0.moonClips + s0.historyClips + s0.koClips)
             // KOReader's notes on bookmarks have no passage: they stay here, not sent as quotes.
             .filter { it.id !in s0.clipHidden && (onlyDocument == null || it.document == onlyDocument) && !KoHighlightSync.isNote(it.id) }
             // Cleaned for the trackers: no invisible characters, HTML entities or stray tags.

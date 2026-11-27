@@ -280,6 +280,20 @@ object Isbn {
         return pool.sortedByDescending { it.score }.distinctBy { it.isbn }
     }
 
+    /**
+     * The price printed on a book's back cover, as read off the camera: "MRP ₹ 499", "M.R.P. Rs. 399.00",
+     * "₹699", "INR 599", "Price: Rs 350". Rupees only (a £ or $ price isn't what you paid here); the
+     * one marked MRP or Price wins over a bare amount. Null when none is there.
+     */
+    fun printedPrice(text: String): Double? {
+        val t = text.replace('\n', ' ')
+        val money = "(?:₹|rs\\.?|inr|r\\.)\\s*([0-9]{1,5}(?:,[0-9]{2,3})*(?:\\.[0-9]{1,2})?)"
+        fun read(r: Regex) = r.findAll(t).mapNotNull { it.groupValues[1].replace(",", "").toDoubleOrNull() }.firstOrNull { it in 30.0..20000.0 }
+        return read(Regex("(?i)(?:m\\.?\\s?r\\.?\\s?p\\.?|price)[^0-9₹]{0,12}$money"))
+            ?: read(Regex("(?i)(?:m\\.?\\s?r\\.?\\s?p\\.?|price)\\s*[:\\-]?\\s*([0-9]{2,5}(?:\\.[0-9]{1,2})?)\\s*(?:/-)?"))
+            ?: read(Regex("(?i)$money"))
+    }
+
     /** An ISBN set out to read: "978-0241373330", or a 10-digit one as it is. */
     fun pretty(isbn: String): String = if (isbn.length == 13) isbn.take(3) + "-" + isbn.drop(3) else isbn
 

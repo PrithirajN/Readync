@@ -98,7 +98,10 @@ fun DealSheet(vm: AppViewModel, state: Snapshot, key: String, onClose: () -> Uni
         VSpace(12)
         // Each store: its price (and Kindle beside print on Amazon), which edition it is, and ways to change it:
         // pick another edition it lists, or paste the page yourself, found or not.
-        val shopsInOrder = (BookPrices.shops + w.links.keys.filter { it.startsWith("site:") }.mapNotNull { BookPrices.shop(it) }).sortedBy { sh ->
+        // Boichitro only for a Bengali book (or one followed or found there).
+        val bengaliShop = state.books[w.document]?.let { BookPrices.bengali(it) } == true || w.links.containsKey("boichitro") || w.latest.any { it.store == "boichitro" } ||
+            (w.title?.any { it in '\u0980'..'\u09FF' } == true)
+        val shopsInOrder = (BookPrices.shops + listOfNotNull(BookPrices.boichitro.takeIf { bengaliShop }) + w.links.keys.filter { it.startsWith("site:") }.mapNotNull { BookPrices.shop(it) }).sortedBy { sh ->
             w.latest.filter { it.store == sh.id && it.price != null && it.inStock }.minOfOrNull { it.price!! } ?: Double.MAX_VALUE
         }
         for (sh in shopsInOrder) {

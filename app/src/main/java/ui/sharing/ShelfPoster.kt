@@ -1,5 +1,6 @@
 package io.github.prithirajn.readync.ui
 
+import io.github.prithirajn.readync.data.finishDay
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -72,7 +73,7 @@ object ShelfPoster {
     fun years(s: Snapshot, zone: ZoneId = ZoneId.systemDefault()): List<Int> =
         finished(s, null, zone).mapNotNull { yearOf(it, zone) }.distinct().sortedDescending()
 
-    private fun yearOf(b: Book, zone: ZoneId) = (b.finishedAt ?: b.timestamp).takeIf { it > 0 }?.let { Instant.ofEpochSecond(it).atZone(zone).year }
+    private fun yearOf(b: Book, zone: ZoneId) = b.finishDay?.let { Instant.ofEpochSecond(it).atZone(zone).year }
 
     fun finished(s: Snapshot, year: Int?, zone: ZoneId = ZoneId.systemDefault()): List<Book> =
         s.books.values.filter { it.status == ReadStatus.FINISHED && (year == null || yearOf(it, zone) == year) }

@@ -234,6 +234,7 @@ object KoHighlightSync {
         var added = 0
         val touched = HashSet<String>()
         val books = HashMap(s.books)
+        val marks = HashMap(s.koBookmarks)
         var created = 0
         for (f in files) {
             var b = match(s.copy(koHlDocs = docs, books = books), f)
@@ -273,6 +274,9 @@ object KoHighlightSync {
                 continue
             }
             docs[f.path] = b.document
+            // Its page bookmarks, as the file has them now (several files for one book: all of them).
+            val others = docs.filter { it.value == b.document && it.key != f.path }.keys
+            marks[b.document] = (f.bookmarks + (if (others.isEmpty()) emptyList() else (s.koBookmarks[b.document] ?: emptyList()))).distinctBy { it.page }
             // Another copy of a book here (a web novel downloaded again): its ID remembered, so its position finds the book too.
             for (id in idsOf(f)) if (id != b.document && id !in b.aliases && hex32.matches(id)) sameAs[id] = b.document
             f.pages?.let { pagesOf[b.document] = it }
@@ -281,7 +285,7 @@ object KoHighlightSync {
             val before = clips.filter { it.id.startsWith(prefix) }.associateBy { it.id }
             clips.removeAll { it.id.startsWith(prefix) }
             // Passages the book already has from elsewhere (CrossPoint, Moon+, paper…): not added again.
-            val elsewhere = ((s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips)
+            val elsewhere = ((s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips)
                 .filter { it.document == b.document } + clips.filter { it.document == b.document && !it.id.startsWith(prefix) })
                 .map { textKey(it.text) }.toHashSet()
             for (a in f.annotations) {
@@ -298,6 +302,6 @@ object KoHighlightSync {
             }
             touched += b.document
         }
-        return Result(s.copy(books = books, koClips = clips, koHlDocs = docs, koHlUnmatched = unmatched.distinct(), koPages = pagesOf, koUnnamed = unnamed, koSameAs = sameAs), added, touched.size, unmatched.distinct(), unmatchedPaths, created)
+        return Result(s.copy(books = books, koClips = clips, koHlDocs = docs, koBookmarks = marks, koHlUnmatched = unmatched.distinct(), koPages = pagesOf, koUnnamed = unnamed, koSameAs = sameAs), added, touched.size, unmatched.distinct(), unmatchedPaths, created)
     }
 }

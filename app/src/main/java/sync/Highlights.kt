@@ -51,10 +51,12 @@ object Highlights {
         val paperIds = s.paperClips.map { it.id }.toSet()
         val kindleIds = s.kindleClips.map { it.id }.toSet()
         val libbyIds = s.libbyClips.map { it.id }.toSet()
+        val hooplaIds = s.hooplaClips.map { it.id }.toSet()
+        val everandIds = s.everandClips.map { it.id }.toSet()
         val moonIds = s.moonClips.map { it.id }.toSet()
         val historyIds = s.historyClips.map { it.id }.toSet()
         val koIds = s.koClips.map { it.id }.toSet()
-        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden }
+        return (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips).filter { it.document == document && it.id !in s.clipHidden }
             .distinctBy { it.id }
             .sortedByDescending { it.createdAt }
             .map { c ->
@@ -65,6 +67,8 @@ object Highlights {
                         in paperIds -> "Physical book"
                         in kindleIds -> "Kindle"
                         in libbyIds -> "Libby"
+                        in hooplaIds -> "hoopla"
+                        in everandIds -> "Everand"
                         in moonIds -> "Moon+ Reader"
                         in historyIds -> historyFrom(c.id)
                         in koIds -> if (KoHighlightSync.isNote(c.id)) "KOReader note" else "KOReader"
@@ -138,7 +142,7 @@ object Highlights {
 
     /** Every highlight and note across the library, newest first (books removed from it left out). */
     fun all(s: Snapshot): List<Item> {
-        val docs = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.moonClips + s.historyClips + s.koClips).map { it.document }.toSet().filter { it in s.books }
+        val docs = (s.cpClips + s.paperClips + s.kindleClips + s.libbyClips + s.hooplaClips + s.everandClips + s.moonClips + s.historyClips + s.koClips).map { it.document }.toSet().filter { it in s.books }
         return docs.flatMap { forBook(s, it) }.sortedByDescending { it.clip.createdAt }
     }
 

@@ -67,6 +67,10 @@ fun StorageCard(vm: AppViewModel, onAi: () -> Unit) {
                 scope.launch { withContext(Dispatchers.IO) { BookCopies.removeAll(context) }; said = "Removed the copies"; round++ }
             }()
             RowDivider()
+            row("Book files", "books", "Your books' EPUBs kept for bookmarks' pages and highlights' exact places (added by you, or copied from KOReader).", "Remove all") {
+                vm.removeAllBookFiles(); said = "Removed the book files"; round++
+            }()
+            RowDivider()
             row("Pictures", "cache", "Covers, share images and pages kept so they load quickly. Fetched again when needed.", "Clear") {
                 scope.launch { withContext(Dispatchers.IO) { context.cacheDir.listFiles()?.forEach { it.deleteRecursively() } }; said = "Cleared the pictures"; round++ }
             }()
@@ -97,12 +101,13 @@ private fun measure(context: android.content.Context): Map<String, Long> {
     val data = files.parentFile
     val ai = bytesIn(File(files, "models"))
     val copies = bytesIn(File(files, "book-copies"))
+    val books = bytesIn(File(files, "books"))
     val cache = bytesIn(context.cacheDir) + bytesIn(context.externalCacheDir)
     val mine = bytesIn(File(files, "tracker-sync.json")) + bytesIn(File(data, "shared_prefs")) + bytesIn(File(files, "tracker-sync.json.bak"))
     val web = bytesIn(File(data, "app_webview")) + bytesIn(File(data, "app_webview_PageBrowser"))
     val all = bytesIn(data) + bytesIn(context.getExternalFilesDir(null))
-    val other = (all - ai - copies - bytesIn(context.cacheDir) - mine - web).coerceAtLeast(0)
-    return linkedMapOf("ai" to ai, "copies" to copies, "cache" to cache, "data" to mine, "web" to web, "other" to other)
+    val other = (all - ai - copies - books - bytesIn(context.cacheDir) - mine - web).coerceAtLeast(0)
+    return linkedMapOf("ai" to ai, "copies" to copies, "books" to books, "cache" to cache, "data" to mine, "web" to web, "other" to other)
 }
 
 private fun storageSize(bytes: Long): String = when {
